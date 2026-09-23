@@ -43,6 +43,32 @@ is `mcp` or `modelcontextprotocol`. Here the second label is `gleif`.
 
 ## Building a server
 
+**In the Python SDK, do not plumb this by hand.** `mcp` 2.2.0 ships the extension framework this
+design targets (SEP-2133):
+
+```python
+from mcp.server.extension import Extension, ToolBinding
+from mcp.server.mcpserver import MCPServer
+
+class VleiIdentity(Extension):
+    identifier = "org.gleif.vlei/identity"          # validated at subclass definition
+
+    def settings(self) -> dict:                     # advertised at capabilities.extensions[id]
+        return {"presents": ["LE"], "requires": "ECR", "acceptedRoots": [...], ...}
+
+    async def intercept_tool_call(self, params, ctx, call_next):
+        ...                                         # verify here; call_next(ctx) to allow
+
+mcp = MCPServer(name="…", version="…", extensions=[VleiIdentity()])
+```
+
+Three things to know about that surface, because each costs an afternoon to discover:
+
+- `settings()` returns the capability **value**, not a dict keyed by the identifier again.
+- `intercept_tool_call(params, ctx, call_next)` — three arguments. `params` is the validated
+  `CallToolRequestParams`, so `params.meta` is the request `_meta` as a plain dict.
+- Results use pydantic field names: `CallToolResult(is_error=True, meta={...})`, not `isError`.
+
 Five things, in this order.
 
 ### 1. Declare the capability
@@ -63,12 +89,29 @@ Five things, in this order.
 ```
 
 `acceptedRoots` MUST be explicit configuration. Never treat an empty or absent
-set as "accept any root".
+set as "accept any root" — raise at construction instead. It is the entire trust decision, and an
+empty list read as "anything" would accept every forged chain while passing every other check.
+
+Field shapes, since the asymmetry is real and not a typo: `presents` and `signatureAlgs` are
+**lists**, `requires` is a **single string** — a party requires one credential type, and may be
+able to present several. `discovery` currently carries only `wellKnown`.
 
 ### 2. Present your own credential
 
-Publish the LE credential at `discovery.wellKnown` — a plain `GET /.well-known/vlei` returning
-the credential, the accepted roots and the signature suites. A counterparty can then fetch and
+Publish the LE credential at `discovery.wellKnown` — a plain `GET /.well-known/vlei`,
+`application/json`, no session required:
+
+```json
+{
+  "extension":     "org.gleif.vlei/identity",
+  "credential":    "<CESR stream: the LE credential and its chain>",
+  "acceptedRoots": ["EM-uSa3-ZH6ynbMtqUE0aOce0memXiuXHDOVNQia8x6n"],
+  "signatureAlgs": ["Ed25519"]
+}
+```
+
+The key names matter more here than anywhere else in this document: this is the one artefact a
+counterparty parses **before any session exists**, so there is no negotiation to fall back on. A counterparty can then fetch and
 verify it **before** sending anything, which is the point of mode (a) in `spec/SPEC.md`
 (*Two verification modes*).
 
@@ -99,6 +142,17 @@ The credential says **who the holder is**. This says **what may be done, within
 what limits**. Put the requirement on the tool, not on the server: different
 tools on one server legitimately need different authority.
 
+**Scope is compared against the credential, not against the arguments.** The tool's `scope` states
+what authority it demands; the credential carries what authority the entity granted. The check is
+whether the second covers the first — a numeric requirement is met when the credential's value is
+at least as large, a list when the credential's list is a superset.
+
+**A key the credential does not carry is not satisfied.** Deny, do not default to allow. This is a
+security decision and it belongs in the specification rather than in each implementer's judgement.
+
+The specification fixes *where* scope lives and *that* it is checked. It does not impose a universal
+algebra, so a deployment with different semantics replaces the comparison — but not this default.
+
 ### 4. Verify, in this order
 
 Stop at the first failure and report its layer.
@@ -121,6 +175,24 @@ or down degrades one specific check instead of every check — which is not a th
 is the difference between a tampered-arguments test that reports `digest_mismatch` and one that
 reports a connection error.
 
+**How to recompute a SAID** (check 1), because the whole check rests on getting this exact:
+
+> Take the credential's bytes **as they arrived**. Replace the 44-character value of its `d` field
+> with 44 `#` characters — same length, so the `v` field's encoded size stays true. Blake3-256 over
+> those bytes. CESR-encode as `E` + base64url of the 32-byte digest, 44 characters total.
+
+Recompute over the received bytes, not over a re-serialized copy: any difference in field order or
+spacing changes the digest, and re-serializing would hide exactly the tampering the check exists to
+find.
+
+The ACDC fields you will need: `d` is the SAID, `i` the issuer, `a.i` the issuee, `a.LEI` the LEI,
+`a.engagementContextRole` the role, `ri` the registry, `s` the schema SAID, and `e.<label>.n` the
+SAID an edge points at.
+
+**Determine a credential's type from `s`, its schema SAID** — not from a name or a guessed field.
+The published vLEI schema SAIDs are stable; an ECR is
+`EEy9PkikFcANV1l7EHukCeXqrzT1hNZjGlUk7wuMO5jw`.
+
 Note what check 1 buys you without any key at all. The SAID is a digest over the credential's
 content, so altering any field breaks it. A relying party can detect tampering before it has
 established anything about who issued what.
@@ -128,9 +200,30 @@ established anything about who issued what.
 ### 5. Report failures by layer
 
 - Client never declared the extension, but the tool requires it →
-  JSON-RPC error **`-32021`**, with `data.requiredCapabilities` naming the extension.
-- Declared but verification failed → `CallToolResult` with `isError: true`, and
-  the failing layer named in the text.
+  JSON-RPC error **`-32021`**. `data.requiredCapabilities` is a **`ClientCapabilities` object**,
+  not a list of identifiers — the same shape the client sends at `initialize`, so the answer reads
+  as "declare this and try again":
+
+  ```json
+  {"code": -32021,
+   "data": {"requiredCapabilities": {"extensions": {"org.gleif.vlei/identity": {}}}}}
+  ```
+
+  The SDK has `types.MISSING_REQUIRED_CLIENT_CAPABILITY` and
+  `types.MissingRequiredClientCapabilityErrorData` for exactly this. Use them.
+- Declared but verification failed → `CallToolResult` with `isError: true`, the failing layer
+  **first and unadorned in the text**, and the same layer in the result `_meta` under
+  `org.gleif.vlei/failure`:
+
+  ```json
+  {"content": [{"type": "text", "text": "revoked: the credential has been revoked in the issuer's transaction event log"}],
+   "isError": true,
+   "_meta": {"org.gleif.vlei/failure": {"layer": "revoked", "message": "…"}}}
+  ```
+
+  Both, not either. A caller cannot switch on prose, and a person reading a log should not have to
+  parse JSON. Do **not** reuse `org.gleif.vlei/attestation` for this — that key carries a third
+  party's signed verification of someone else, which is a different statement entirely.
 
 There are **nine** layers. Eight are verification failures — `invalid_signature`,
 `stale_signature`, `digest_mismatch`, `chain_invalid`, `revoked`, `role_mismatch`,
@@ -170,11 +263,34 @@ control — the server decides.
 
 ```
 signature over:  method + "\n" + ts + "\n" + digest
-digest        =  base64url(sha256(JCS(params without _meta)))
+digest        =  base64url(sha256(JCS(params without _meta)))    unpadded
 ```
 
-Canonicalise with RFC 8785. Remove the whole `_meta` member before hashing — not
-just the signature key — so the rule stays auditable by eye.
+Exactly, because every one of these breaks interop if guessed:
+
+- `method` is the **JSON-RPC method** — the literal string `"tools/call"` — not the tool's name.
+- `ts` is **RFC 3339 UTC**, e.g. `2026-09-23T04:12:47Z`. Not epoch seconds, not milliseconds.
+- `digest` is unpadded base64url of the SHA-256 over the **RFC 8785 (JCS)** canonicalization of
+  `params`, with the whole `_meta` member removed — not just the signature key, so the rule stays
+  auditable by eye. `params` of `None` and `{}` must produce the same digest.
+- The signature is CESR: `0B` + 86 characters for a non-indexed Ed25519 signature. Accept indexed
+  forms too (`A…`, 88 characters) — a keystore-backed signer emits those, and they carry the same
+  64 raw bytes.
+
+The four request `_meta` keys, in full, so there is nothing to invent:
+
+```json
+"_meta": {
+  "org.gleif.vlei/credential":     "<CESR stream: the ACDC and its chain>",
+  "org.gleif.vlei/credentialSaid": "EM3weUSh…",
+  "org.gleif.vlei/delegatedAid":   "EPP835Iz…",
+  "org.gleif.vlei/signature":      {"aid": "EPP835Iz…", "ts": "2026-09-23T04:12:47Z",
+                                    "digest": "9pQzR4mK…", "sig": "0BDwS8nU…", "alg": "Ed25519"}
+}
+```
+
+`credentialSaid` names which credential in the stream is being presented. A chained export carries
+several, and "the first one in the stream" is the root of the chain, not the leaf.
 
 ---
 
@@ -241,6 +357,19 @@ withdrawal, so a `rev` event's absence from what *they* sent you establishes not
 
 And if the log cannot be read: **refuse**. Reporting "could not check" as "not revoked" is the one
 failure mode worth being absolute about.
+
+### Do not confuse the freshness window with `ttlMs`
+
+They are different numbers doing different jobs, and reusing one for the other is a security bug:
+
+| | What it bounds | Sensible default |
+|---|---|---|
+| freshness window | How old a request signature may be | **60 seconds** |
+| replay-cache retention | How long `(aid, digest, ts)` is remembered | **at least** the freshness window |
+| `ttlMs` | How long a *verification result* may be cached | 30s, and **0** for high-value tools |
+
+An hour-long `ttlMs` used as a replay window would accept an hour-old signature. The replay cache
+must outlive the freshness window, or a signature can be replayed the moment it is forgotten.
 
 ### Do not cache revocation with the chain
 

@@ -169,8 +169,10 @@ extension specifies *where* scope lives and *that* it must be checked, not a uni
 ### Errors
 
 **Protocol-level.** If a server requires the extension and the client did not declare it, the server
-responds with JSON-RPC error `-32021`, and `data.requiredCapabilities` lists
-`"org.gleif.vlei/identity"`. This lets a client distinguish "I am missing a capability" from "my
+responds with JSON-RPC error `-32021`. `data.requiredCapabilities` is a **`ClientCapabilities`
+object** — `{"extensions": {"org.gleif.vlei/identity": {}}}` — not a list of identifiers: the same
+shape the client sends at `initialize`, so the answer reads as "declare this and try again" rather
+than needing translation. This lets a client distinguish "I am missing a capability" from "my
 credential was rejected".
 
 **Tool-level.** A verification failure that occurs after the capability is present is returned as a

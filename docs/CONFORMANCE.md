@@ -56,6 +56,11 @@ The table would be dishonest without these.
   this repository refuses a connection for want of the capability, because all of them serve public
   tools to clients that never declare it. That is the additive property working as intended, and it
   means the code path is untested in anger.
+
+  It was also **wrong** until a conformance test caught it: `data.requiredCapabilities` was a list
+  of identifiers, where the 2026-07-28 revision defines a `ClientCapabilities` object. Untested and
+  incorrect turned out to be the same path. See
+  [`skills/implementing-vlei/CONFORMANCE.md`](../skills/implementing-vlei/CONFORMANCE.md).
 - **Scope comparison is a default, not a standard.** `signing.scope_satisfied` implements one
   reasonable algebra. The specification fixes where scope lives and that it must be checked, not how
   — a deployment with different semantics replaces the function.

@@ -20,7 +20,16 @@
       "code": -32021,
       "message": "server requires capabilities not declared by the client: org.gleif.vlei/identity",
       "data": {
-        "requiredCapabilities": ["org.gleif.vlei/identity"]
+        "$comment": [
+          "A ClientCapabilities object, not a list of identifiers: the same shape the client sends",
+          "at initialize, so the answer reads as 'declare this and try again'. The SDK types it as",
+          "MissingRequiredClientCapabilityErrorData."
+        ],
+        "requiredCapabilities": {
+          "extensions": {
+            "org.gleif.vlei/identity": {}
+          }
+        }
       }
     }
   },

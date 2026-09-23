@@ -103,10 +103,24 @@ class ExtensionRequired(Exception):
         )
 
     def to_error(self) -> dict[str, Any]:
+        """The JSON-RPC error, in the shape the 2026-07-28 revision defines.
+
+        `data.requiredCapabilities` is a **ClientCapabilities object**, not a list of identifiers —
+        the same shape a client sends at `initialize`, so the client can read the answer as "declare
+        this and try again" rather than having to translate. The SDK types it as
+        `MissingRequiredClientCapabilityErrorData`.
+
+        This was wrong here — a list of strings — until a conformance test against the SDK caught
+        it. See `skills/implementing-vlei/CONFORMANCE.md`.
+        """
         return {
             "code": EXTENSION_REQUIRED_CODE,
             "message": str(self),
-            "data": {"requiredCapabilities": self.capabilities},
+            "data": {
+                "requiredCapabilities": {
+                    "extensions": {identifier: {} for identifier in self.capabilities}
+                }
+            },
         }
 
 

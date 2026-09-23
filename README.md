@@ -24,7 +24,7 @@ extension mechanism. The MCP core schema is not modified.
 | `spec/SPEC.md` | The extension specification |
 | `spec/schema.ts` | Type definitions — additive, nothing in core MCP redefined |
 | `spec/examples/` | Wire-format examples |
-| `skills/implementing-vlei/` | **Build time** — how to implement the extension correctly. Output is code: reviewed once, then executed every time |
+| `skills/implementing-vlei/` | **Build time** — how to implement the extension correctly. Output is code: reviewed once, then executed every time. `CONFORMANCE.md` records an AI building from it with no other input |
 | `skills/vlei-identity/` | **Runtime** — how a running agent presents credentials and reads a refusal. Output is behaviour: guidance, not a guarantee |
 | `docs/CONFORMANCE.md` | Every normative statement in the spec, with its implementation and its test |
 | `docs/upstream/` | A defect found in `vlei-verifier` while building this, written up for GLEIF |

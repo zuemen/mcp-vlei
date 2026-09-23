@@ -38,8 +38,9 @@ object names a credential type (`"ECR"`), optionally a `role`, and optionally a 
 Tools without that key are public. Do not present credentials to servers that do not require them —
 presenting an ECR discloses the entity, the role, and the holder's AID.
 
-If the server returns JSON-RPC error `-32021` with `data.requiredCapabilities` containing
-`"org.gleif.vlei/identity"`, the extension was not declared at `initialize`. That is a configuration
+If the server returns JSON-RPC error `-32021`, the extension was not declared at `initialize`.
+`data.requiredCapabilities` is a `ClientCapabilities` object naming what to declare —
+`{"extensions": {"org.gleif.vlei/identity": {}}}`. That is a configuration
 problem, not a rejected credential. Say so precisely, and reconnect with the capability declared.
 
 ## Before connecting
