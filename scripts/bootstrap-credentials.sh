@@ -19,7 +19,15 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${HERE}/.." && pwd)"
-COMPOSE="docker compose -f ${HERE}/docker-compose.yml"
+
+# Git Bash on Windows rewrites anything that looks like a POSIX path before handing it to a native
+# binary. Docker needs a native path for -f, and the container paths passed to `kli` must be left
+# alone entirely — hence the mixed-form path here and MSYS_NO_PATHCONV inside the kli helper.
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) NATIVE_HERE="$(cygpath -m "$HERE")" ;;
+  *)                    NATIVE_HERE="$HERE" ;;
+esac
+COMPOSE="docker compose -f ${NATIVE_HERE}/docker-compose.yml"
 OUT="${ROOT_DIR}/credentials"
 WORK="${OUT}/_work"
 
@@ -48,7 +56,7 @@ ok()    { printf '%s  ok%s  %s\n' "$c_ok" "$c_reset" "$*"; }
 fail()  { printf '%s fail%s %s\n' "$c_bad" "$c_reset" "$*"; exit 1; }
 note()  { printf '%s      %s%s\n' "$c_dim" "$*" "$c_reset"; }
 
-kli() { $COMPOSE exec -T keri-cli kli "$@"; }
+kli() { MSYS_NO_PATHCONV=1 $COMPOSE exec -T keri-cli kli "$@"; }
 
 # ---------------------------------------------------------------------------------------------
 # Teardown

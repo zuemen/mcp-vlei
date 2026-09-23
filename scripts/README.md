@@ -83,6 +83,41 @@ Override from the environment:
 | `ECR_PERSON` | Chen Wei-Ting |
 | `SCHEMA_QVI` / `SCHEMA_LE` / `SCHEMA_ECR` | published WebOfTrust/vLEI schema SAIDs |
 
+## Known blocker: witness endpoints (as of 2026-09-23)
+
+`kli incept` fails at receipt collection:
+
+```
+Waiting for witness receipts...
+ERR: unable to find a valid endpoint for witness BBilc4-L3tFUnfM_wJr4S4OJanAv_VmF_dJNN6vkf2Ha
+```
+
+What has been established, so the next session does not re-derive it:
+
+| Checked | Result |
+|---|---|
+| Witness AIDs (wan/wil/wes) | Match the hardcoded demo set — `curl localhost:5642/oobi` confirms |
+| Witness reachability from the CLI container | HTTP 200 |
+| `kli oobi resolve` against each witness, with and without `/controller` | Reports `resolved` |
+| `kli init --config-dir` layout | keripy reads `<dir>/keri/cf/<file>.json`; the file was moved there |
+| Config directory mounted read-write | Made writable; no change |
+| Sharing the witness container's network namespace | Applied, so `127.0.0.1:564x` is correct from the CLI; no change |
+
+The error fires **before** any dial: there is no location-scheme record for the witness in the
+controller's database at all. Resolving the OOBI returns the witness's KEL but apparently no `rpy`
+location records, so the controller never learns an endpoint to collect receipts from.
+
+**Most likely cause.** `kli witness demo` starts witnesses from a built-in configuration whose
+published location records do not survive this deployment shape. GLEIF's `vlei-trainings` does not
+use `kli witness demo`; it runs `kli witness start` against explicit per-witness config files under
+`keri/cf/main/`, which declare the HTTP endpoints that end up in those `rpy` records.
+
+**Next step**, in order of cost: take the witness configuration files from
+[`GLEIF-IT/vlei-trainings`](https://github.com/GLEIF-IT/vlei-trainings) and start the witnesses with
+`kli witness start --name <wan|wil|wes> --alias <…>` against them, instead of `kli witness demo`.
+Everything else in this script is downstream of inception and is untested only because inception has
+not yet succeeded.
+
 ## If it does not run
 
 The script is written to fail loudly at the stage that broke rather than continue into a

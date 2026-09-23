@@ -16,9 +16,11 @@ services:
     container_name: mcp-vlei-witness
     environment:
       - PYTHONUNBUFFERED=1
-    command: kli witness demo
+    # The image's entrypoint is already `kli`, so the command is the subcommand alone.
+    command: witness demo
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5642/oobi"]
+      # No curl in this image; it is a Python image, so use urllib.
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:5642/oobi')"]
       interval: 3s
       timeout: 3s
       retries: 20
@@ -44,7 +46,7 @@ services:
       - -p
       - "7723"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:7723/oobi/EBfdlu8R27Fbx-ehrqwImnK-8Cm79sqbAQ4MmvEAYqao"]
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:7723/oobi/EBfdlu8R27Fbx-ehrqwImnK-8Cm79sqbAQ4MmvEAYqao')"]
       interval: 3s
       timeout: 3s
       retries: 20
@@ -76,11 +78,19 @@ services:
     image: weboftrust/keri:1.2.6
     container_name: mcp-vlei-cli
     entrypoint: ["tail", "-f", "/dev/null"]
+    # `kli witness demo` publishes its location records as http://127.0.0.1:564x. Those are the
+    # endpoints a controller dials when collecting receipts, so from any other container they point
+    # at the wrong host and inception fails with "unable to find a valid endpoint for witness".
+    # Sharing the witness container's network namespace makes 127.0.0.1:564x correct, while compose
+    # DNS still resolves vlei-server and vlei-verifier.
+    network_mode: "service:witness-demo"
     depends_on:
       witness-demo:
         condition: service_healthy
       vlei-server:
         condition: service_healthy
     volumes:
-      - ./keri-config:/keri-config:ro
+      # Not read-only: keripy's Configer opens the config directory for writing even when it only
+      # reads the file, and fails silently to load `iurls` if it cannot.
+      - ./keri-config:/keri-config
       - ../credentials:/credentials
