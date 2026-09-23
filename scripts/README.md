@@ -26,10 +26,10 @@ production, and every artifact says so.
 
 | Service | Image | Port |
 |---|---|---|
-| Witnesses (wan, wil, wes) | `weboftrust/keri:1.2.6` | 5642–5644 |
+| Witnesses (wan, wil, wes) | `weboftrust/keri:1.2.14` | 5642–5644 |
 | vLEI schema server | `gleif/vlei:0.2.0` | 7723 |
 | Verifier | `gleif/vlei-verifier:1.0.0` | 7676 |
-| `kli` container (holds the keystores) | `weboftrust/keri:1.2.6` | — |
+| `kli` container (holds the keystores) | `weboftrust/keri:1.2.14` | — |
 
 `gleif/vlei-verifier` publishes no `latest` tag, so the compose file pins an explicit release.
 
@@ -83,40 +83,79 @@ Override from the environment:
 | `ECR_PERSON` | Chen Wei-Ting |
 | `SCHEMA_QVI` / `SCHEMA_LE` / `SCHEMA_ECR` | published WebOfTrust/vLEI schema SAIDs |
 
-## Known blocker: witness endpoints (as of 2026-09-23)
+## Status, 2026-09-23
 
-`kli incept` fails at receipt collection:
+Most of the chain now runs. What follows is what has actually been observed, so the next session
+starts from evidence rather than from guesses.
 
-```
-Waiting for witness receipts...
-ERR: unable to find a valid endpoint for witness BBilc4-L3tFUnfM_wJr4S4OJanAv_VmF_dJNN6vkf2Ha
-```
+### Verified working
 
-What has been established, so the next session does not re-derive it:
-
-| Checked | Result |
+| Step | Evidence |
 |---|---|
-| Witness AIDs (wan/wil/wes) | Match the hardcoded demo set — `curl localhost:5642/oobi` confirms |
-| Witness reachability from the CLI container | HTTP 200 |
-| `kli oobi resolve` against each witness, with and without `/controller` | Reports `resolved` |
-| `kli init --config-dir` layout | keripy reads `<dir>/keri/cf/<file>.json`; the file was moved there |
-| Config directory mounted read-write | Made writable; no change |
-| Sharing the witness container's network namespace | Applied, so `127.0.0.1:564x` is correct from the CLI; no change |
+| Witness receipting | Inception completes; `Prefix ...` printed with receipts collected |
+| Root, LE, ECR inception | Four controllers created with witnessed KELs |
+| Agent delegated AID under the ECR holder | Completed in one run: `agent (delegated) = EKo7EPKx…` |
+| Credential chain: QVI -> LE -> ECR | All three issued, with edges and SAIDs |
+| CESR export | `credentials/le.cesr`, `credentials/ecr.cesr` written with `--full` |
+| Root of trust installed | `POST /root_of_trust/{aid}` -> HTTP 202 |
+| Signed presentation | `PUT /presentations/{said}` -> **HTTP 202**, verifier returned the parsed credential |
+| Authorization query | Answers with a reasoned verdict (see below) |
 
-The error fires **before** any dial: there is no location-scheme record for the witness in the
-controller's database at all. Resolving the OOBI returns the witness's KEL but apparently no `rpy`
-location records, so the controller never learns an endpoint to collect receipts from.
+### Six things that had to be fixed to get there
 
-**Most likely cause.** `kli witness demo` starts witnesses from a built-in configuration whose
-published location records do not survive this deployment shape. GLEIF's `vlei-trainings` does not
-use `kli witness demo`; it runs `kli witness start` against explicit per-witness config files under
-`keri/cf/main/`, which declare the HTTP endpoints that end up in those `rpy` records.
+Each produced a misleading error, so each is worth keeping written down.
 
-**Next step**, in order of cost: take the witness configuration files from
-[`GLEIF-IT/vlei-trainings`](https://github.com/GLEIF-IT/vlei-trainings) and start the witnesses with
-`kli witness start --name <wan|wil|wes> --alias <…>` against them, instead of `kli witness demo`.
-Everything else in this script is downstream of inception and is untested only because inception has
-not yet succeeded.
+1. **`weboftrust/keri` ships `/keripy/scripts/keri/cf/main/*.json` as zero-byte files.** The
+   witnesses then publish no `curls`, and inception fails with *"unable to find a valid endpoint
+   for witness"* — which points at the witnesses rather than at their configuration.
+   `scripts/witness-config/` is mounted over them.
+2. **The LE schema SAID was wrong** (`…62VPxROE` instead of `…62VsDZWY`). The schema server answers
+   `200` with a zero-byte body for an unknown SAID, so `kli init` aborted its whole OOBI load and
+   left keystores with no witness endpoints — appearing as failure 1.
+3. **ECR credentials need `--private`.** The ECR schema requires `u`, the privacy salt, at the top
+   level. An ECR names a natural person, and the salt is what stops one credential being
+   correlatable across presentations.
+4. **Rules blocks are `const`-matched per schema.** ECR requires a third disclaimer,
+   `privacyDisclaimer`, whose text differs from the one used elsewhere. The script now derives
+   rules from the schema instead of hardcoding them.
+5. **Any of the above surfaces as `'CredentialIssuer' object has no attribute '_tock'`** — keripy
+   catches the validation error, returns from a half-built Doer, and the real message is lost. The
+   underlying error is printed above it as `error issuing credential …`; read that, not the `ERR:`
+   line.
+6. **vlei-verifier 1.0.0 requires signed HTTP headers** (`SIGNATURE-INPUT`, `SIGNATURE`,
+   `SIGNIFY-RESOURCE`, `SIGNIFY-TIMESTAMP`), and it must be given the presenter's OOBI first
+   (`POST /oobi`) or it answers *"unknown … used to sign header"*. `keri-config/present.py` signs
+   from the keystore, against exactly the serialization the verifier reconstructs.
+
+### The remaining blocker
+
+`delegated_incept qvi root` fails: the proposer exits before the first confirm attempt.
+
+This became necessary once presentation worked, because the verifier rejects the chain with:
+
+> ECR chain validation failed, LE chain validation failed, **The QVI AID must be delegated**
+
+That is the verifier correctly enforcing an ecosystem rule — a QVI's authority derives from the
+root, so a standalone QVI AID would have authority of its own. The same delegation machinery
+**does** work for the agent under the ECR holder, so the mechanism is sound; something about doing
+it for `qvi` under `root`, as the first delegation in a fresh environment, is not.
+
+Ruled out: the delegator's OOBI is generated and resolves (`… resolved`), the delegator's KEL is
+reachable, witnesses receipt normally, and `kli delegate confirm` takes the documented flags. The
+one observed proposer error, when the OOBI step is skipped, is *"delegator … not found, unable to
+process delegation"* — so the next thing to check is whether the resolved contact is actually
+usable by the delegation code, rather than merely present.
+
+**Next step:** run the delegated inception by hand with the proposer in the foreground, so its
+error is visible instead of being swallowed by the background job:
+
+```bash
+docker compose -f scripts/docker-compose.yml exec keri-cli sh -c '
+  kli incept --name qvi --alias qvi --file /keri-config/incept-witnesses.json --delpre <root-aid>'
+# and in a second shell:
+docker compose -f scripts/docker-compose.yml exec keri-cli sh -c '
+  kli delegate confirm --name root --alias root --interact --auto'
+```
 
 ## If it does not run
 

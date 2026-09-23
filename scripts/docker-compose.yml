@@ -12,12 +12,19 @@ services:
   # Three demo witnesses (wan, wil, wes) on 5642-5644. Their AIDs are the well-known demo set,
   # derived from the fixed salt baked into `kli witness demo`.
   witness-demo:
-    image: weboftrust/keri:1.2.6
+    image: weboftrust/keri:1.2.14
     container_name: mcp-vlei-witness
     environment:
       - PYTHONUNBUFFERED=1
     # The image's entrypoint is already `kli`, so the command is the subcommand alone.
     command: witness demo
+    volumes:
+      # weboftrust/keri:1.2.14 ships /keripy/scripts/keri/cf/main/*.json as ZERO-BYTE files. Without
+      # them a witness starts and signs correctly but publishes no endpoint (`curls`) records, so a
+      # controller resolving its OOBI learns the KEL and no address — and inception then fails with
+      # "unable to find a valid endpoint for witness" before it ever dials. Mounting real configs
+      # over the empty ones is what makes receipting work.
+      - ./witness-config:/keripy/scripts/keri/cf/main
     healthcheck:
       # No curl in this image; it is a Python image, so use urllib.
       test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:5642/oobi')"]
@@ -75,15 +82,13 @@ services:
   # Long-running container that holds the keystores. The bootstrap script drives `kli` here via
   # `docker compose exec`, so keystores survive between steps and can be inspected afterwards.
   keri-cli:
-    image: weboftrust/keri:1.2.6
+    image: weboftrust/keri:1.2.14
     container_name: mcp-vlei-cli
     entrypoint: ["tail", "-f", "/dev/null"]
-    # `kli witness demo` publishes its location records as http://127.0.0.1:564x. Those are the
-    # endpoints a controller dials when collecting receipts, so from any other container they point
-    # at the wrong host and inception fails with "unable to find a valid endpoint for witness".
-    # Sharing the witness container's network namespace makes 127.0.0.1:564x correct, while compose
-    # DNS still resolves vlei-server and vlei-verifier.
-    network_mode: "service:witness-demo"
+    # No shared network namespace. The witness configs in ./witness-config publish their endpoints
+    # as http://witness-demo:564x, so ordinary compose DNS reaches them — and sharing the witness
+    # container's namespace would tie this container's lifetime to the witness's, so recreating the
+    # witnesses would silently kill the CLI mid-run.
     depends_on:
       witness-demo:
         condition: service_healthy

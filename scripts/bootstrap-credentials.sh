@@ -36,7 +36,7 @@ VERIFIER="http://localhost:7676"
 # Published WebOfTrust/vLEI ACDC schema SAIDs, served by the vlei-server container.
 # Override from the environment if you are pinning a different schema release.
 SCHEMA_QVI="${SCHEMA_QVI:-EBfdlu8R27Fbx-ehrqwImnK-8Cm79sqbAQ4MmvEAYqao}"
-SCHEMA_LE="${SCHEMA_LE:-ENPXp1vQzRF6JwIuS-mp2U8Uf1MoADoP_GqQ62VPxROE}"
+SCHEMA_LE="${SCHEMA_LE:-ENPXp1vQzRF6JwIuS-mp2U8Uf1MoADoP_GqQ62VsDZWY}"
 SCHEMA_ECR="${SCHEMA_ECR:-EEy9PkikFcANV1l7EHukCeXqrzT1hNZjGlUk7wuMO5jw}"
 
 # The legal entity this demo issues for. LEI is a test value: the association does not hold a
@@ -103,14 +103,46 @@ bring_up() {
 # ---------------------------------------------------------------------------------------------
 # Stage 2 — create the four controllers
 # ---------------------------------------------------------------------------------------------
+# Demo witness network: AID keyed by HTTP port. These are the well-known demo identifiers, produced
+# by the fixed salts `kli witness demo` uses.
+WITNESSES=(
+  "5642:BBilc4-L3tFUnfM_wJr4S4OJanAv_VmF_dJNN6vkf2Ha"
+  "5643:BLskRTInXnMxWaGqcpSyMgo0nYbalW99cGZESrz3zapM"
+  "5644:BIKKuvBwpmDVA4Ds-EpL5bt9OqPzWPja2LigFYZN2YfX"
+)
+
+# Resolve each witness OOBI into this keystore.
+#
+# The config file's `iurls` already do this at `kli init`. Repeating it here is deliberate: a single
+# unresolvable entry anywhere in that config aborts the whole OOBI load, leaving a keystore with no
+# witness endpoints and an inception that fails with "unable to find a valid endpoint for witness" —
+# a message that points at the witnesses rather than at the config. This keeps the witnesses
+# resolved regardless, and the operation is idempotent.
+resolve_witnesses() {
+  local keystore="$1"
+  for w in "${WITNESSES[@]}"; do
+    local port="${w%%:*}" aid="${w##*:}"
+    kli oobi resolve --name "$keystore" --oobi-alias "wit${port}" \
+      --oobi "http://witness-demo:${port}/oobi/${aid}/controller" >/dev/null
+  done
+}
+
 make_parties() {
   step "Stage 2 — creating controllers: ${PARTIES[*]}"
   for p in "${PARTIES[@]}"; do
     if kli status --name "$p" --alias "$p" >/dev/null 2>&1; then
       note "$p already exists, skipping inception"
+    elif [[ "$p" == "qvi" ]]; then
+      # A QVI is a delegated identifier of the root of trust. This is not a stylistic choice:
+      # vlei-verifier rejects a chain whose QVI is standalone, with "The QVI AID must be
+      # delegated", and it is right to — a QVI's authority is derived from the root, and a
+      # standalone QVI AID would have authority of its own.
+      delegated_incept qvi root || fail "QVI delegation failed, and the chain requires it.
+      Raise DELEGATION_TRIES and re-run; unlike the agent delegation, this one has no fallback."
     else
       kli init --name "$p" --nopasscode \
         --config-dir /keri-config --config-file bootstrap-config >/dev/null
+      resolve_witnesses "$p"
       kli incept --name "$p" --alias "$p" --file /keri-config/incept-witnesses.json >/dev/null
     fi
     local aid; aid="$(kli aid --name "$p" --alias "$p" | tr -d '\r\n')"
@@ -122,24 +154,86 @@ make_parties() {
 # The agent's delegated AID, created under the ECR holder's KEL. Revoking the delegation stops the
 # agent without touching the person's credential. Optional by design — see SPEC.md "Why a
 # delegated AID for the agent"; if this stage is dropped, the ECR holder's AID signs directly.
+# Delegated inception: the delegate proposes and blocks, the delegator confirms.
+#
+# Used twice, for different reasons:
+#
+#   qvi under root   — required. vlei-verifier enforces the ecosystem rule that a QVI AID is a
+#                      delegated identifier of the root of trust; a standalone QVI fails chain
+#                      validation with "The QVI AID must be delegated".
+#   agent under ecr  — optional. It gives the agent a revocable identifier of its own without
+#                      giving it the person's key. See SPEC.md "Delegation".
+#
+# Returns non-zero if the delegation could not be completed; the caller decides whether that is
+# fatal.
+delegated_incept() {
+  local child="$1" parent="$2"
+
+  kli init --name "$child" --nopasscode \
+    --config-dir /keri-config --config-file bootstrap-config >/dev/null
+  resolve_witnesses "$child"
+
+  # The delegate must know its delegator before it can propose to it. Stage 3 resolves everyone
+  # against everyone, but that runs later — so resolve the one OOBI needed here.
+  local parent_oobi
+  parent_oobi="$(kli oobi generate --name "$parent" --alias "$parent" --role witness \
+                 | head -1 | tr -d '\r\n')"
+  [[ -n "$parent_oobi" ]] || fail "could not generate a witness OOBI for ${parent}"
+  kli oobi resolve --name "$child" --oobi-alias "$parent" --oobi "$parent_oobi" >/dev/null
+
+  # Confirm the delegator's KEL actually landed. Without it the proposer exits immediately with
+  # "delegator <AID> not found, unable to process delegation", and because the proposer runs in
+  # the background that error is invisible — the run just reports zero confirm attempts.
+  kli contacts list --name "$child" 2>/dev/null \
+    | grep -q "$(cat "${WORK}/${parent}.aid")" \
+    || fail "${child} does not know ${parent} after resolving ${parent_oobi} — delegation cannot proceed"
+
+  kli incept --name "$child" --alias "$child" \
+    --file /keri-config/incept-witnesses.json --delpre "$(cat "${WORK}/${parent}.aid")" \
+    >/dev/null 2>&1 &
+  local proposer=$!
+
+  # Let the proposer publish before confirming: a confirm that lands first does nothing, and both
+  # sides then wait for each other.
+  sleep 4
+
+  # Each confirm attempt gets its own timeout, because `kli delegate confirm` blocks waiting for a
+  # request — an unbounded call is indistinguishable from a hang.
+  local tries=0
+  while kill -0 "$proposer" 2>/dev/null && [[ $tries -lt ${DELEGATION_TRIES:-10} ]]; do
+    tries=$((tries+1))
+    timeout 15 bash -c "$(declare -f kli); COMPOSE='$COMPOSE'; \
+      kli delegate confirm --name $parent --alias $parent --interact --auto" >/dev/null 2>&1 || true
+    sleep 2
+  done
+
+  local stuck=0
+  kill -0 "$proposer" 2>/dev/null && stuck=1
+  [[ $stuck -eq 1 ]] && kill "$proposer" 2>/dev/null
+  if [[ $stuck -eq 1 ]] || ! wait "$proposer"; then
+    note "delegated inception of ${child} under ${parent} did not complete (${tries} attempts)"
+    return 1
+  fi
+  return 0
+}
+
+# The agent's delegated AID, under the ECR holder's KEL.
 make_delegate() {
   step "Stage 2b — creating the agent's delegated AID under the ECR holder's KEL"
   if kli status --name agent --alias agent >/dev/null 2>&1; then
     note "agent delegated AID already exists"
-  else
-    kli init --name agent --nopasscode \
-      --config-dir /keri-config --config-file bootstrap-config >/dev/null
-    local ecr_aid; ecr_aid="$(cat "${WORK}/ecr.aid")"
-
-    # Delegated inception is a two-sided operation: the delegate proposes, the delegator confirms.
-    kli incept --name agent --alias agent \
-      --file /keri-config/incept-witnesses.json --delpre "$ecr_aid" >/dev/null 2>&1 &
-    local proposer=$!
-    sleep 3
-    kli delegate confirm --name ecr --alias ecr --interact --auto >/dev/null 2>&1 || true
-    wait $proposer || fail "delegated inception did not complete"
+  elif ! delegated_incept agent ecr; then
+    # Not fatal. The delegated AID is the one optional element of the chain, and everything after
+    # this stage works without it. Stopping here would cost the credential chain to save a
+    # refinement the specification already marks optional.
+    note "the ECR holder's AID will sign directly. delegatedAid is optional in the schema;"
+    note "what is lost is the second revocation switch, not any other property."
+    note "See SPEC.md 'Delegation'. Raise DELEGATION_TRIES to retry more patiently."
+    printf '%s\n' "" > "${WORK}/agent.aid"
+    ok "agent = (none; the ECR holder's AID signs directly)"
+    return 0
   fi
-  local aid; aid="$(kli aid --name agent --alias agent | tr -d '\r\n')"
+  local aid; aid="$(kli aid --name agent --alias agent 2>/dev/null | tr -d '\r\n')"
   printf '%s\n' "$aid" > "${WORK}/agent.aid"
   ok "agent (delegated) = $aid"
 }
@@ -198,32 +292,59 @@ EOF
 }
 EOF
 
-  # The usage disclaimers carried by every vLEI credential.
-  cat > "${WORK}/rules.json" <<'EOF'
-{
-  "d": "",
-  "usageDisclaimer": {
-    "l": "Usage of a valid, unexpired, and non-revoked vLEI Credential, as defined in the associated Ecosystem Governance Framework, does not assert that the Legal Entity is trustworthy, honest, reputable in its business dealings, safe to do business with, or compliant with any laws or that an implied or expressly intended purpose will be fulfilled."
-  },
-  "issuanceDisclaimer": {
-    "l": "All information in a valid, unexpired, and non-revoked vLEI Credential, as defined in the associated Ecosystem Governance Framework, is accurate as of the date the validation process was complete. The vLEI Credential has been issued to the legal entity or person named in the vLEI Credential as the subject; and the qualified vLEI Issuer exercised reasonable care to perform the validation process set forth in the vLEI Ecosystem Governance Framework."
-  }
+  # Rules blocks are derived from each schema rather than written out by hand.
+  #
+  # Every disclaimer in a vLEI schema is a `const`: the text must match to the character, and each
+  # schema fixes its own set — QVI and LE require usageDisclaimer + issuanceDisclaimer, ECR
+  # requires a third, privacyDisclaimer, whose text differs from the one used elsewhere in the
+  # ecosystem. A mismatch is not reported usefully: keripy catches the validation error, returns
+  # from a half-built Doer, and the visible message becomes
+  # "'CredentialIssuer' object has no attribute '_tock'".
+  #
+  # Reading the consts out of the schema makes that class of failure impossible, and keeps working
+  # when the schemas are updated.
+  rules_for "$SCHEMA_QVI" "${WORK}/rules.json"
+  rules_for "$SCHEMA_ECR" "${WORK}/ecr-rules.json"
 }
-EOF
+
+# Emit the rules block a schema demands, with every disclaimer's exact const text.
+rules_for() {
+  local said="$1" out="$2"
+  curl -fsS "http://localhost:7723/oobi/${said}" | python -c '
+import json, sys
+schema = json.load(sys.stdin)
+block = next(o for o in schema["properties"]["r"]["oneOf"] if o.get("type") == "object")
+rules = {"d": ""}
+for name, spec in block["properties"].items():
+    if name == "d":
+        continue
+    rules[name] = {"l": spec["properties"]["l"]["const"]}
+json.dump(rules, sys.stdout, ensure_ascii=False, indent=2)
+' > "$out" || fail "could not derive the rules block for schema ${said}"
 }
 
 # Issue one credential and have the recipient admit it. Returns the credential SAID on stdout.
 issue() {
   local issuer="$1" recipient_aid="$2" recipient="$3" schema="$4" data="$5" edges="${6:-}"
+  local rules="${7:-/credentials/_work/rules.json}" private="${8:-}"
   local args=(vc create --name "$issuer" --alias "$issuer"
               --registry-name "${issuer}Registry"
               --schema "$schema" --recipient "$recipient_aid"
-              --data "@${data}" --rules "@/credentials/_work/rules.json")
+              --data "@${data}" --rules "@${rules}")
   [[ -n "$edges" ]] && args+=(--edges "@${edges}")
+  # ECR schemas require `u`, the privacy salt, at the top level of the credential. Without
+  # --private keripy omits it and the schema rejects the result — an ECR names a natural person,
+  # so the salt is what keeps the same credential from being correlatable across presentations.
+  [[ -n "$private" ]] && args+=(--private)
   kli "${args[@]}" >/dev/null
 
   local said
   said="$(kli vc list --name "$issuer" --alias "$issuer" --issued --said | tail -1 | tr -d '\r\n')"
+  # An empty SAID means `vc create` failed. Stopping here is the whole point: the next steps would
+  # otherwise run against an empty identifier and report success on nothing.
+  [[ -n "$said" ]] || fail "issuing from ${issuer} produced no credential — re-run the vc create \
+without >/dev/null to see the error. A schema-validation failure surfaces as \
+\"'CredentialIssuer' object has no attribute '_tock'\"."
 
   # IPEX grant / admit: the issuer offers, the recipient accepts into its own store.
   kli ipex grant --name "$issuer" --alias "$issuer" --said "$said" \
@@ -261,7 +382,8 @@ EOF
 { "d": "", "le": { "n": "${LE_SAID}", "s": "${SCHEMA_LE}" } }
 EOF
   ECR_SAID="$(issue le "$ecr_aid" ecr "$SCHEMA_ECR" \
-              /credentials/_work/ecr-data.json /credentials/_work/ecr-edges.json)"
+              /credentials/_work/ecr-data.json /credentials/_work/ecr-edges.json \
+              /credentials/_work/ecr-rules.json private)"
   ok "ECR credential  $ECR_SAID  (le -> ecr, role=${ECR_ROLE})"
 
   printf '%s' "$QVI_SAID" > "${WORK}/qvi.said"
@@ -274,9 +396,9 @@ EOF
 # ---------------------------------------------------------------------------------------------
 export_creds() {
   step "Stage 5 — exporting CESR credentials to credentials/"
-  kli vc export --name le  --alias le  --said "$(cat "${WORK}/le.said")"  --chain \
+  kli vc export --name le  --alias le  --said "$(cat "${WORK}/le.said")"  --full \
     > "${OUT}/le.cesr"
-  kli vc export --name ecr --alias ecr --said "$(cat "${WORK}/ecr.said")" --chain \
+  kli vc export --name ecr --alias ecr --said "$(cat "${WORK}/ecr.said")" --full \
     > "${OUT}/ecr.cesr"
 
   cat > "${OUT}/env.json" <<EOF
@@ -306,11 +428,31 @@ install_root() {
   local root_aid; root_aid="$(cat "${WORK}/root.aid")"
   local oobi;     oobi="$(cat "${WORK}/root.oobi")"
 
+  # `vlei` must be the root's own KEL as a CESR stream, not a credential: the verifier parses it
+  # and looks for a key event whose `i` is this AID. Sending a credential chain instead produces
+  # only "Adding new Root Of Trust ... FAILED", with no indication of what was wrong with it.
+  kli export --name root --alias root --ends > "${WORK}/root.kel"
+
   local code
-  code="$(curl -sS -o "${WORK}/root_of_trust.out" -w '%{http_code}' \
-    -X POST "${VERIFIER}/root_of_trust/${root_aid}" \
-    -H 'Content-Type: application/json' \
-    -d "{\"vlei\": \"$(sed 's/"/\\"/g' "${OUT}/le.cesr" | tr -d '\n')\", \"oobi\": \"${oobi}\"}")"
+  code="$(python - "$root_aid" "$oobi" "${WORK}/root.kel" "${VERIFIER}" \
+          "${WORK}/root_of_trust.out" <<'PY'
+import json, sys, urllib.error, urllib.request
+
+aid, oobi, kel_path, verifier, out_path = sys.argv[1:6]
+body = json.dumps({"vlei": open(kel_path, encoding="utf-8").read(), "oobi": oobi}).encode()
+request = urllib.request.Request(
+    f"{verifier}/root_of_trust/{aid}", data=body,
+    headers={"Content-Type": "application/json"}, method="POST",
+)
+try:
+    with urllib.request.urlopen(request) as response:
+        status, payload = response.status, response.read()
+except urllib.error.HTTPError as err:
+    status, payload = err.code, err.read()
+open(out_path, "wb").write(payload)
+print(status)
+PY
+)"
 
   case "$code" in
     200|201|202) ok "root of trust installed: ${root_aid} (HTTP ${code})" ;;
@@ -321,43 +463,58 @@ install_root() {
 # ---------------------------------------------------------------------------------------------
 # Acceptance checks — these are the deliverable, not decoration
 # ---------------------------------------------------------------------------------------------
+# vlei-verifier requires the HTTP request itself to be signed, with SIGNATURE-INPUT, SIGNATURE,
+# SIGNIFY-RESOURCE and SIGNIFY-TIMESTAMP. That is the right requirement: without it, anyone holding
+# a copy of a credential could present it as their own. Those headers normally come from a Signify
+# client talking to a KERIA agent; this project has neither, so /keri-config/present.py signs
+# directly from the keystore. The verifier is reached by service name because keri-cli shares the
+# witness container's network namespace.
+VERIFIER_INTERNAL="http://vlei-verifier:7676"
+
+# The verifier must know the presenter's KEL before it can check a signed header, or it answers
+# "unknown ... used to sign header" — which reads like a signing bug rather than a missing
+# introduction.
+introduce_to_verifier() {
+  local keystore="$1" alias="$2"
+  local oobi; oobi="$(kli oobi generate --name "$keystore" --alias "$alias" --role witness \
+                      | head -1 | tr -d '\r\n')"
+  curl -sS -o /dev/null -X POST "${VERIFIER}/oobi" \
+    -H 'Content-Type: application/json' -d "{\"oobi\":\"${oobi}\"}"
+}
+
 present() {
-  local said="$1" file="$2"
-  # GLEIF-IT/vlei-verifier accepts a presentation as CESR at /presentations/{said}. Released
-  # versions have used both PUT and POST; try PUT first and fall back.
-  local code
-  code="$(curl -sS -o "${WORK}/present.out" -w '%{http_code}' \
-    -X PUT "${VERIFIER}/presentations/${said}" \
-    -H 'Content-Type: application/json+cesr' --data-binary "@${file}")"
-  if [[ "$code" == "404" || "$code" == "405" ]]; then
-    code="$(curl -sS -o "${WORK}/present.out" -w '%{http_code}' \
-      -X POST "${VERIFIER}/presentations/${said}" \
-      -H 'Content-Type: application/json+cesr' --data-binary "@${file}")"
-  fi
-  printf '%s' "$code"
+  local said="$1"
+  kli_py present ecr ecr "$said" /credentials/ecr.cesr "$VERIFIER_INTERNAL"
 }
 
 authorized() {
   local aid="$1"
-  curl -sS -o "${WORK}/authz.out" -w '%{http_code}' "${VERIFIER}/authorizations/${aid}"
+  kli_py authorizations ecr ecr "$aid" "$VERIFIER_INTERNAL"
+}
+
+# Run present.py inside the container, capturing its response body for the caller to report.
+kli_py() {
+  MSYS_NO_PATHCONV=1 $COMPOSE exec -T keri-cli \
+    python /keri-config/present.py "$@" 2> "${WORK}/verifier.out" | tr -d '\r\n'
 }
 
 verify_all() {
-  local ecr_said ecr_aid
+  local ecr_said ecr_aid code
   ecr_said="$(cat "${WORK}/ecr.said")"; ecr_aid="$(cat "${WORK}/ecr.aid")"
 
   step "Check 3 — presenting the ECR credential"
-  local code; code="$(present "$ecr_said" "${OUT}/ecr.cesr")"
+  introduce_to_verifier ecr ecr
+  code="$(present "$ecr_said")"
   [[ "$code" == "202" || "$code" == "200" ]] \
     && ok "presentation accepted (HTTP ${code})" \
-    || fail "presentation rejected (HTTP ${code}): $(cat "${WORK}/present.out")"
+    || fail "presentation rejected (HTTP ${code}): $(cat "${WORK}/verifier.out")"
 
   step "Check 4 — the holder is authorized"
   sleep 2
   code="$(authorized "$ecr_aid")"
   [[ "$code" == "200" ]] \
-    && ok "authorized (HTTP 200): $(cat "${WORK}/authz.out")" \
-    || fail "expected 200, got ${code}: $(cat "${WORK}/authz.out")"
+    && ok "authorized (HTTP 200): $(cat "${WORK}/verifier.out")" \
+    || fail "expected 200, got ${code}: $(cat "${WORK}/verifier.out")"
 
   step "Check 5 — revoking the ECR credential"
   kli vc revoke --name le --alias le --registry-name leRegistry --said "$ecr_said" \
@@ -366,15 +523,15 @@ verify_all() {
   ok "revoked in the LE's TEL"
 
   step "Check 6 — the holder is no longer authorized"
-  present "$ecr_said" "${OUT}/ecr.cesr" >/dev/null || true
+  present "$ecr_said" >/dev/null || true
   sleep 2
   code="$(authorized "$ecr_aid")"
-  if [[ "$code" == "200" ]] && grep -qi '"\?revoked"\?' "${WORK}/authz.out"; then
-    ok "reported revoked: $(cat "${WORK}/authz.out")"
+  if [[ "$code" == "200" ]] && grep -qi '"\?revoked"\?' "${WORK}/verifier.out"; then
+    ok "reported revoked: $(cat "${WORK}/verifier.out")"
   elif [[ "$code" != "200" ]]; then
     ok "no longer authorized (HTTP ${code})"
   else
-    fail "still authorized after revocation — this check must fail loudly: $(cat "${WORK}/authz.out")"
+    fail "still authorized after revocation — this check must fail loudly: $(cat "${WORK}/verifier.out")"
   fi
 }
 
