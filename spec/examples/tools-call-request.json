@@ -1,0 +1,23 @@
+{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "method": "tools/call",
+  "params": {
+    "name": "register_member",
+    "arguments": {
+      "name": "Chen Wei-Ting",
+      "email": "weiting.chen@example.org.tw"
+    },
+    "_meta": {
+      "org.gleif.vlei/credential": "-FABEDq8WnPrK3xLm5ZvTcYbJi1RoUa9HgNsEf7QdMwXy2Vt0AAAAAAAAAAAAAAAAAAAAAAAEDq8WnPrK3xLm5ZvTcYbJi1RoUa9HgNsEf7QdMwXy2Vt-AABAABt4KmZqXwR9nLpYcVf2TdJoGh6EuSiQ3rXnMyVpAk5sLvKq3XmR8tYb1NcWzJf6PdHoGa...TRUNCATED-CESR-ACDC-ECR-CREDENTIAL...",
+      "org.gleif.vlei/delegatedAid": "EFn3RtYqXmLdW5oJbP2TvNcUiSpRyEg7ZhKa4QsMxVwB",
+      "org.gleif.vlei/signature": {
+        "aid": "EFn3RtYqXmLdW5oJbP2TvNcUiSpRyEg7ZhKa4QsMxVwB",
+        "ts": "2026-09-23T04:12:47Z",
+        "digest": "9pQzR4mKtXsLb2NcWvJf7PdHoGa6EuTiQ5rXnMyVpBk",
+        "sig": "0BDwS8nUrYt3Kl0MqXoZe5GcHiAb2VpFj7RdNsOyUzWgEmC9tLvQ4xAkIhBfDuSoZrYnMeG6pKcX3UwOdVjTqSzF",
+        "alg": "Ed25519"
+      }
+    }
+  }
+}

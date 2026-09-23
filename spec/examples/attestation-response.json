@@ -1,0 +1,24 @@
+{
+  "jsonrpc": "2.0",
+  "id": 12,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Filing status for LEI 984500ABCDEF12345678, period 2026Q2: ACCEPTED on 2026-07-14."
+      }
+    ],
+    "isError": false,
+    "_meta": {
+      "org.gleif.vlei/attestation": {
+        "verifierAid": "EGw2LmTnXqYr8Kd5PcVbJi3RoUa1HsNfEq7ZdMxWy4Vt",
+        "subjectAid": "EFn3RtYqXmLdW5oJbP2TvNcUiSpRyEg7ZhKa4QsMxVwB",
+        "lei": "984500ABCDEF12345678",
+        "role": "regulatory-filing",
+        "verifiedAt": "2026-09-23T04:12:48Z",
+        "credentialSaid": "EDq8WnPrK3xLm5ZvTcYbJi1RoUa9HgNsEf7QdMwXy2Vt",
+        "sig": "0BEqT9pVsZu4Lm1NrYoAf6HdIjBc3WqGk8SeOtPzV0XhFnD1uMwR5yBlJiCgEvTpArZoNfH7qLdY4VxPeWkUrTaG"
+      }
+    }
+  }
+}

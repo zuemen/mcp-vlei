@@ -1,0 +1,61 @@
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "result": {
+    "tools": [
+      {
+        "name": "list_events",
+        "title": "List public events",
+        "description": "List the association's upcoming public events. No credential required.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "limit": { "type": "integer", "minimum": 1, "maximum": 100 }
+          }
+        }
+      },
+      {
+        "name": "register_member",
+        "title": "Register a member",
+        "description": "Register a new member of the association. Requires an ECR credential carrying the member-registration role.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string" },
+            "email": { "type": "string", "format": "email" }
+          },
+          "required": ["name", "email"]
+        },
+        "_meta": {
+          "org.gleif.vlei/requires": {
+            "credential": "ECR",
+            "role": "member-registration"
+          }
+        }
+      },
+      {
+        "name": "submit_filing",
+        "title": "Submit a regulatory filing",
+        "description": "Submit a periodic regulatory filing on behalf of the legal entity.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "form": { "type": "string" },
+            "period": { "type": "string" },
+            "payload": { "type": "object" }
+          },
+          "required": ["form", "period", "payload"]
+        },
+        "_meta": {
+          "org.gleif.vlei/requires": {
+            "credential": "ECR",
+            "role": "regulatory-filing",
+            "scope": {
+              "maxAmount": 1000000
+            }
+          }
+        }
+      }
+    ]
+  }
+}
