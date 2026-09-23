@@ -53,13 +53,18 @@ policy permits continuing.
 
 **Input:** the LE credential from Stage 1, `acceptedRoots`.
 
-**Checks**, in this order, because the earlier ones make the later ones meaningful:
-1. Chain validates: ACDC schema, issuer linkage, KEL of each AID in the chain.
-2. The chain terminates at an AID in `acceptedRoots` → otherwise `unknown_root`.
-3. No credential in the chain is revoked → otherwise `revoked`.
-4. If the discover result carried a signature, it verifies under the server's AID and is fresh.
+**Checks**, in this order, because each one makes the next meaningful:
+1. **Recompute the SAID** of the credential and confirm it matches the one presented → otherwise
+   `chain_invalid`. Nothing below means anything until the document is the document it claims to be.
+2. **Verify the issuer's signature** over the credential → otherwise `chain_invalid`.
+3. **Walk the chain** along the `e` edges: ECR → LE → QVI → root, validating each ACDC's schema and
+   each issuer's KEL → otherwise `chain_invalid`.
+4. **Check revocation** for every credential in the chain, in the issuer's TEL → otherwise
+   `revoked`.
+5. **Confirm the terminating root is in `acceptedRoots`** → otherwise `unknown_root`.
+6. If the discover result carried a signature, verify it under the server's AID and check freshness.
 
-**Pass condition:** all four.
+**Pass condition:** all six.
 
 **On failure:** **stop.** Report the failure layer by name. Do not call any tool on this server,
 including public ones. An organization that cannot prove it is who it claims is not one to send a
@@ -161,12 +166,31 @@ that party's verification, not one you performed.
 
 ## Stage map
 
+```mermaid
+flowchart TD
+    S0["Stage 0<br/>load ECR, delegated AID key,<br/>accepted roots"]
+    S1["Stage 1<br/>server/discover<br/>or /.well-known/vlei"]
+    S2{"Stage 2<br/>verify server LE<br/>SAID → signature → chain<br/>→ revocation → root"}
+    S3["Stage 3<br/>tools/list<br/>read org.gleif.vlei/requires"]
+    S4{"Stage 4<br/>does my role and scope<br/>cover this tool?"}
+    S5["Stage 5<br/>digest → sign<br/>method + ts + digest<br/>→ tools/call"]
+    S6{"Stage 6<br/>isError?"}
+    S7["Stage 7<br/>attestation present:<br/>verify attester first"]
+    STOP["STOP<br/>report the failure layer"]
+    EXPLAIN["DO NOT CALL<br/>explain the role or scope needed"]
+    DONE["Result accepted<br/>record LEI, role, delegated AID, SAID"]
+
+    S0 --> S1 --> S2
+    S2 -->|"pass"| S3
+    S2 -->|"chain_invalid / revoked / unknown_root"| STOP
+    S3 --> S4
+    S4 -->|"covered"| S5
+    S4 -->|"not covered"| EXPLAIN
+    S5 --> S6
+    S6 -->|"no"| S7 --> DONE
+    S6 -->|"stale_signature"| S5
+    S6 -->|"any other layer"| STOP
 ```
-0  load credentials ──▶ 1  discover ──▶ 2  verify server LE ──▶ 3  tools/list
-                                              │ fail: STOP
-                                              ▼
-                        6  handle response ◀── 5  sign & call ◀── 4  entitlement check
-                                │                                      │ fail: DO NOT CALL
-                                ▼
-                        7  attestation (if present)
-```
+
+The single loop back from stage 6 to stage 5 is the only retry in the whole procedure. Every other
+failure is a state of the world that a retry cannot change.

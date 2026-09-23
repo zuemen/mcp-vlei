@@ -33,9 +33,13 @@ services:
       - VLEI_VERIFIER_URL=http://vlei-verifier:7676
       - VLEI_GATEWAY_AID=${VLEI_GATEWAY_AID:-}
       - VLEI_GATEWAY_KEYS=/app/examples/my-agent/keys
+      - VLEI_AUDIT_LOG=/audit/decisions.jsonl
     volumes:
       - ../../credentials:/app/credentials:ro
       - ../../examples/my-agent/keys:/app/examples/my-agent/keys:ro
+      # One JSON object per decision, allowed and denied alike. Bind-mounted so the log survives
+      # the container and can be read during the demo.
+      - ./audit:/audit
     expose:
       - "9000"
     networks:

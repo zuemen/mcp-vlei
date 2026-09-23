@@ -71,6 +71,13 @@ export interface VleiIdentityCapability {
   /** Signature suites this party accepts. Defaults to ["Ed25519"] when omitted. */
   signatureAlgs?: VleiSignatureAlg[];
 
+  /**
+   * How long, in milliseconds, a counterparty SHOULD cache a verification result for this party.
+   * A deployment that revokes frequently states a short value here rather than hoping clients
+   * guessed one; `0` means do not cache, at the cost of a round trip per call.
+   */
+  ttlMs?: number;
+
   /** Where this party publishes its credential for passive verification — mode (a) of SPEC.md. */
   discovery?: {
     /** Absolute URL, conventionally `https://<host>/.well-known/vlei`. */

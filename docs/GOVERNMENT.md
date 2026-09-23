@@ -116,6 +116,57 @@ something real, and nothing in a later stage is required to make an earlier one 
 - **Effect:** "which organization did this, under whose authority, with what mandate" becomes
   answerable from the record alone, after the fact, without asking the counterparty.
 
+### The path, in one picture
+
+```mermaid
+flowchart TD
+    S0["Stage 0 · Legal / administrative office<br/>Obtain the LE credential through a QVI<br/>Business unit defines its ECR role vocabulary"]
+    S1["Stage 1 · Service operator<br/>Publish the LE credential at a fixed public location"]
+    S2["Stage 2 · Business unit<br/>Each tool declares the role and limits it requires"]
+    S3["Stage 3 · Infrastructure<br/>Gateway verifies and passes LEI, role and holder downstream<br/><b>Existing systems unchanged</b>"]
+    S4["Stage 4 · Pairs of institutions<br/>Confirmation requests become signed attestations"]
+    S5["Stage 5 · Records / audit<br/>Store LEI, role, delegated AID, credential SAID"]
+
+    G1["Counterparties can verify who operates the service,<br/>independently, before making contact"]
+    G2["A well-behaved agent knows before calling<br/>whether it is entitled"]
+    G3["Adoption is a configuration change,<br/>not a rewrite"]
+    G4["Correspondence that took days takes seconds"]
+    G5["'Who did this, under whose authority'<br/>is answerable from the record alone"]
+
+    S0 --> S1 --> S2 --> S3 --> S4 --> S5
+    S1 -.-> G1
+    S2 -.-> G2
+    S3 -.-> G3
+    S4 -.-> G4
+    S5 -.-> G5
+```
+
+Each stage is independently useful. An institution that stops after stage 2 keeps everything stages
+1 and 2 gave it, and stage 4 is the only one that needs a counterpart.
+
+### Mode (b) in sequence
+
+```mermaid
+sequenceDiagram
+    participant A as Institution A<br/>(its agent)
+    participant B as Institution B<br/>(MCP server + gateway)
+    participant V as B's verifier
+
+    Note over A,B: Before anything: A verifies B's LE credential<br/>from B's public location — mode (a)
+
+    A->>B: tools/call, presenting the ECR credential,<br/>delegated AID and signature
+    B->>V: verify chain, revocation, root
+    V-->>B: valid · LEI, role, holder
+    B->>B: perform the lookup
+    B-->>A: result + signed attestation<br/>(verifierAid, subjectAid, LEI, role, verifiedAt, sig)
+
+    A->>A: verify B's signature under B's<br/>already-established key state
+    Note over A: Accepted — and the record says<br/>whose attestation it rested on
+```
+
+The order matters. A verifies B under mode (a) **first**; an attestation from a party whose own
+identity has not been established is worth nothing, and the software refuses to accept one.
+
 ## 4. What an institution actually adopts
 
 | Recipient | What they adopt | Effort |
@@ -153,9 +204,12 @@ high-value action should require both.
   no LEI and will not acquire one. This addresses organization-to-organization interaction:
   institutions, companies, associations. It is not a citizen identity scheme, and should not be
   presented as one.
-- **There is a cost.** LEI registration and annual maintenance, credential issuance through a
-  Qualified vLEI Issuer, and the operational work of managing role vocabularies and revocation.
-  These are real and recurring.
+- **There is a cost, and it recurs.** LEI registration carries an annual fee, as does vLEI
+  credential issuance through a Qualified vLEI Issuer, on top of the operational work of managing
+  role vocabularies and revocation. One thing worth knowing before treating this as a blocker:
+  GLEIF's **Validation Agent** framework lets a financial institution perform the verification
+  inside the KYC process it already runs for a client, so an entity that banks somewhere may be able
+  to obtain its credentials through an existing relationship rather than as a separate procurement.
 - **The QVI ecosystem is still expanding.** The set of Qualified vLEI Issuers is growing but finite,
   and coverage varies by jurisdiction. This is a live constraint on how fast an institution can move
   past stage 0, and it should be checked before a timeline is committed to.
@@ -201,9 +255,10 @@ attestation；階段 5 稽核紀錄改記 LEI、角色、委任 AID、憑證識�
 或套件（改一個地方）；給業務單位的是 ECR 角色定義。沒有新協定要標準化，不必等 MCP 核心改版，
 也不必等別的機關先動——單獨導入仍然拿得到階段 1–3 與 5。
 
-**限制要講清楚。** 可驗證不等於可信賴，授權政策還是機關自己的事；LEI 只發給法人，不發給個人，
-這不是國民身分方案；有 LEI 註冊與憑證簽發的成本；QVI 生態仍在擴展，各法域覆蓋不一，排時程前
-要先確認；本案的示範用自架信任根——KERI、ACDC、驗證器、撤銷都是真的，只有根是我們自己的，
+**限制要講清楚。** 可驗證不等於可信賴，授權政策還是機關自己的事；LEI 只發給法人，不發給以
+私人身分行動的自然人，這不是國民身分方案；LEI 與 vLEI 都有年費——但 GLEIF 的 Validation Agent
+制度允許金融機構在既有 KYC 流程中協助客戶取得，有往來銀行的機構可能不必另外走採購；QVI 生態
+仍在擴展，各法域覆蓋不一，排時程前要先確認；本案的示範用自架信任根——KERI、ACDC、驗證器、撤銷都是真的，只有根是我們自己的，
 正式環境會是 GLEIF 的，所有展示場合都會標明；agent 委任的慣例尚未定案，本案用 ECR 持有人 KEL
 下的委任 AID，這是對既有機制的合理解讀而非已認可的模式，確認這一點正是本案要向 GLEIF 提出的
 請求之一。

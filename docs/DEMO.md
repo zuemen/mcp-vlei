@@ -233,9 +233,14 @@ Sixteen slides for thirteen minutes. Notes are what to say, not what is on the s
 ### 6 — Why now
 
 **Slide.** Autonomous execution × actions with legal effect × across organizations.
+NSA, May 2026: *MCP does not define how a session maps to a verifiable identity.*
 
 > "Any one of these alone is survivable. Together they are not: an agent acting without review, on
-> something that binds its organization, against a counterparty that has never met it."
+> something that binds its organization, against a counterparty that has never met it.
+>
+> The NSA's information sheet from May puts the same observation in one line: MCP does not define
+> how a session maps to a verifiable identity. Authentication is optional, and role permissions are
+> not part of the protocol."
 
 ---
 
@@ -393,13 +398,14 @@ yet settled.
 - **GLEIF** — ECR role vocabulary for agent contexts · confirm the delegation model · test credentials
 - **Government** — one small pilot, one procedure, stages 0 through 3
 
-> "To AAIF: this belongs in the Extensions Track. I would like it discussed, and I would like to be
-> told where it is wrong.
+> "To AAIF: this belongs in the Security Interest Group and in the ext-auth extensions discussion.
+> I would like it discussed, and I would like to be told where it is wrong.
 >
 > To GLEIF: three concrete things. An ECR role vocabulary for agent engagement contexts. A
-> confirmation of, or correction to, the delegated-AID model for agents — we chose a reading of the
-> existing mechanisms, and we would rather be corrected now than at deployment. And test
-> credentials against a real root, so the honesty statement on slide eleven can be retired.
+> confirmation of, or correction to, the delegated-AID model for agents, including whether it is
+> compatible with the Ecosystem Governance Framework — we chose a reading of the existing
+> mechanisms, and we would rather be corrected now than at deployment. And test credentials against
+> a real root, so the honesty statement on slide eleven can be retired.
 >
 > To the institutions here: one procedure, one counterpart, stages zero through three. Not a
 > programme. One correspondence procedure that currently takes days."
@@ -421,3 +427,77 @@ deploy/    gateway configuration — zero-code-change adoption
 
 > "Everything is in one repository, Apache licensed. The specification, the package, the skill, the
 > reference implementations, and the gateway configuration. Thank you — I have time for questions."
+
+---
+
+# Anticipated questions
+
+One paragraph each, rehearsed. The first three are likely from AAIF and the MCP implementers; the
+next two from the institutions; the last two from anyone who has been following the space.
+
+### "Why not mTLS, or DPoP?"
+
+> "Both are good at what they do, and neither answers this question. mTLS proves the holder of a
+> key is on the other end of a connection, and a certificate authority attests to a domain — it is
+> the same domain-control answer one layer down. DPoP binds a token to a key so a stolen token is
+> useless, which is a real improvement and still says nothing about who the holder is as a legal
+> person. Neither gives you an authority that can revoke a mandate, and neither gives a regulator a
+> statement it already recognizes. That is what vLEI adds, and it composes with both."
+
+### "Doesn't this tie MCP to GLEIF?"
+
+> "It should not, and the design does not require it. What the extension really specifies is a
+> credential-presentation frame: where a credential travels, how a request is bound to it, how a
+> tool declares what it needs, and how a failure names its layer. None of that is vLEI-specific.
+> vLEI is the first profile because it is the one that exists, is revocable, and is already
+> recognized by financial regulators. If the Extensions Track prefers a generic frame with vLEI as
+> one profile, I would support that, and I would rather have that conversation now than after
+> anyone has deployed."
+
+### "What about local developers?"
+
+> "Nothing changes for them. The extension is optional and additive — a server that does not
+> declare it behaves exactly as core MCP specifies, and a developer running a local server declares
+> nothing and notices nothing. You saw that in the second shot: an unmodified Claude Desktop
+> connected, listed tools, and used the public one. This matters for organizational calls across a
+> boundary, and it is silent everywhere else. A local filesystem server should never require an
+> LEI, and nothing here suggests it should."
+
+### "Who pays for the LEI?"
+
+> "The legal entity does — registration and annual maintenance, plus credential issuance through a
+> Qualified vLEI Issuer. I will not pretend that is nothing. Two things make it less than it first
+> appears. Many entities that would use this already hold an LEI for financial reporting. And
+> GLEIF's Validation Agent framework lets a financial institution do the verification inside the
+> KYC it already performs for a client, so an entity may be able to obtain credentials through an
+> existing banking relationship rather than as a separate procurement. For a citizen acting
+> personally there is no LEI and no cost, because this is not for them."
+
+### "Verifiable is not trustworthy."
+
+> "Agreed, and that is the right objection. A valid ECR proves an organization asserted a role for
+> a named person. It does not prove the request is sensible, correct, or authorized by anyone who
+> thought about it. What changes is that the question becomes answerable at all — today, a
+> regulator receiving an agent call has no way to ask it. Authorization policy remains yours. This
+> makes your policy enforceable and auditable; it does not write it for you, and it should not be
+> presented as if it did."
+
+### "Does the agent have an identity now?"
+
+> "No — and it does not need one. What an agent needs is a verifiable **delegation**. ECR
+> credentials are issued to natural persons; the schema requires a person's legal name, and no
+> registrar validates software. So the agent holds a delegated identifier under the credential
+> holder's key event log and presents *that person's* credential. The accountable party stays a
+> person. A useful consequence: there are two independent revocation switches. Revoke the
+> delegation and one agent stops. Revoke the credential and everything acting under it stops,
+> including the person."
+
+### "Aren't AP2 and TAP already doing agent identity?"
+
+> "They are solving adjacent problems, and I do not think this competes with either. Those efforts
+> concentrate on payment and transaction authorization — mandates for a payment, trust between
+> participants in a transfer. This is about the organizational identity of the caller at the
+> protocol layer, before any transaction exists, and specifically inside MCP, which none of them
+> addresses. If a mandate framework and this end up overlapping, the right outcome is that a
+> mandate becomes another thing carried in `_meta` alongside the credential. The structure here has
+> room for that, and I would rather it converge than duplicate."

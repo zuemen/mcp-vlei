@@ -60,7 +60,18 @@ def list_forms() -> list[dict[str, Any]]:
 
 @mcp.tool()
 def get_filing_status(lei: str, ctx: Any = None) -> dict[str, Any]:
-    """Return the filing status for a legal entity."""
+    """Return the filing status for a legal entity.
+
+    The `lei` argument is a request, not an authorization. It is honoured only when it matches the
+    LEI the gateway established for the caller — an entity may read its own filings and no one
+    else's. Without the verified header there would be nothing to compare it against, and this
+    tool would be an enumeration endpoint for every filing the regulator holds.
+    """
+    caller = _caller(ctx)
+    if lei != caller["lei"]:
+        raise PermissionError(
+            f"caller is {caller['lei']}; filings for {lei} are not theirs to read"
+        )
     return {"lei": lei, "filings": FILINGS.get(lei, [])}
 
 

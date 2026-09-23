@@ -16,7 +16,7 @@ them answers *"which legal entity is this?"*
 | Layer | What it proves | What it does not prove |
 |---|---|---|
 | TLS | Control of a DNS name | Who the operator is as a legal person |
-| OAuth `iss` | The identity of the authorization server; MUST be compared without normalization | Anything about the calling software's operator |
+| OAuth `iss` | That the authorization server is the expected one. The comparison is a MUST, and normalization is forbidden — no case folding, no omitting a default port, no adding or removing a trailing slash | Anything about the calling software's operator |
 | OAuth `client_id` (client-ID metadata documents, CIMD) | Control of the URL that serves the client metadata | That the URL's controller is an identifiable, accountable organization |
 | OAuth `sub` | The identity of the **human user** at that authorization server | Which agent inside the client software is acting, or under what mandate |
 | `clientInfo` / `serverInfo` | Nothing — it is self-asserted; the specification states it MUST NOT be used to change behavior or make security decisions | Everything |
@@ -40,55 +40,70 @@ notice:
 
 ## 2. The agent is absent from the protocol
 
-The normative schema (`schema.ts`, 2026-07-28, 3197 lines) contains **zero** whole-word occurrences
-of `agent`, `principal`, `delegation`, or `mandate`. The protocol models a *host*, a *client*, and a
+The normative schema (`schema/2026-07-28/schema.ts`, 3197 lines) contains **zero** whole-word
+occurrences of `agent`, `principal`, `delegation`, or `mandate`. The protocol models a *host*, a
+*client*, and a
 *server*. The entity that actually decides to invoke a tool — the agent — has no representation, and
 therefore no way to be named, delegated to, constrained, or revoked at the protocol layer.
 
 ## 3. The `Implementation` type has no `_meta`
 
 `Tool`, `Resource`, and `Prompt` all carry `_meta`, so out-of-band data can be attached to them
-through the standard extension mechanism. `Implementation` — the type that describes the two
-*parties* in `initialize` — does not. Consequently there is no schema-level location to attach a
-credential to a party, which is precisely where an organizational identity would belong. This is the
-narrow structural gap that motivates the extension in `spec/`.
+through the standard extension mechanism. `Implementation` — the type of `clientInfo` and
+`serverInfo`, which describes the two *parties* in `initialize` — does not. Consequently there is no
+schema-level location to attach a credential to a party, which is precisely where an organizational
+identity would belong. This is the narrow structural gap that motivates the extension in `spec/`.
 
 ## 4. The trust premise is the human in the loop
 
-MCP's security guidance leans on user consent and user review: the host surfaces the action, the
-human approves it. Under that premise, self-asserted metadata is harmless, because a human is the
-accountable party at the point of action. When an agent executes autonomously — scheduled, chained,
-or acting across organizational boundaries — the premise no longer holds, and the layer that was
-carrying accountability is simply not present.
+The premise is not implicit. It is stated in the warning box of the **Tools** chapter of the
+specification: there should always be a human in the loop with the ability to deny a tool
+invocation.
+
+Under that premise, self-asserted metadata is harmless, because a person is the accountable party
+at the point of action. When an agent executes autonomously — scheduled, chained, or acting across
+organizational boundaries — the premise does not hold, and the layer that was carrying
+accountability is simply not present.
 
 ## 5. A measurement at the protocol layer
 
 To test whether the gap is structural rather than a matter of implementation quality, we ran the
-official **Python SDK 2.2.0** with a server policy that granted a partner-tier quota when
-`clientInfo.name` contained `"Claude"`. This policy **deliberately violates the specification's
-SHOULD NOT**; the point of the experiment is not that the policy is unwise — that is already
-documented — but that the protocol layer offers no means to detect or prevent it.
+official **`mcp` Python SDK 2.2.0** over the **STDIO** transport, with a server policy of:
 
-The same client was run three times, changing only `client_info`:
+> if `clientInfo.name` contains `"Claude"`, grant the partner tier of 100 hours; otherwise grant 1
+> hour.
 
-| `clientInfo.name` | Quota granted |
-|---|---|
-| honest self-description | 1 hour |
-| `"Claude"` | 50 hours |
-| omitted | 1 hour |
+This policy **deliberately violates the specification's SHOULD NOT**. The point of the experiment is
+not that the policy is unwise — the specification already says so — but that the protocol layer
+offers no means to detect or prevent it.
+
+The same client binary was run three times. The only difference was the `client_info` argument:
+
+| Run | `client_info` | Approved |
+|---|---|---|
+| 1 | honest self-description | 1 hour |
+| 2 | impersonating Claude Desktop, including the description and URL | 50 hours |
+| 3 | omitted — the SDK fills in `mcp 0.1.0` automatically | 1 hour |
+
+Run 3 is worth noting on its own: when the field is omitted, the SDK supplies a default rather than
+leaving it empty, so "nothing was claimed" and "something was claimed" are indistinguishable at the
+receiving end.
 
 No layer of the stack observed a difference between the three runs, because there was no verifiable
-statement to compare against. A well-behaved server avoids this policy; a well-behaved server still
-has nothing to put in its place when the question is *"is this caller an accountable organization?"*
+statement to compare against. A well-behaved server avoids this policy. A well-behaved server still
+has nothing to put in its place when the question is *"is this caller an accountable
+organization?"*
 
 ## 6. External corroboration
 
-- **NSA, May 2026** — cybersecurity information sheet on MCP security, addressing deployment risks
-  arising from the same set of assumptions.
-- **MCP Security Interest Group, `server-identity` proposals** — every candidate published to date
-  roots trust in a domain name, DNS, or a registry operator. These are coherent answers to
-  *"which deployment is this?"*; none of them is an answer to *"which legal entity is this?"*, and
-  none of them is revocable by an authority that the counterparty's regulator also recognizes.
+- **NSA, May 2026** — cybersecurity information sheet on MCP security. It notes that MCP does not
+  define how a session maps to a verifiable identity, that authentication is optional, and that
+  role-based permissions are not part of the protocol.
+- **MCP Security Interest Group, `server-identity` proposals** — SEP-1289, issue #1959, issue #3354.
+  Every candidate published to date roots trust in a domain name, DNS, or a registry operator. These
+  are coherent answers to *"which deployment is this?"*; none is an answer to *"which legal entity
+  is this?"*, and none is revocable by an authority that the counterparty's regulator also
+  recognizes.
 
 ## 7. What follows
 

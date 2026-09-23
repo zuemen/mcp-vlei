@@ -194,6 +194,35 @@ async def test_scope_exceeded_is_refused(le_credential, credential_file, signer)
 
 
 # --------------------------------------------------------------------------------------------- #
+# 8. Unknown root — the chain validates, but not to a root we accept
+# --------------------------------------------------------------------------------------------- #
+
+async def test_unknown_root_is_refused(le_credential, credential_file, signer):
+    """A perfectly valid chain to the wrong root is still refused.
+
+    This is the layer most likely to be mistaken for a bug in the field, which is why it is named
+    separately: nothing is wrong with the credential, and nothing is wrong with the server. Two
+    organizations disagree about whom they trust, and only they can resolve it.
+    """
+    verifier = StubVerifier(
+        role="member-registration",
+        root_aid="EOtherRootAidThatWeDoNotAcceptXXXXXXXXXXXXXX",
+    )
+    ext = build(le_credential, verifier)
+    args = {"name": "A", "email": "a@example.org"}
+    ctx = Ctx(
+        "register_member",
+        args,
+        signed_meta(signer, credential_file, "register_member", args),
+        requires=REQUIRES_REGISTRATION,
+        verkey=signer.verkey,
+    )
+    result = await ext.intercept_tool_call(ctx, call_next)
+
+    assert layer_of(result) == "unknown_root"
+
+
+# --------------------------------------------------------------------------------------------- #
 # Capability declaration and whoami
 # --------------------------------------------------------------------------------------------- #
 

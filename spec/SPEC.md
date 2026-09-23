@@ -86,6 +86,32 @@ An attestation is a statement *about* a verification, not a substitute for the c
 MUST validate the attesting party's own identity under mode (a) before accepting any attestation
 from it.
 
+### Delegation: how an agent presents a person's credential
+
+ECR credentials are issued to **natural persons** — the WebOfTrust/vLEI ECR schema makes
+`personLegalName` a required attribute. There is no such thing as an ECR issued to a piece of
+software, and this extension does not invent one.
+
+An agent therefore does not hold its own credential. It holds a **delegated AID**, created under the
+ECR holder's key event log, and uses it to present *the holder's* ECR. The credential says who the
+person is and what role the entity granted them; the delegated AID says which agent the person
+authorized to act within it; the signature ties a specific request to that agent.
+
+This produces **two independent revocation switches**, and the distinction matters operationally:
+
+| Revoke | Effect |
+|---|---|
+| The ECR credential | The person's authority is withdrawn. Every agent acting under it stops, and so does the person. |
+| The delegation | That one agent stops. The person's credential and every other delegation are untouched. |
+
+An institution that discovers a misbehaving agent does not have to strip a member of staff of their
+role to stop it. An institution whose member of staff changes jobs revokes one credential and every
+agent under it stops at once.
+
+`delegatedAid` is nonetheless **optional** in the schema. A deployment that cannot support delegated
+inception may sign directly with the ECR holder's AID; it keeps every other property and loses only
+the second switch.
+
 ### Request signing: single-pass design
 
 A signature is computed over exactly three pieces of data, joined by newlines:
@@ -162,11 +188,11 @@ The well-known route additionally lets a verifier check a server *before* connec
 Excluding all of `_meta` rather than just the signature key keeps canonicalization simple and makes
 the rule trivially auditable.
 
-**Why a delegated AID for the agent.** A delegated AID created under the ECR holder's KEL gives the
-agent a distinct, revocable identifier while keeping the human holder as the delegating authority.
-Revoking the delegation stops the agent without touching the person's credential. If a deployment
-cannot support delegation, it MAY sign directly with the ECR holder's AID; the schema marks
-`delegatedAid` optional for exactly this reason.
+**Why a delegated AID rather than a credential for the agent.** The alternative — mint a credential
+naming the agent — would require a credential type that does not exist and an issuance decision
+nobody is positioned to make: no registrar validates software. Delegation reuses a mechanism KERI
+already has, keeps the accountable party a person, and yields the two revocation switches described
+above. See *Delegation* in the Specification.
 
 **Why single-pass.** Challenge/response would be stronger against replay but requires the verifier to
 hold state across two messages, which rules out stateless gateway deployment — the deployment shape

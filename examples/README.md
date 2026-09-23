@@ -41,6 +41,34 @@ Test 5 is the backward-compatibility section of the specification made executabl
 host is not broken by the extension, is not locked out of the server, and is not silently granted
 anything either.
 
+## Reproducing test 5 with the real Claude Desktop
+
+Test 5 uses a plain MCP client to stand in for an unmodified host. To show it with the actual
+application — which is what the recording does, because a real product is more convincing than a
+test double — add the server to Claude Desktop's configuration:
+
+```jsonc
+// %APPDATA%\Claude\claude_desktop_config.json   (macOS: ~/Library/Application Support/Claude/)
+{
+  "mcpServers": {
+    "association": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "http://localhost:8080/mcp"]
+    }
+  }
+}
+```
+
+Restart Claude Desktop, then in a conversation:
+
+1. Ask it to list the association's events → `list_events` succeeds.
+2. Ask it to register a member → `register_member` is refused, and the refusal names its layer:
+   `missing_credential`.
+
+Watch the dashboard while you do it. The connection appears marked **unverified**, the public call
+is marked **public**, and the protected one is **refused** — three distinct states, which is the
+point. Claude Desktop has no vLEI support, was not modified, and was neither broken nor locked out.
+
 ## Running it against the government gateway instead
 
 ```bash

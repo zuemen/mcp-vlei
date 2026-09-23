@@ -100,8 +100,9 @@ class VleiClient:
         self.accepted_roots = list(accepted_roots or [])
         #: Also send the vLEI ``_meta`` values as ``x-vlei-*`` request headers.
         #:
-        #: Needed when an HTTP-level gateway does the verifying: such a gateway sees headers, and
-        #: the credential and signature live in the JSON-RPC body. This does not weaken anything —
+        #: A fallback for deployments whose gateway cannot forward the request body. agentgateway
+        #: can (``extAuthz.includeRequestBody``), so this is off by default and the body is
+        #: preferred wherever one is available. This does not weaken anything —
         #: the signature's digest still covers the canonicalized ``params``, so a mirrored header
         #: that disagrees with the body fails on the digest rather than being believed.
         self.mirror_headers = mirror_headers
@@ -130,6 +131,12 @@ class VleiClient:
         self.server_capability = (
             (discover.get("serverInfo", {}).get("extensions") or {}).get(EXTENSION_ID)
         )
+
+        # The server may state how long its counterparties should cache verification results. A
+        # server that revokes often says so here rather than hoping clients guessed a short TTL.
+        ttl_ms = (self.server_capability or {}).get("ttlMs")
+        if ttl_ms is not None and self._verifier is not None:
+            self._verifier.ttl_ms = int(ttl_ms)
 
         credential = (discover.get("_meta") or {}).get(META_CREDENTIAL)
         source = "discover"

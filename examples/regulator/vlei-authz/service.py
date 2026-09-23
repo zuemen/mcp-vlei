@@ -7,20 +7,14 @@ Two deployments, one implementation. The in-process extension and this service c
 ``mcp_vlei`` code, so an institution's choice between "embed the package" and "put a gateway in
 front" is a deployment decision, not a difference in what gets checked.
 
-## One thing that had to be designed around
+The credential and signature arrive in the JSON-RPC body's ``_meta``. agentgateway forwards the body
+when ``extAuthz.includeRequestBody`` is set, and the gateway configuration raises
+``maxRequestBytes`` to 65536 because a chained CESR ACDC exceeds the 8192-byte default.
 
-agentgateway's HTTP external authorization forwards request **headers** to the authorizer; the
-documented options are ``protocol.includeRequestHeaders`` and ``protocol.http.includeResponseHeaders``.
-There is no documented request-body forwarding for the HTTP protocol, and the vLEI credential and
-signature live in the JSON-RPC body's ``_meta``.
-
-So for gateway deployments the client mirrors the same three ``_meta`` values into ``x-vlei-*``
-request headers (``VleiClient(..., mirror_headers=True)``). This does not weaken anything: the
-signature's digest still covers the canonicalized ``params``, so a mirrored header that disagrees
-with the body fails on the digest. It is the same data on a transport the gateway can see.
-
-If a future agentgateway release forwards the body, :func:`_extract` already prefers the body when
-one is present, and the header mirror becomes redundant rather than wrong.
+:func:`_extract` also accepts the same values as ``x-vlei-*`` headers, for deployments whose gateway
+cannot forward a body. That path is not a weakening: the signature's digest covers the canonicalized
+``params``, so a header that disagrees with the body fails on ``digest_mismatch`` rather than being
+believed. The body is preferred whenever one is present.
 """
 
 from __future__ import annotations
@@ -64,6 +58,35 @@ GATEWAY_SIGNER = (
 )
 
 
+#: Audit log, one JSON object per line. Every decision this service makes lands here, allowed and
+#: denied alike — a log that records only refusals cannot answer "who filed this?", which is the
+#: question stage 5 of docs/GOVERNMENT.md exists to make answerable.
+AUDIT_LOG = Path(os.environ.get("VLEI_AUDIT_LOG", "/var/log/vlei-authz/decisions.jsonl"))
+
+
+def audit(**fields: Any) -> None:
+    from datetime import datetime, timezone
+
+    fields["at"] = datetime.now(timezone.utc).isoformat()
+    try:
+        AUDIT_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with AUDIT_LOG.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(fields, ensure_ascii=False) + "\n")
+    except OSError:
+        # An unwritable audit log must not take the gateway down, but it must be visible.
+        print("AUDIT", json.dumps(fields, ensure_ascii=False), flush=True)
+
+
+def _is_tool_call(body: bytes) -> bool:
+    """Only ``tools/call`` carries a credential. Everything else passes through untouched."""
+    if not body:
+        return True  # cannot tell; fall through to the header path and decide there
+    try:
+        return (json.loads(body) or {}).get("method") == "tools/call"
+    except json.JSONDecodeError:
+        return False
+
+
 def _extract(request: Request, body: bytes) -> tuple[str, dict[str, Any], dict[str, Any]]:
     """Return ``(tool_name, params, vlei_meta)`` from the body if present, else from headers."""
     if body:
@@ -90,12 +113,13 @@ def _extract(request: Request, body: bytes) -> tuple[str, dict[str, Any], dict[s
     return h.get("x-vlei-tool", ""), {}, meta
 
 
-def _deny(exc: VleiError) -> Response:
+def _deny(exc: VleiError, tool: str = "") -> Response:
     """403 with the layer named.
 
     The layer is in a header as well as the body so it survives a gateway that discards the body
     on a denial — without it the agent sees "forbidden" and the skill has nothing to act on.
     """
+    audit(decision="deny", tool=tool, layer=exc.layer.value, message=exc.message, aid=exc.aid)
     return JSONResponse(
         status_code=403,
         content={"layer": exc.layer.value, "message": exc.message},
@@ -103,15 +127,23 @@ def _deny(exc: VleiError) -> Response:
     )
 
 
-@app.post("/authz")
-@app.get("/authz")
+@app.post("/auth/mcp")
+@app.get("/auth/mcp")
 async def authorize(request: Request) -> Response:
     body = await request.body()
+
+    # Anything that is not a tools/call carries no credential and asserts nothing. initialize,
+    # tools/list, ping and the rest pass through: refusing them would break discovery for every
+    # client, including the ones that are about to present a perfectly good credential.
+    if not _is_tool_call(body):
+        return Response(status_code=200)
+
     tool, params, meta = _extract(request, body)
 
     requirement = REQUIREMENTS.get(tool)
     if not requirement:
-        return Response(status_code=200)  # public tool, or not a tool call
+        audit(decision="allow", tool=tool, note="public tool")
+        return Response(status_code=200)
 
     credential = meta.get("org.gleif.vlei/credential")
     signature = meta.get("org.gleif.vlei/signature")
@@ -119,7 +151,8 @@ async def authorize(request: Request) -> Response:
         return _deny(
             MissingCredential(
                 f"{tool} requires an ECR credential and a signed request; none was presented"
-            )
+            ),
+            tool,
         )
 
     delegated = meta.get("org.gleif.vlei/delegatedAid") or signature.get("aid", "")
@@ -142,10 +175,19 @@ async def authorize(request: Request) -> Response:
 
             raise ScopeExceeded(reason, aid=result.aid)
     except VleiError as exc:
-        return _deny(exc)
+        return _deny(exc, tool)
 
     # Allow, and hand the downstream system the established facts. The filing server reads these
     # four headers and contains no other identity code.
+    audit(
+        decision="allow",
+        tool=tool,
+        lei=result.lei,
+        role=result.role,
+        holderAid=result.holder_aid,
+        delegateAid=result.aid if result.aid != result.holder_aid else None,
+        credentialSaid=result.credential_said,
+    )
     return Response(status_code=200, headers=result.to_headers())
 
 

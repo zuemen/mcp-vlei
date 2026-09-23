@@ -1,29 +1,31 @@
 ---
 name: vlei-identity
-description: Use when connecting to or calling an MCP server that declares the org.gleif.vlei/identity extension, or when a tool's _meta contains org.gleif.vlei/requires. Tells the model which credential to present at each stage, what to verify before trusting a server, how to decide in advance whether it is entitled to call a tool, and how to respond to each named verification failure layer.
+description: Use when an MCP server declares the org.gleif.vlei/identity extension or a tool's _meta contains org.gleif.vlei/requires — tells the model which credential to present, what to verify before trusting a server, whether it is entitled to call a tool, and how to respond to each named failure layer.
 ---
 
 # vLEI Identity for MCP
 
 This skill teaches you the **rules** of the `org.gleif.vlei/identity` extension. It does not perform
-cryptography. Signing, chain validation, revocation checking, and canonicalization are done by the
-`mcp_vlei` package. Your job is to know what must be true at each stage, to refuse to proceed when it
-is not, and to explain accurately to the user why.
+cryptography — signing, chain validation, revocation checking and canonicalization are done by the
+`mcp_vlei` package. Your job is to know what must be true at each stage, to refuse to proceed when
+it is not, and to explain accurately why.
 
-The full normative text is `spec/SPEC.md`. The staged procedure is `workflow.md` in this directory —
-follow it for any session with a vLEI-aware server.
+Normative text: `spec/SPEC.md`. Staged procedure: `workflow.md` in this directory.
 
-## Background in one paragraph
+**Background in one paragraph.** Every layer MCP verifies proves control of a domain (TLS, OAuth
+`iss`, OAuth `client_id`) or the identity of a human user (OAuth `sub`). None proves which **legal
+entity** is calling, and `clientInfo` is self-asserted and must never be used as a basis for trust.
+This extension adds two things without changing core MCP: a server presents a **Legal Entity (LE)**
+credential so you can verify who operates it, and you present an **Engagement Context Role (ECR)**
+credential so the server can verify which entity you act for and in what role. OAuth still verifies
+the user; vLEI verifies the organization. Neither replaces the other.
 
-Every layer MCP verifies proves control of a domain (TLS, OAuth `iss`, OAuth `client_id`) or the
-identity of a human user (OAuth `sub`). None of them proves which **legal entity** is calling, and
-`clientInfo` is self-asserted and must never be used as a basis for trust. This extension adds two
-things on top, without changing core MCP: a server presents a **Legal Entity (LE)** credential so you
-can verify who operates it, and you present an **Engagement Context Role (ECR)** credential so the
-server can verify which entity you act for and in what role. OAuth still verifies the user; vLEI
-verifies the organization. Neither replaces the other.
+**One structural fact that shapes everything below.** ECR credentials are issued to natural persons
+— the schema requires `personLegalName`. You do not have a credential of your own. You hold a
+delegated AID under the credential holder's key event log, and you present *their* ECR. You are
+acting on a person's authority, and saying so accurately is part of the job.
 
-## 1. Know when a credential is needed
+## When to use
 
 A tool requires a credential if and only if its `_meta` contains `org.gleif.vlei/requires`. That
 object names a credential type (`"ECR"`), optionally a `role`, and optionally a `scope`.
@@ -32,79 +34,79 @@ Tools without that key are public. Do not present credentials to servers that do
 presenting an ECR discloses the entity, the role, and the holder's AID.
 
 If the server returns JSON-RPC error `-32021` with `data.requiredCapabilities` containing
-`"org.gleif.vlei/identity"`, the problem is that the extension was not declared at `initialize` — not
-that a credential was rejected. Say so precisely; it is a configuration problem, not an authorization
-one.
+`"org.gleif.vlei/identity"`, the extension was not declared at `initialize`. That is a configuration
+problem, not a rejected credential. Say so precisely, and reconnect with the capability declared.
 
-## 2. Before connecting: verify the server
+## Before connecting
 
 Obtain the server's LE credential from `server/discover`'s `_meta`, or from the `/.well-known/vlei`
-URL given in its declared `discovery.wellKnown`. The package validates the chain, the revocation
-status, and that the chain terminates at an accepted root.
+URL given in its declared `discovery.wellKnown`. The package validates the SAID, the signature, the
+chain to a root, the revocation status, and whether that root is in your accepted list.
 
 - **Verification passes** → continue.
 - **Verification fails** → tell the user the **failure layer by name** and **stop**. Do not call any
-  tool on a server whose identity failed verification, including public tools.
+  tool on that server, including public ones. An organization that cannot prove it is who it claims
+  is not one to send a member's email address to.
 - **The server presents nothing** → it is unverified, not untrusted. Report that it presented no
   organizational identity and follow the configured policy. Never describe an unverified server as
   verified.
 
-## 3. Before calling: check your own entitlement
+## Before calling a tool
 
-Read `org.gleif.vlei/requires` on the tool you intend to use and compare it against your own
-credential:
+Read `org.gleif.vlei/requires` on the tool you intend to use and compare it against the credential
+you hold:
 
-- Does your ECR's role satisfy the tool's `role`?
-- Does your credential's scope cover the tool's declared `scope` for these arguments?
+- Does the ECR's role satisfy the tool's `role`?
+- Does the credential's scope cover the tool's declared `scope` for these arguments?
 
-**If it does not, do not make the call.** Tell the user which role or scope is required, which one you
-hold, and who in their organization issues it. A refusal you can explain in advance is more useful
-than a server-side rejection, and a call you know will fail wastes the counterparty's verification
-work and appears in their audit log as a failed attempt.
+**If it does not, do not make the call.** Tell the user which role or scope is required, which one
+you hold, and that a new ECR must be issued by their legal entity. A refusal you can explain in
+advance is more useful than a server-side rejection, it saves the counterparty the verification
+work, and it keeps a foreseeable failure out of their audit log.
 
-## 4. Responding to each failure layer
+## When a call is rejected
 
 A rejection arrives as a tool result with `isError: true` whose text names the layer. Each layer has
-one correct response:
+one correct response.
 
 | Layer | What it means | What you do |
 |---|---|---|
-| `revoked` | A credential in the chain has been revoked | Stop. Tell the user the credential was revoked and that a new one must be issued by their entity. Do not retry. |
-| `role_mismatch` | Your ECR role does not satisfy the tool's requirement | Stop. Name the required role and the role you hold. Do not retry. |
-| `scope_exceeded` | The request exceeds the tool's declared scope | Stop. State the limit and the requested value. You may offer to retry with arguments inside the limit — ask first. |
-| `stale_signature` | Timestamp outside the freshness window, or a replay | Re-sign and retry **once**. If it fails again, report a clock-skew or replay-cache problem and stop. |
-| `digest_mismatch` | Arguments do not match the signed digest | Stop and report it. This means the request was altered after signing — treat it as a integrity problem, not a retryable error. |
-| `invalid_signature` | Signature does not verify under the AID's key state | Stop. Report a key-state or configuration problem. Do not retry. |
-| `chain_invalid` | Credential chain does not validate | Stop. Report it as a credential-configuration problem. Do not retry. |
-| `unknown_root` | Chain terminates at a root the counterparty does not accept | Stop. Report which root you chain to and that the counterparty does not accept it. This is a trust-configuration mismatch between two organizations, and only they can resolve it. |
+| `revoked` | A credential in the chain has been revoked | Stop. Tell the user a new credential must be issued by their entity. **Do not retry with a different credential.** |
+| `role_mismatch` | The ECR role does not satisfy the tool's requirement | Stop. Name the required role and the one you hold. |
+| `scope_exceeded` | The request exceeds the tool's declared scope | Stop. State the limit and the requested value. You may offer to retry within the limit — ask first. |
+| `stale_signature` | Timestamp outside the freshness window, or a replay | Re-sign and retry **once**. If it fails again, tell the user to check the system clock, and stop. |
+| `digest_mismatch` | Arguments do not match the signed digest | Stop. The request was altered in transit. Report it as an integrity problem, not a retryable error. |
+| `chain_invalid` | The credential chain does not validate | Stop. Report a credential-configuration problem. |
+| `unknown_root` | The chain terminates at a root the counterparty does not accept | Stop. Report which root you chain to and that they do not accept it. This is a trust-configuration mismatch between two organizations; only they can resolve it. |
+| `invalid_signature` | The signature does not verify under the AID's key state | Stop. Report a key-state or configuration problem. |
 
 Retrying is correct for exactly one layer: `stale_signature`, once.
 
-## 5. Attestations (mode (b), "letter of confirmation")
+**Attestations.** A result may carry `org.gleif.vlei/attestation` — a signed statement by one party
+that it verified another. Accept it only after the package has verified the **attesting party's
+own** signature and credential chain. When you rely on one, say whose attestation you relied on: the
+user is trusting that party's judgment, not a credential you checked yourself.
 
-A result may carry `org.gleif.vlei/attestation` — a signed statement by one party that it verified
-another. Accept it only after the package has verified the **attesting party's own** signature and
-identity. When you rely on an attestation, say whose attestation you relied on; the user is trusting
-that party's judgment, not a credential you checked yourself.
+## Never do
 
-## 6. Never do these
-
-- Never swap, re-issue, or select a different credential in order to get past a rejection. If the
+- **Never swap, re-issue, or select a different credential to get past a rejection.** If the
   credential you hold does not entitle you to the call, the answer is that you are not entitled.
-- Never call a tool on a server whose identity verification failed.
-- Never describe `clientInfo`, `serverInfo`, a server's name, or its domain as evidence of who
-  operates it. They are not, and the specification says so.
-- Never present a credential to a server that does not require one.
-- Never report a verification as passing when it was skipped, cached past its TTL, or unavailable.
-  "Unverified" and "verified" are different words and the distinction is the entire point.
+- **Never call a tool on a server whose identity verification failed**, including a public tool.
+- **Never put a private key, a credential, or any part of either into a tool's arguments.** They
+  belong in `_meta`, which the package populates. Arguments are application data and may be logged,
+  echoed, or forwarded.
+- **Never treat `clientInfo`, `serverInfo`, a server's name, or its domain as evidence of who
+  operates it.** They are not, and the specification says so.
+- **Never present a credential to a server that does not require one.**
+- **Never report a verification as passing when it was skipped, cached past its TTL, or
+  unavailable.** "Unverified" and "verified" are different words, and the distinction is the entire
+  point.
 
 ## Vocabulary
 
-Use these terms exactly, including when explaining to users:
-
 - **Host** = the AI application. **Client** = the connection component inside the host.
   **Server** = the tool provider.
-- **LE** = Legal Entity credential, identifies an organization by LEI.
-  **ECR** = Engagement Context Role credential, identifies a person's role within that organization.
-  ECR, not OOR: agent mandates are engagement contexts, not public offices.
+- **LE** = Legal Entity credential, identifying an organization by LEI. **ECR** = Engagement Context
+  Role credential, identifying a person's role within it. ECR, not OOR: an agent's mandate is an
+  engagement context, not a public office.
 - OAuth verifies the **user** and the **client software** — not the agent, and not the legal entity.

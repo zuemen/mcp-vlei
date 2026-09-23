@@ -3,9 +3,8 @@
 # The agent connects here instead of directly to the filing server. Its source code does not change
 # — only the URL it is given. That is the claim this directory exists to substantiate.
 #
-# Field names follow agentgateway's documented HTTP external-authorization and MCP-authorization
-# policies. Two places where they differ from what one might assume are noted below; both are real
-# constraints of the current release, not simplifications.
+# Field names and defaults below were taken from agentgateway's published configuration JSON schema
+# (schema/config.json in agentgateway/agentgateway), not from prose examples.
 
 binds:
   - port: 3000
@@ -15,28 +14,30 @@ binds:
           - name: filing
             policies:
               # ---------------------------------------------------------------------------- #
-              # External authorization — vlei-authz decides, before the backend is reached.
+              # External authorization — vlei-authz decides before the backend is reached.
               # ---------------------------------------------------------------------------- #
               extAuthz:
                 host: vlei-authz:9000
+
+                # The credential and signature live in the JSON-RPC body's `_meta`, so the body
+                # must reach the authorizer. The default cap is 8192 bytes, and a chained CESR
+                # ACDC exceeds that comfortably.
+                #
+                # allowPartialMessage stays false deliberately: a truncated credential is not a
+                # smaller credential, it is an unverifiable one, and silently authorizing against
+                # a fragment would be worse than failing.
+                includeRequestBody:
+                  maxRequestBytes: 65536
+                  allowPartialMessage: false
+
+                # Default is already `deny`; stated explicitly because it is a security property
+                # and should not depend on a reader knowing the default. If the authorizer is
+                # unreachable, requests are refused rather than waved through.
+                failureMode: deny
+
                 protocol:
-                  # NOTE 1 — the HTTP external-authorization protocol forwards request *headers*
-                  # to the authorizer. There is no documented request-body forwarding, and the
-                  # credential and signature live in the JSON-RPC body's `_meta`. The client
-                  # therefore mirrors those values into `x-vlei-*` headers
-                  # (`VleiClient(..., mirror_headers=True)`), and they are listed here.
-                  #
-                  # This does not weaken the check: the signature's digest covers the canonicalized
-                  # `params`, so a mirrored header that disagrees with the body fails on the digest.
-                  # If a future release forwards the body, vlei-authz already prefers it.
-                  includeRequestHeaders:
-                    - x-vlei-tool
-                    - x-vlei-credential
-                    - x-vlei-signature
-                    - x-vlei-delegated-aid
-                    - x-vlei-verkey
                   http:
-                    path: '"/authz"'
+                    path: '"/auth/mcp"'
                     # Copied onto the request when the authorizer returns 200. These four headers
                     # are the entire interface the filing server has with vLEI.
                     includeResponseHeaders:
@@ -46,20 +47,17 @@ binds:
                       - x-vlei-delegate-aid
 
               # ---------------------------------------------------------------------------- #
-              # MCP authorization — defence in depth at the tool boundary.
+              # MCP authorization — the tool boundary.
               # ---------------------------------------------------------------------------- #
               mcpAuthorization:
-                # NOTE 2 — the CEL variables available at request time are `mcp.tool.*` and `jwt.*`.
-                # Headers produced by external authorization are NOT addressable here, so the rule
-                # `role == "regulatory-filing"` cannot be written at this layer.
+                # NOTE on what is expressible here. The CEL variables available at request time are
+                # `mcp.tool.*` and `jwt.*`. Headers produced by external authorization are not
+                # addressable, so `role == "regulatory-filing"` cannot be written at this layer —
+                # it is enforced in vlei-authz, which parses the credential and already knows both
+                # the tool and the role, and denies with a named failure layer first.
                 #
-                # Role enforcement therefore lives in vlei-authz, which parses the credential and
-                # already knows both the tool and the role — it denies with 403 and a named layer
-                # before the request reaches this policy. What this policy adds is a closed list of
-                # reachable tools, so a tool added to the backend is not exposed by accident.
-                #
-                # If a release adds ext-authz response headers to the CEL environment, the role
-                # check belongs here as well, and the two layers then agree by construction.
+                # What this policy contributes is a closed list of reachable tools, so a tool added
+                # to the backend is not exposed by accident.
                 rules:
                   - 'mcp.tool.name == "list_forms"'
                   - 'mcp.tool.name == "get_filing_status"'
