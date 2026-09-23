@@ -118,7 +118,18 @@ class VleiVerifier:
         http = await self._http()
         resp = await http.get(f"{self.url}/authorizations/{aid}")
         if resp.status_code == 404:
-            raise ChainInvalid("verifier holds no verification record for this AID", aid=aid)
+            raise MissingCredential(
+                "the verifier holds no record for this AID: the holder has not presented this "
+                "credential to it. Presentation is the holder's step, not the relying party's.",
+                aid=aid,
+            )
+        if resp.status_code == 401:
+            # The verifier's considered "no": revoked, unauthorized, or a chain that did not
+            # validate. It states which, and that text is more useful than anything we could add.
+            detail = resp.text[:300]
+            if "revok" in detail.lower():
+                raise Revoked(detail, aid=aid)
+            raise ChainInvalid(detail, aid=aid)
         if resp.status_code != 200:
             raise ChainInvalid(
                 f"verifier returned HTTP {resp.status_code}: {resp.text[:200]}", aid=aid
@@ -147,8 +158,26 @@ class VleiVerifier:
         if cached and cached.expires_at > time.monotonic():
             result = cached.result
         else:
-            await self.present(said, cesr)
-            body = await self.authorizations(aid)
+            try:
+                # Query only — do not present. `/presentations` is the **holder's** endpoint: it
+                # requires headers signed by the AID the credential was issued to, so a relying
+                # party cannot present someone else's credential on their behalf, and
+                # vlei-verifier rejects the attempt as "did not cryptographically verify".
+                #
+                # The division of labour this implies is the right one: the holder presents once,
+                # the relying party asks what that established. It is also how GLEIF's regulatory
+                # filing pilot works, where the filer logs in and the regulator reads the result.
+                body = await self.authorizations(aid)
+            except httpx.HTTPError as exc:
+                # An unreachable verifier is a failure to verify, not a pass and not a crash. It
+                # gets its own message because the operator's next step is entirely different from
+                # every other layer: nothing is wrong with the credential.
+                raise ChainInvalid(
+                    f"the verifier at {self.url} could not be reached ({type(exc).__name__}); "
+                    "no verification was performed",
+                    aid=aid,
+                    credential_said=said,
+                ) from exc
             result = self._interpret(body, aid=aid, said=said, source=source)
             if self.ttl_ms > 0:
                 self._cache[aid] = _CacheEntry(

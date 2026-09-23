@@ -63,7 +63,11 @@ class StubVerifier:
         revoked: bool = False,
         root_aid: str | None = ROOT_AID,
         accepted_roots: list[str] | None = None,
+        ttl_ms: int = 30_000,
     ) -> None:
+        # Part of the verifier contract the extension relies on: it advertises the TTL so a
+        # counterparty knows how long a verification result may be cached.
+        self.ttl_ms = ttl_ms
         self.role = role
         self.scope = scope or {}
         self.revoked = revoked
@@ -98,17 +102,25 @@ class StubVerifier:
         self.calls.append(f"invalidate:{aid}")
 
 
-class Ctx:
-    """Minimal stand-in for the SDK's tool-call context."""
+def make_params(tool: str, arguments: dict[str, Any], meta: dict[str, Any] | None = None):
+    """A real ``CallToolRequestParams``, so the tests exercise the SDK's own validation."""
+    from mcp.types import CallToolRequestParams
 
-    def __init__(self, tool_name: str, arguments: dict[str, Any], meta: dict[str, Any], *, requires=None, verkey=None):
-        self.tool_name = tool_name
-        self.tool = {"name": tool_name, "_meta": {"org.gleif.vlei/requires": requires} if requires else {}}
+    payload: dict[str, Any] = {"name": tool, "arguments": arguments}
+    if meta:
+        payload["_meta"] = meta
+    return CallToolRequestParams.model_validate(payload)
+
+
+class Ctx:
+    """Stand-in for ``ServerRequestContext``.
+
+    The extension only reads ``params`` and passes ``ctx`` to ``call_next``, so a placeholder is
+    enough here; the SDK's own context is exercised by the end-to-end tests in ``examples/``.
+    """
+
+    def __init__(self) -> None:
         self.method = "tools/call"
-        self.params = {"name": tool_name, "arguments": arguments}
-        self.meta = meta
-        self.caller_verkey = verkey
-        self.vlei = None
 
 
 @pytest.fixture

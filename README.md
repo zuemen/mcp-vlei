@@ -46,8 +46,8 @@ extension mechanism. The MCP core schema is not modified.
 | 1 — Schema extension | `spec/` |
 | 2 — Skill and workflow | `skills/vlei-identity/` |
 | 3 — Credential environment | `scripts/` — **all six acceptance checks pass** |
-| 4 — Python package | `packages/mcp-vlei/` — 45 tests passing |
-| 5 — Reference implementation | `examples/association-server/`, `examples/my-agent/` |
+| 4 — Python package | `packages/mcp-vlei/` — 47 tests, against the real SDK types |
+| 5 — Reference implementation | runs on SDK 2.2.0 at protocol 2026-07-28; 3 of 6 acceptance tests green — see `examples/README.md` |
 | 6A — Government adoption path | `docs/GOVERNMENT.md` |
 | 6B — Government gateway | `examples/regulator/`, `deploy/agentgateway/` |
 | 7 — Talk and recording | `docs/DEMO.md` |
@@ -56,9 +56,12 @@ extension mechanism. The MCP core schema is not modified.
 chain, installs the self-configured root, presents the ECR credential to GLEIF's verifier (202),
 reads back the LEI and role (200), revokes, and confirms the revocation is honoured (401).
 
-The remaining gap is the reference implementations in `examples/`: they have credentials to use
-now, but have not yet been run against the official MCP SDK, so their server and client API calls
-are written from the SEP-2133 description rather than verified. That is the next step.
+The reference implementations now run against the official SDK: the server registers its tools with
+their `_meta` requirements, advertises `org.gleif.vlei/identity` at protocol 2026-07-28, and refuses
+a protected tool to an unmodified client with a named failure layer. Three of the six acceptance
+tests are green; the other three are blocked by a crash in `vlei-verifier` 1.0.0 that takes the
+service down and empties its database mid-test. `examples/README.md` has the detail and the
+upstream bug.
 
 ## Honesty statement
 

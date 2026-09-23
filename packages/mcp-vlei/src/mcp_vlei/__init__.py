@@ -8,7 +8,7 @@ keys ignores them and behaves exactly as core MCP specifies.
 """
 
 from .attest import make_attestation, verify_attestation
-from .client import Entitlement, VleiClient
+from .client import Entitlement, VleiCapability, VleiClient
 from .errors import (
     EXTENSION_REQUIRED_CODE,
     ChainInvalid,
@@ -36,6 +36,7 @@ __all__ = [
     "EXTENSION_REQUIRED_CODE",
     "VleiIdentity",
     "VleiClient",
+    "VleiCapability",
     "Entitlement",
     "VleiVerifier",
     "OfflineVerifier",

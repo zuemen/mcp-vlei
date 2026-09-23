@@ -27,6 +27,44 @@ python examples/my-agent/agent.py "register Chen Wei-Ting, weiting@example.org.t
 pytest examples/association-server/tests -v -s
 ```
 
+## Status
+
+The server and the client run against the official MCP Python SDK 2.2.0, negotiating protocol
+**2026-07-28** — which matters, because extensions are only active at that version. The high-level
+`Client` reaches it; a bare `ClientSession` handshake does not, and a server that looks like it
+advertises nothing is usually a client that never got past the legacy handshake.
+
+| Test | State |
+|---|---|
+| 2 — no credential → `missing_credential` | passes |
+| 2b — public tool needs nothing | passes |
+| 5 — unmodified client is additive | passes |
+| 1 — valid credential succeeds | blocked, see below |
+| 3 — revoked credential refused | blocked, see below |
+| 4 — tampered arguments refused | blocked, see below |
+
+**What blocks the other three.** `vlei-verifier` 1.0.0 crashes on its own revocation path —
+`process_revocations_from_event_log` writes a database key of `None` and keripy raises
+`TypeError: sequence item 0: expected str instance, NoneType found`. It takes the HTTP service
+down with it and comes back with an empty database, so a credential presented a moment earlier is
+answered with `unknown AID`. The compose file restarts it automatically and the tests re-present
+before each case, and it still loses the race often enough that these three cannot be called
+green.
+
+This is worth raising with GLEIF. It is also why the failures in this repository's history read as
+connection errors rather than credential errors: a crashed verifier looks, from the client, exactly
+like a network problem.
+
+**Two flow facts learned along the way**, both now encoded in the package:
+
+- **Presentation is the holder's step.** `/presentations` requires headers signed by the AID the
+  credential was issued to, so a relying party cannot present someone else's credential — it reads
+  back what the holder established, at `/authorizations/{aid}`. This is how GLEIF's regulatory
+  filing pilot works too.
+- **Ask about the issuee, not the signer.** The agent signs with its delegated AID; the credential
+  was issued to the person. The verifier's record is keyed by the holder, so the extension reads
+  the issuee out of the credential rather than trusting the caller to name it.
+
 ## What the five acceptance tests establish
 
 | # | Test | Establishes |

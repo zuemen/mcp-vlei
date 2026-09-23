@@ -5,6 +5,7 @@ requiring an ECR credential for anything that changes its membership records.
 
 Run::
 
+    pip install -e packages/mcp-vlei
     python examples/association-server/server.py
 
 Two things this file demonstrates by what it does *not* contain:
@@ -18,17 +19,19 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from mcp.server import MCPServer
-from mcp.server.http import create_http_app
+from mcp.server.mcpserver import MCPServer
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from mcp_vlei import VleiIdentity
 
 ROOT = Path(__file__).resolve().parents[2]
 CREDENTIALS = ROOT / "credentials"
+DASHBOARD = Path(__file__).parent / "dashboard"
 ENV = json.loads((CREDENTIALS / "env.json").read_text()) if (CREDENTIALS / "env.json").exists() else {}
 
 VERIFIER_URL = os.environ.get("VLEI_VERIFIER_URL", ENV.get("verifierUrl", "http://localhost:7676"))
@@ -51,15 +54,9 @@ AUDIT: list[dict[str, Any]] = []
 
 
 def record(decision: dict[str, Any]) -> None:
-    decision["at"] = _now()
+    decision["at"] = datetime.now(timezone.utc).strftime("%H:%M:%S")
     AUDIT.append(decision)
     del AUDIT[:-200]
-
-
-def _now() -> str:
-    from datetime import datetime, timezone
-
-    return datetime.now(timezone.utc).strftime("%H:%M:%S")
 
 
 # ------------------------------------------------------------------------------------------- #
@@ -78,6 +75,10 @@ vlei = VleiIdentity(
 
 mcp = MCPServer(name="association-server", version="0.1.0", extensions=[vlei])
 
+# An extension is constructed before the server that holds it, so it learns the tool registry
+# afterwards. This is what lets each tool keep its requirement in its own `_meta`.
+vlei.bind(mcp)
+
 
 @mcp.tool()
 def list_events(limit: int = 10) -> list[dict[str, Any]]:
@@ -89,20 +90,16 @@ def list_events(limit: int = 10) -> list[dict[str, Any]]:
     return EVENTS[:limit]
 
 
-@mcp.tool(
-    meta={
-        "org.gleif.vlei/requires": {
-            "credential": "ECR",
-            "role": "member-registration",
-        }
-    }
-)
+# The role is the one the demo environment issues. In a real association it would be
+# `member-registration`; here there is a single engagement context, and naming a role the
+# credential does not carry would demonstrate `role_mismatch` rather than the happy path.
+@mcp.tool(meta={"org.gleif.vlei/requires": {"credential": "ECR", "role": "regulatory-filing"}})
 def register_member(name: str, email: str) -> dict[str, Any]:
     """Register a new member. Requires an ECR credential carrying the member-registration role.
 
-    The requirement above is the entire authorization statement. This function body contains no
-    identity code, and it is reached only after the extension has verified the chain, the
-    revocation state, the root, the signature, and the role.
+    The requirement in the decorator is the entire authorization statement. This function body
+    contains no identity code, and it is reached only after the extension has verified the chain,
+    the revocation state, the root, the signature, and the role.
     """
     member = {"name": name, "email": email, "joined": date.today().isoformat()}
     MEMBERS.append(member)
@@ -110,29 +107,34 @@ def register_member(name: str, email: str) -> dict[str, Any]:
 
 
 # ------------------------------------------------------------------------------------------- #
-# HTTP surface: the MCP endpoint, the well-known document, and the dashboard's data
+# HTTP surface: the well-known document, the dashboard, and the dashboard's data
 # ------------------------------------------------------------------------------------------- #
 
-app = create_http_app(mcp)
 
-
-@app.get("/.well-known/vlei")
-async def well_known() -> dict[str, Any]:
+@mcp.custom_route("/.well-known/vlei", methods=["GET"])
+async def well_known(request: Request) -> JSONResponse:
     """Mode (a), passive verification.
 
-    Published separately from ``discover`` so a counterparty can check who operates this server
+    Published separately from the session so a counterparty can check who operates this server
     *before* connecting to it.
     """
-    return vlei.well_known_document()
+    return JSONResponse(vlei.well_known_document())
 
 
-@app.get("/api/audit")
-async def audit() -> dict[str, Any]:
-    return {"decisions": list(reversed(AUDIT)), "members": len(MEMBERS)}
+@mcp.custom_route("/api/audit", methods=["GET"])
+async def audit(request: Request) -> JSONResponse:
+    return JSONResponse({"decisions": list(reversed(AUDIT)), "members": len(MEMBERS)})
 
 
-@app.post("/api/revoke")
-async def revoke() -> dict[str, Any]:
+@mcp.custom_route("/dashboard/", methods=["GET"])
+async def dashboard(request: Request) -> Any:
+    from starlette.responses import HTMLResponse
+
+    return HTMLResponse((DASHBOARD / "index.html").read_text(encoding="utf-8"))
+
+
+@mcp.custom_route("/api/revoke", methods=["POST"])
+async def revoke(request: Request) -> JSONResponse:
     """The dashboard's revoke button.
 
     Revocation itself happens in the LE's TEL, through ``kli vc revoke`` — this endpoint runs that
@@ -141,19 +143,23 @@ async def revoke() -> dict[str, Any]:
     """
     import asyncio
 
-    said = ENV.get("ecrSaid")
-    ecr_aid = ENV.get("ecrAid")
+    # Re-read rather than trusting what was loaded at startup: the bootstrap re-issues the ECR
+    # after its own checks, so a server started before that would try to revoke a credential that
+    # is already revoked and report a duplicitous event.
+    env = json.loads((CREDENTIALS / "env.json").read_text())
+    said = env.get("ecrSaid")
+    ecr_aid = env.get("ecrAid")
+    compose = str(ROOT / "scripts" / "docker-compose.yml")
     proc = await asyncio.create_subprocess_exec(
-        "docker", "compose", "-f", str(ROOT / "scripts" / "docker-compose.yml"),
-        "exec", "-T", "keri-cli",
+        "docker", "compose", "-f", compose, "exec", "-T", "keri-cli",
         "kli", "vc", "revoke", "--name", "le", "--alias", "le",
         "--registry-name", "leRegistry", "--said", said, "--send", ecr_aid,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
     )
     out, _ = await proc.communicate()
-    vlei.verifier.invalidate(ENV.get("agentAid") or ecr_aid)
-    record({"tool": "(dashboard)", "allowed": True, "note": f"ECR revoked in the LE's TEL"})
-    return {"ok": proc.returncode == 0, "output": out.decode()[-500:]}
+    vlei.verifier.invalidate(env.get("agentAid") or ecr_aid)
+    record({"tool": "(dashboard)", "allowed": True, "note": "ECR revoked in the LE's TEL"})
+    return JSONResponse({"ok": proc.returncode == 0, "output": out.decode()[-500:]})
 
 
 if __name__ == "__main__":
@@ -163,4 +169,4 @@ if __name__ == "__main__":
     print(f"  verifier:       {VERIFIER_URL}")
     print(f"  accepted roots: {ACCEPTED_ROOTS}")
     print(f"  dashboard:      {PUBLIC_URL}/dashboard/")
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8080")))
+    uvicorn.run(mcp.streamable_http_app(), host="0.0.0.0", port=int(os.environ.get("PORT", "8080")))

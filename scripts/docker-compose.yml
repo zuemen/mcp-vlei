@@ -68,9 +68,26 @@ services:
     # No `latest` tag is published for this image — pin an explicit release.
     image: gleif/vlei-verifier:1.0.0
     container_name: mcp-vlei-verifier
+    # vlei-verifier 1.0.0 crashes the whole service when its revocation observer meets a stored
+    # state whose `aid` is None: `process_revocations_from_event_log` does
+    # `vdb.iss.pin(keys=(aid,), ...)` without checking, and keripy's koming raises
+    # "TypeError: sequence item 0: expected str instance, NoneType found".
+    #
+    # It takes the HTTP service down with it, and every client then reports a connection error
+    # rather than anything about credentials — which is how it stayed hidden. Restarting keeps a
+    # demo usable; the fix belongs upstream, and it is worth raising with GLEIF.
+    restart: unless-stopped
     environment:
       - VERIFY_ROOT_OF_TRUST=True
       - VLEI_VERIFIER_PORT=7676
+      # `production` requires Signify-signed headers on /authorizations too, which a relying party
+      # cannot produce — it is not the holder. `test` keeps presentation signed (the holder still
+      # proves control of the AID) while letting a relying party read back what that established,
+      # and it is what enables /root_of_trust for a self-configured root.
+      #
+      # This is a demo-environment setting and the talk says so. In production the relying party
+      # would be an authenticated client of the verifier rather than an anonymous reader.
+      - VERIFIER_MODE=test
     volumes:
       # The shipped config has `revocationCheck: false`, and the flag is read from the config file
       # only — there is no environment variable for it. With it off the verifier never polls a

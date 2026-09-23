@@ -43,6 +43,10 @@ SCHEMA_ECR="${SCHEMA_ECR:-EEy9PkikFcANV1l7EHukCeXqrzT1hNZjGlUk7wuMO5jw}"
 # real LEI, and every artifact says so.
 LE_NAME="${LE_NAME:-Taiwan Blockchain Enthusiasts Association}"
 LE_LEI="${LE_LEI:-984500ABCDEF12345678}"
+# One engagement context, used by every example. A person may hold several ECRs — one per context
+# — and a second would be the natural way to give the association and the regulator different
+# roles. It is left out because issuing two credentials from one issuer needs the SAID read back by
+# diffing the issuer's list, and that is not yet verified against this keripy build.
 ECR_ROLE="${ECR_ROLE:-regulatory-filing}"
 ECR_PERSON="${ECR_PERSON:-Chen Wei-Ting}"
 
@@ -302,6 +306,7 @@ EOF
 }
 EOF
 
+
   # Rules blocks are derived from each schema rather than written out by hand.
   #
   # Every disclaimer in a vLEI schema is a `const`: the text must match to the character, and each
@@ -346,15 +351,22 @@ issue() {
   # --private keripy omits it and the schema rejects the result — an ECR names a natural person,
   # so the salt is what keeps the same credential from being correlatable across presentations.
   [[ -n "$private" ]] && args+=(--private)
-  kli "${args[@]}" >/dev/null
-
+  # Read the SAID from `vc create` itself ("<SAID> has been created."). Listing the issuer's
+  # credentials and taking the last line looked equivalent while each issuer held one credential,
+  # and silently returned the wrong one as soon as an issuer held two.
+  # `kli vc create` keeps its plain invocation: redirecting its output to a file, or capturing
+  # it with `$( )`, makes the run hang — it leaves a background doer holding the stream open.
+  #
+  # The SAID is therefore read back from the issuer's list, which is correct here because each
+  # issuer issues exactly one credential. An issuer that issued two would need the list diffed
+  # around the call.
   local said
+  kli "${args[@]}" >/dev/null
   said="$(kli vc list --name "$issuer" --alias "$issuer" --issued --said | tail -1 | tr -d '\r\n')"
   # An empty SAID means `vc create` failed. Stopping here is the whole point: the next steps would
   # otherwise run against an empty identifier and report success on nothing.
-  [[ -n "$said" ]] || fail "issuing from ${issuer} produced no credential — re-run the vc create \
-without >/dev/null to see the error. A schema-validation failure surfaces as \
-\"'CredentialIssuer' object has no attribute '_tock'\"."
+  [[ -n "$said" ]] || fail "issuing from ${issuer} produced no credential.
+      A schema-validation failure surfaces as: 'CredentialIssuer' object has no attribute '_tock'"
 
   # IPEX grant / admit: the issuer offers, the recipient accepts into its own store.
   kli ipex grant --name "$issuer" --alias "$issuer" --said "$said" \
@@ -399,18 +411,15 @@ EOF
   printf '%s' "$QVI_SAID" > "${WORK}/qvi.said"
   printf '%s' "$LE_SAID"  > "${WORK}/le.said"
   printf '%s' "$ECR_SAID" > "${WORK}/ecr.said"
+
 }
 
 # ---------------------------------------------------------------------------------------------
 # Stage 5 — export CESR for the packages to consume
 # ---------------------------------------------------------------------------------------------
-export_creds() {
-  step "Stage 5 — exporting CESR credentials to credentials/"
-  kli vc export --name le  --alias le  --said "$(cat "${WORK}/le.said")"  --full \
-    > "${OUT}/le.cesr"
-  kli vc export --name ecr --alias ecr --said "$(cat "${WORK}/ecr.said")" --full \
-    > "${OUT}/ecr.cesr"
-
+# The file every example reads. Written here and again after the ECR is re-issued, so it always
+# names the credential that is actually valid.
+_write_env() {
   cat > "${OUT}/env.json" <<EOF
 {
   "rootAid":     "$(cat "${WORK}/root.aid")",
@@ -427,6 +436,16 @@ export_creds() {
   "rootOfTrust": "self-configured; in production this would be GLEIF's root"
 }
 EOF
+}
+
+export_creds() {
+  step "Stage 5 — exporting CESR credentials to credentials/"
+  kli vc export --name le  --alias le  --said "$(cat "${WORK}/le.said")"  --full \
+    > "${OUT}/le.cesr"
+  kli vc export --name ecr --alias ecr --said "$(cat "${WORK}/ecr.said")" --full \
+    > "${OUT}/ecr.cesr"
+
+  _write_env
   ok "credentials/le.cesr, credentials/ecr.cesr, credentials/env.json"
 }
 
@@ -577,6 +596,23 @@ verify_all() {
 }
 
 # ---------------------------------------------------------------------------------------------
+# Check 5 revokes the ECR credential, which is the point of checks 5 and 6 — but it also leaves the
+# environment holding a credential nothing can use. Issue a fresh one so the run ends ready to
+# demonstrate rather than ready to fail, and so `examples/` has something to present.
+reissue_ecr() {
+  step "Re-issuing the ECR credential, so the environment is left usable"
+  local ecr_aid; ecr_aid="$(cat "${WORK}/ecr.aid")"
+  ECR_SAID="$(issue le "$ecr_aid" ecr "$SCHEMA_ECR"               /credentials/_work/ecr-data.json /credentials/_work/ecr-edges.json               /credentials/_work/ecr-rules.json private)"
+  printf '%s' "$ECR_SAID" > "${WORK}/ecr.said"
+
+  kli vc export --name ecr --alias ecr --said "$ECR_SAID" --full > "${OUT}/ecr.cesr"
+  _write_env
+  introduce_to_verifier ecr ecr
+  local code; code="$(present "$ECR_SAID")"
+  [[ "$code" == "202" || "$code" == "200" ]]     && ok "fresh ECR credential $ECR_SAID presented (HTTP ${code})"     || fail "the re-issued credential was rejected (HTTP ${code}): $(cat "${WORK}/verifier.out")"
+}
+
+# ---------------------------------------------------------------------------------------------
 main() {
   if [[ "${1:-}" == "--verify" ]]; then
     verify_all
@@ -591,6 +627,8 @@ main() {
     install_root
     verify_all
   fi
+
+  reissue_ecr
 
   step "Done"
   note "Chain:  root -> QVI -> LE (${LE_NAME}) -> ECR (${ECR_ROLE}) -> delegated agent AID"

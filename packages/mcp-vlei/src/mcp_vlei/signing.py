@@ -24,7 +24,7 @@ import math
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from cryptography.exceptions import InvalidSignature as _CryptoInvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
@@ -41,6 +41,7 @@ __all__ = [
     "verify_request",
     "ReplayCache",
     "Signer",
+    "CommandSigner",
     "DEFAULT_FRESHNESS_SECONDS",
     "cesr_encode_signature",
     "cesr_decode_signature",
@@ -128,6 +129,12 @@ def signed_payload(method: str, ts: str, digest: str) -> bytes:
 _SIG_CODE = "0B"   # Ed25519 signature, 64 raw bytes -> 88 characters
 _VERKEY_CODES = ("D", "B")  # Ed25519 verification key, 32 raw bytes -> 44 characters
 
+#: Indexed Ed25519 signature codes. `kli sign` and anything signing on behalf of a multi-key
+#: identifier emit these: the same 64 raw bytes, with a two-character code carrying the key index
+#: instead of `0B`. Accepting them is what lets a signer that keeps its key in a keystore — the
+#: shape Signify uses — interoperate with one that holds a raw seed.
+_INDEXED_SIG_CODES = ("A", "B", "2A", "2B", "3A", "3B")
+
 
 def _b64u(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).decode("ascii")
@@ -142,8 +149,16 @@ def cesr_encode_signature(raw: bytes) -> str:
 
 
 def cesr_decode_signature(qb64: str) -> bytes:
-    if not qb64.startswith(_SIG_CODE) or len(qb64) != 88:
+    """Decode either a non-indexed (`0B`) or an indexed (`A…`) Ed25519 signature.
+
+    Both carry the same 64 raw bytes; only the two-character code differs, so the raw material is
+    recovered the same way. Accepting both means a keystore-backed signer and a raw-seed signer
+    produce signatures this package can verify interchangeably.
+    """
+    if len(qb64) != 88:
         raise InvalidSignature(f"not a CESR Ed25519 signature: {qb64[:8]}... (len {len(qb64)})")
+    if not (qb64.startswith(_SIG_CODE) or qb64[0] in ("A", "B", "2", "3")):
+        raise InvalidSignature(f"unrecognized signature code: {qb64[:2]!r}")
     return base64.urlsafe_b64decode("AA" + qb64[2:])[2:]
 
 
@@ -196,6 +211,35 @@ class Signer:
 # -------------------------------------------------------------------------------------------- #
 # Replay cache
 # -------------------------------------------------------------------------------------------- #
+
+class CommandSigner:
+    """Signs by asking something else to sign, so the private key is never in this process.
+
+    This is the shape Signify has: the holder's device keeps the key, and the agent sends a payload
+    and receives a signature. Here the "device" is a local keystore reached through a command —
+    ``kli sign`` in the reference deployment — which is enough to demonstrate that the agent works
+    without ever possessing the key.
+
+    ``command`` receives the text to sign and must return the CESR signature.
+    """
+
+    def __init__(self, aid: str, verkey: str, command: "Callable[[str], str]") -> None:
+        self.aid = aid
+        self._verkey = verkey
+        self._command = command
+
+    @property
+    def verkey(self) -> str:
+        return self._verkey
+
+    def sign(self, payload: bytes) -> str:
+        signature = self._command(payload.decode("utf-8")).strip()
+        # `kli sign` numbers its output lines ("1. AAC9…"); take the signature off the last one.
+        signature = signature.splitlines()[-1].split(". ")[-1].strip()
+        if len(signature) != 88:
+            raise ValueError(f"signer returned {signature[:12]!r}, which is not a CESR signature")
+        return signature
+
 
 @dataclass
 class ReplayCache:
