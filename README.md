@@ -46,7 +46,7 @@ extension mechanism. The MCP core schema is not modified.
 | 1 — Schema extension | `spec/` |
 | 2 — Skill and workflow | `skills/vlei-identity/` |
 | 3 — Credential environment | `scripts/` — **all six acceptance checks pass** |
-| 4 — Python package | `packages/mcp-vlei/` — 44 tests passing |
+| 4 — Python package | `packages/mcp-vlei/` — 45 tests passing |
 | 5 — Reference implementation | `examples/association-server/`, `examples/my-agent/` |
 | 6A — Government adoption path | `docs/GOVERNMENT.md` |
 | 6B — Government gateway | `examples/regulator/`, `deploy/agentgateway/` |
