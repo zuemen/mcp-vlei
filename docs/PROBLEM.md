@@ -94,6 +94,14 @@ statement to compare against. A well-behaved server avoids this policy. A well-b
 has nothing to put in its place when the question is *"is this caller an accountable
 organization?"*
 
+**This is reproducible**, and not only described: `examples/impersonation/` contains the server, the
+client and a field-boundary test, and produces the table above on any machine with the SDK
+installed. A companion test asks the narrower question — is anything about the claim checked? —
+and finds that types and required fields are validated while semantics are not: a `websiteUrl` of
+`javascript:alert(1)` and a name of two hundred thousand characters both reach the server
+unchanged. Nothing there was run against any third party's service; the policy is ours, in our own
+server, written to be measured.
+
 ## 6. External corroboration
 
 - **NSA, May 2026** — cybersecurity information sheet on MCP security. It notes that MCP does not

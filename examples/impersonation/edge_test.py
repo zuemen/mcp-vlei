@@ -37,7 +37,7 @@ CASES: list[tuple[str, dict[str, Any]]] = [
     ("wrong type for version", {"name": "a", "version": 123}),
     ("wrong type for name", {"name": ["a", "b"], "version": "1.0"}),
     ("extra unknown field", {"name": "a", "version": "1.0", "trustLevel": "high"}),
-    ("very long name", {"name": "A" * 4096, "version": "1.0"}),
+    ("very long name (200k chars)", {"name": "A" * 200_000, "version": "1.0"}),
     ("websiteUrl is not a URL", {"name": "a", "version": "1.0", "websiteUrl": "not a url"}),
     ("websiteUrl is javascript:", {"name": "a", "version": "1.0", "websiteUrl": "javascript:alert(1)"}),
     (
@@ -51,6 +51,7 @@ CASES: list[tuple[str, dict[str, Any]]] = [
          "icons": [{"src": "file:///etc/passwd", "mimeType": "image/png"}]},
     ),
     ("name is empty", {"name": "", "version": "1.0"}),
+    ("version omitted", {"name": "a"}),
     ("name claims another vendor", {"name": "Claude Desktop", "version": "1.2.3"}),
 ]
 

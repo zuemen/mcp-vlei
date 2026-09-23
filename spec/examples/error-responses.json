@@ -1,0 +1,112 @@
+{
+  "$comment": [
+    "Failure shapes for org.gleif.vlei/identity. Two of them, and the difference matters:",
+    "a missing capability is a configuration problem reported as a JSON-RPC error, while a",
+    "rejected credential is a tool result. Collapsing them tells the caller to fix the wrong thing.",
+    "Every rejection names its layer, because the correct recovery differs per layer and an agent",
+    "that receives only 'access denied' cannot choose one."
+  ],
+
+  "missing_capability": {
+    "$comment": [
+      "The server requires the extension; the client never declared it at initialize. Nothing was",
+      "verified and nothing was rejected — the conversation could not begin on these terms.",
+      "Note what this is not: it is not a refusal of a credential, and telling the user their",
+      "credential was refused would send them to the wrong place entirely."
+    ],
+    "jsonrpc": "2.0",
+    "id": 7,
+    "error": {
+      "code": -32021,
+      "message": "server requires capabilities not declared by the client: org.gleif.vlei/identity",
+      "data": {
+        "requiredCapabilities": ["org.gleif.vlei/identity"]
+      }
+    }
+  },
+
+  "verification_failed": {
+    "$comment": [
+      "The extension was declared, a credential was presented, and a named check stopped the call.",
+      "The layer appears first and unadorned in the text so a model can key off it without",
+      "heuristics, and again in _meta for anything that parses rather than reads."
+    ],
+    "jsonrpc": "2.0",
+    "id": 8,
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "revoked: the credential has been revoked in the issuer's transaction event log"
+        }
+      ],
+      "isError": true,
+      "_meta": {
+        "org.gleif.vlei/failureLayer": "revoked",
+        "org.gleif.vlei/failure": {
+          "layer": "revoked",
+          "message": "the credential has been revoked in the issuer's transaction event log",
+          "aid": "EHLragWzyPdQ_JFPHAQXn3IqdeQaVRRqy_iDvMXYwqz4",
+          "credentialSaid": "EM3weUShBeSCTj7iyoWibnx5OTNq2QhEVsySsjA63qbJ"
+        }
+      }
+    }
+  },
+
+  "layers": [
+    {
+      "layer": "missing_credential",
+      "when": "The tool declares a requirement and the caller presented no credential, or no signature.",
+      "retry": "No. Attach a credential. This is not a failure to verify — it is a failure to present, and keeping it separate sends the caller to the right fix.",
+      "text": "missing_credential: this tool requires an ECR credential and a signed request; the caller presented no credential"
+    },
+    {
+      "layer": "stale_signature",
+      "when": "The signature's timestamp is outside the freshness window, or the same (aid, digest, ts) was seen before.",
+      "retry": "Yes, once. If it fails again the clocks disagree by more than the window; say so rather than retrying further. This is the only retryable layer.",
+      "text": "stale_signature: signature timestamp is 312s from now, outside the 60s freshness window"
+    },
+    {
+      "layer": "digest_mismatch",
+      "when": "The received parameters do not hash to the digest that was signed — the request was altered after signing.",
+      "retry": "No. This is an integrity problem, not a transient one. Reported separately from invalid_signature because tampering in transit and a bad key state call for different responses.",
+      "text": "digest_mismatch: request arguments do not match the signed digest; they were altered after signing"
+    },
+    {
+      "layer": "invalid_signature",
+      "when": "The signature does not verify under the presented AID's current key state.",
+      "retry": "No. Either the wrong key signed, or the key state has moved on. Both are configuration.",
+      "text": "invalid_signature: signature does not verify under the presented key state"
+    },
+    {
+      "layer": "chain_invalid",
+      "when": "A SAID does not recompute, an edge points at a credential that was not presented, a link's issuer is not the previous link's issuee, or a revocation source could not be read at all.",
+      "retry": "No. Report it as a credential-configuration problem. Note the last case: an unreadable log is a failure to establish revocation, never an absence of it.",
+      "text": "chain_invalid: credential EM3weU… does not hash to its own SAID; its contents were altered"
+    },
+    {
+      "layer": "revoked",
+      "when": "A credential in the chain has been withdrawn in its issuer's transaction event log.",
+      "retry": "No, and not with a different credential either. The entity withdrew this authority; a new credential must be issued.",
+      "text": "revoked: the credential has been revoked in the issuer's transaction event log"
+    },
+    {
+      "layer": "unknown_root",
+      "when": "The chain is internally sound but terminates at a root the relying party does not accept.",
+      "retry": "No. Nothing is wrong with the credential and nothing is wrong with the server: two organizations disagree about whom they trust, and only they can resolve it. Report which root you chain to.",
+      "text": "unknown_root: chain terminates at EOther…, which is not an accepted root"
+    },
+    {
+      "layer": "role_mismatch",
+      "when": "The presented ECR role does not satisfy the role the tool declared.",
+      "retry": "No. Name the required role and the one held; a new ECR must be issued by the legal entity.",
+      "text": "role_mismatch: tool requires role 'regulatory-filing'; the presented credential carries 'member-registration'"
+    },
+    {
+      "layer": "scope_exceeded",
+      "when": "The request falls outside the scope the tool declared, measured against the scope the credential carries.",
+      "retry": "Not as sent. A retry within the limit may be appropriate — ask the user first, and state the limit and the requested value.",
+      "text": "scope_exceeded: maxAmount: requires at least 1000000, credential carries 500000"
+    }
+  ]
+}

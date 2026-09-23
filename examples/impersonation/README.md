@@ -49,15 +49,17 @@ identify yourself**, only a choice between claims.
 | wrong type for `version` | rejected by validation |
 | wrong type for `name` | rejected by validation |
 | extra unknown field (`trustLevel: high`) | accepted |
-| 4096-character name | accepted |
+| 200,000-character name | accepted |
 | `websiteUrl` that is not a URL | accepted |
 | `websiteUrl: javascript:alert(1)` | accepted |
 | icon `src` as a `data:text/html` URI | accepted |
 | icon `src` as `file:///etc/passwd` | accepted |
 | empty name | accepted |
+| `version` omitted | rejected by validation |
 | name claiming another vendor | accepted |
 
-Nine of eleven reached the server unchanged. **Types are validated; semantics are not.**
+Nine of twelve reached the server unchanged. **Types and required fields are validated; semantics
+are not.** A name of two hundred thousand characters is fine; a `version` of `123` is not.
 
 Read this carefully, because it is easy to overstate and an expert will catch an overstatement.
 A field being accepted is not a vulnerability: the specification says not to trust these fields, so
@@ -65,7 +67,7 @@ carrying them unchecked is consistent with what they are for. What the table sho
 downstream can distinguish a careful claim from a careless one — the same gap as the table above,
 from a different angle.
 
-The two validation rejections are worth noting in the other direction: the SDK does check what it
+The three validation rejections are worth noting in the other direction: the SDK does check what it
 promises to check. This is not sloppiness. It is a field that was never meant to bear weight, being
 asked to bear weight because nothing else is available.
 

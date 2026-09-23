@@ -30,6 +30,8 @@ extension mechanism. The MCP core schema is not modified.
 | `docs/upstream/` | A defect found in `vlei-verifier` while building this, written up for GLEIF |
 | `scripts/` | One-command credential environment bootstrap |
 | `packages/mcp-vlei/` | Python implementation (`VleiIdentity` server extension, `VleiClient`) |
+| `examples/impersonation/` | The problem, made executable: quota granted on a name the caller chose |
+| `examples/console/` | The Trust Console — the interface the recording is shot on |
 | `examples/` | Reference server, reference agent, regulator scenario |
 | `deploy/agentgateway/` | Gateway configuration for zero-code-change adoption |
 
