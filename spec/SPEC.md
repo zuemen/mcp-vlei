@@ -245,8 +245,9 @@ and is refused on the protected one.
 - `examples/association-server/`, `examples/my-agent/` — end-to-end reference deployment.
 - `skills/implementing-vlei/` — build-time guidance for implementing this specification.
 - `skills/vlei-identity/` — runtime guidance for an agent using it.
-- `examples/README.md` — the acceptance status of the reference deployment, including what is
-  currently blocked and why.
+- `examples/README.md` — the acceptance status of the reference deployment.
+- `docs/CONFORMANCE.md` — every normative statement in this document, with the code that implements
+  it and the test that holds it, including what is deliberately not claimed.
 
 ## Security Considerations
 

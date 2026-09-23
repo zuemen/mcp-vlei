@@ -1,0 +1,17 @@
+mcp-vlei
+Copyright 2026 Ting-Yi Chu
+
+Licensed under the Apache License, Version 2.0.
+
+This project builds on, and does not vendor, work by others:
+
+  - GLEIF's vLEI ecosystem — the ACDC credential schemas (WebOfTrust/vLEI) and
+    the verification service (GLEIF-IT/vlei-verifier), used as published.
+  - keripy (WebOfTrust) — KERI identifiers, key event logs and credential
+    issuance, used through its command-line interface.
+  - The Model Context Protocol and its Python SDK (modelcontextprotocol).
+    This project does not modify the core schema; it adds types in the fields
+    that specification already reserves for extensions.
+
+The root of trust in this repository's demonstration environment is
+self-configured. In production it would be GLEIF's.

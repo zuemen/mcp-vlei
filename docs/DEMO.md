@@ -42,7 +42,7 @@ Rehearse to 14:00. A 15-minute slot with questions is a 13-minute talk.
 
 On a slide **and** spoken, at the start of the demo section:
 
-> "Real KERI, real ACDC, real verifier. The root of trust is self-configured; in production it
+> "Real KERI, real ACDC, real revocation. The root of trust is self-configured; in production it
 > would be GLEIF's."
 
 Said before the demo, not after. Said afterwards it sounds like a caveat being extracted; said
@@ -64,8 +64,9 @@ terminal shows what happened, the dashboard shows what the *institution* saw.
 
 ## Shot 1 — The agent calls its own association's server (60 s)
 
-**Screen.** Left: `python examples/my-agent/agent.py "register Chen Wei-Ting…"`, showing stage
-markers as they print. Right: the dashboard filling in, one row per decision.
+**Screen.** Left: `python examples/my-agent/agent.py "register Chen Wei-Ting…"`, showing the
+stage markers and then the verification report — eight checks, one per line, each with its cost.
+Right: the dashboard filling in, one row per decision, the newest marked `✓ verified`.
 
 **Narration.**
 > "The agent connects to the association's server. Before it calls anything, it fetches the
@@ -81,14 +82,20 @@ markers as they print. Right: the dashboard filling in, one row per decision.
 > right, the association sees the LEI, the role, the person who holds the credential, and the
 > delegated identifier of the agent that acted. Not an account name — an accountable organization."
 
-**Land on:** the dashboard row showing LEI, role, holder AID, delegate AID.
+**Land on:** the report's eight green lines and `ALLOWED`, beside the dashboard row showing the
+LEI, the role, the holder and the agent.
+
+**If anyone asks what the timings are for:** every line but the last is decided from the request
+itself. Only revocation leaves the machine. That ordering is why the next two shots behave the way
+they do.
 
 ---
 
 ## Shot 2 — Claude Desktop, unmodified, on the same server (45 s)
 
 **Screen.** Claude Desktop connected to the same server. `list_events` returns results;
-`register_member` returns a refusal. The dashboard marks both — one `public`, one `refused`.
+`register_member` returns a refusal. The dashboard marks them differently: `○ public` for the tool
+that asked for nothing, and `— unverified` for the call that presented nothing.
 
 **Narration.**
 > "This is Claude Desktop. It has no vLEI support and is not configured for any of this. It
@@ -100,21 +107,31 @@ markers as they print. Right: the dashboard filling in, one row per decision.
 > means — the extension lives in the fields MCP already reserves for extensions, so a client that
 > does not understand them behaves exactly as core MCP specifies."
 
-**Land on:** the dashboard showing one connection marked `unverified` alongside one that is not.
+> "And note which word the dashboard uses. Not *refused* — **unverified**. This client was not
+> judged and found wanting. It never made a claim. Those are different things, and a system that
+> reports them the same way has lost the distinction that makes any of this worth doing."
+
+**Land on:** `○ public` and `— unverified` side by side, in a different colour and a different word
+from the red `✗ refused` that appears in the next shot.
 
 ---
 
 ## Shot 3 — Revocation (45 s)
 
-**Screen.** Click **Revoke the ECR credential** on the dashboard. Re-run the same agent command
-from shot 1. It is refused, with `revoked`.
+**Screen.** Click **Revoke the ECR credential** on the dashboard. The button reads `Revoking…`,
+then reports the time it completed. Re-run the same agent command from shot 1. The report comes
+back with six green lines, one red, and one not reached.
 
 **Narration.**
 > "The association revokes the credential. This is a real revocation in the legal entity's
 > transaction event log — not a flag in a database.
 >
-> The same agent, the same command, the same key. Refused, and the reason is specific: `revoked`.
-> Not 'access denied'.
+> The same agent, the same command, the same key. Look at the report rather than the verdict: the
+> credential chain still verifies, the signature still verifies, the arguments still match. Six
+> checks pass. The seventh reads the issuer's log and finds the withdrawal.
+>
+> That is what a revocation looks like from the outside — not 'access denied', but five things that
+> are still true and one that stopped being true.
 >
 > That specificity is deliberate. The skill this agent follows responds differently to each layer:
 > a stale signature is retried once; `revoked` means stop and tell the user a new credential must
@@ -304,7 +321,7 @@ retryable.
 > your own entitlement, sign and call, handle the response, verify attestations. Each stage has an
 > explicit pass condition, and a stage is entered only when the previous one passed.
 >
-> The failure layers are the part I would ask you to look at. Eight of them, and the correct
+> The failure layers are the part I would ask you to look at. Nine of them, and the correct
 > response differs for each. A stale signature is retried once. `revoked` means stop and tell the
 > user a new credential is needed. `role_mismatch` means explain which role is required. An agent
 > that receives only 'access denied' cannot do any of that — which is why naming the layer is a
@@ -312,15 +329,36 @@ retryable.
 
 ---
 
+### 10b — Every requirement, traced
+
+**Slide.** `docs/CONFORMANCE.md` — sixteen normative statements, each with its implementation and
+its test. Three rows added during the review, and a section listing what is **not** claimed.
+
+> "A specification whose requirements cannot be traced to running code is a document. So every
+> MUST and SHOULD in ours has a row: the function that implements it, the test that holds it.
+>
+> Writing that table found three requirements with nothing behind them. It also has a section on
+> what we deliberately do not claim — offline issuer signatures, an error path we never exercise,
+> and a scope comparison that is one reasonable algebra rather than a standard. A conformance
+> document that lists only successes is not evidence of anything."
+
+---
+
 ### 11 — Demo
 
 **Slide.** The honesty statement, large, alone:
-*Real KERI, real ACDC, real verifier. The root of trust is self-configured; in production it would
+*Real KERI, real ACDC, real revocation. The root of trust is self-configured; in production it would
 be GLEIF's.*
 
-> "Before the recording: everything you are about to see is real KERI and real ACDCs, verified by
-> GLEIF's own verifier, with a real revocation. The one thing I control is the root of trust —
-> because I do not have a production vLEI. In production the chain terminates at GLEIF's root."
+> "Before the recording: everything you are about to see is real KERI and real ACDCs, issued
+> through GLEIF's own schemas, with a revocation read from the issuer's transaction event log. The
+> one thing I control is the root of trust — because I do not have a production vLEI. In production
+> the chain terminates at GLEIF's root.
+>
+> One more thing worth saying while the disclosure slide is up. We did use GLEIF's verifier, and we
+> found a defect in its revocation path that takes the service down. It is written up and ready to
+> file. That is why revocation here is read from the log directly — the authority is the same one
+> the verifier consults."
 
 *(Play the four shots. 3–4 minutes.)*
 
@@ -417,16 +455,20 @@ yet settled.
 **Slide.** Architecture diagram — five artifacts and their GitHub paths:
 
 ```
-spec/      specification, type definitions, wire examples
-packages/  mcp-vlei — Python, server extension and client
-skills/    SKILL.md and workflow.md — how a model uses it
-examples/  association server, agent, regulator scenario
+spec/      specification v0.2, type definitions, wire examples
+packages/  mcp-vlei — server extension, client, chain verification, 77 tests
+skills/    implementing-vlei (build time) · vlei-identity (runtime)
+examples/  association server with a live dashboard, agent, regulator scenario
 deploy/    gateway configuration — zero-code-change adoption
+docs/      problem, government adoption, conformance table, upstream defect
 ```
 `github.com/zuemen/mcp-vlei`
 
-> "Everything is in one repository, Apache licensed. The specification, the package, the skill, the
-> reference implementations, and the gateway configuration. Thank you — I have time for questions."
+> "Everything is in one repository, Apache licensed. The specification, the package, both skills,
+> the reference implementations, the gateway configuration, the conformance table — and the defect
+> report, because we used your verifier and we owe you that.
+>
+> Thank you — I have time for questions."
 
 ---
 
