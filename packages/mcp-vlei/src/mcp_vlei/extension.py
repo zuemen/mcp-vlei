@@ -33,6 +33,7 @@ from .errors import (
     VleiError,
 )
 from .signing import DEFAULT_FRESHNESS_SECONDS, ReplayCache, scope_satisfied, verify_request
+from .report import VerificationReport
 from .revocation import TelRevocationChecker
 from .verifier import OfflineVerifier, VerificationResult, VleiVerifier
 
@@ -43,6 +44,7 @@ META_SIGNATURE = "org.gleif.vlei/signature"
 META_ATTESTATION = "org.gleif.vlei/attestation"
 META_REQUIRES = "org.gleif.vlei/requires"
 META_FAILURE = "org.gleif.vlei/failure"
+META_REPORT = "org.gleif.vlei/report"
 
 __all__ = ["VleiIdentity", "EXTENSION_ID"]
 
@@ -100,6 +102,8 @@ class VleiIdentity(Extension):
         #: Called with an audit record for every decision. The reference dashboard uses this to
         #: render each connection's layer-by-layer outcome live.
         self.on_decision = on_decision
+        #: The most recent allowed verification, for a caller that wants to print it.
+        self.last_report: VerificationReport | None = None
 
     def bind(self, server: Any) -> None:
         """Give the extension the server whose tools it guards.
@@ -205,24 +209,26 @@ class VleiIdentity(Extension):
             return _text_result(_whoami_text(result))
 
         requirement = await self.requirement_for(name)
+        report = VerificationReport(tool=name)
         if not requirement:
             self._audit(name, None, allowed=True, note="public tool")
             return await call_next(ctx)
 
         try:
-            result = await self._verify(params, meta, requirement)
+            result = await self._verify(params, meta, requirement, report)
         except VleiError as exc:
-            self._audit(name, None, allowed=False, note=exc.layer.value)
-            return _text_result(exc.to_text(), is_error=True, detail=exc.to_detail())
+            self._audit(name, None, allowed=False, note=exc.layer.value, report=report)
+            return _text_result(exc.to_text(), is_error=True, detail=exc.to_detail(), report=report)
 
-        self._audit(name, result, allowed=True)
+        self._audit(name, result, allowed=True, report=report)
+        self.last_report = report
         return await call_next(ctx)
 
     async def _try_verify(
         self, params: CallToolRequestParams, meta: dict[str, Any]
     ) -> VerificationResult | None:
         try:
-            return await self._verify(params, meta, None)
+            return await self._verify(params, meta, None, VerificationReport(tool="vlei_whoami"))
         except VleiError:
             return None
 
@@ -231,77 +237,141 @@ class VleiIdentity(Extension):
         params: CallToolRequestParams,
         meta: dict[str, Any],
         requirement: dict[str, Any] | None,
+        report: VerificationReport,
     ) -> VerificationResult:
+        """Run the checks in order, recording each, and stop at the first failure.
+
+        The order is the one in `mcp_vlei.report`: everything decidable from the request itself
+        before the one check that has to ask someone. A verification service that is slow or down
+        then costs one line of the report instead of all of it.
+        """
         credential = meta.get(META_CREDENTIAL)
         signature = meta.get(META_SIGNATURE)
         delegated = meta.get(META_DELEGATED_AID)
 
+        report.start("credential_present")
         if not credential or not signature:
+            missing = "no signature" if credential else "no credential"
+            report.failed(
+                "credential_present", "missing_credential",
+                f"this tool requires an ECR credential and a signed request; the caller presented {missing}",
+            )
             raise MissingCredential(
                 "this tool requires an ECR credential and a signed request; the caller presented "
-                + ("no signature" if credential else "no credential")
+                + missing
             )
+        report.passed("credential_present")
 
         aid = signature.get("aid", "")
         said = meta.get("org.gleif.vlei/credentialSaid") or _said_of(credential)
 
         # Ask about the credential's **issuee**, not the signing AID. The agent signs with its
-        # delegated AID, but the credential was issued to — and presented by — the person. The
-        # verifier's record is keyed by that holder, so querying the delegate asks about an AID it
-        # has never seen.
-        #
-        # The issuee is read from the credential itself rather than taken from `_meta`, so a caller
-        # cannot point the question at someone else's record.
+        # delegated AID, but the credential was issued to — and presented by — the person, and a
+        # verification service keys its record by that holder. Read from the credential itself, so
+        # a caller cannot point the question at someone else's record.
         holder = _issuee_of(credential, said) or aid
-
-        # Local checks first, the remote one last. The chain, the SAIDs, the root and the
-        # signature can all be decided from the request itself, so a verification service that is
-        # slow or unreachable degrades one specific check instead of every check.
-        result = await self.offline.verify(credential, said=said, aid=holder, source="presented")
+        report.holder_aid = holder
+        report.credential_said = said
         if delegated and delegated != holder:
-            # Record who actually acted, while the identity established stays the holder's.
-            result.aid = delegated
+            report.delegate_aid = delegated
 
         verkey = meta.get("org.gleif.vlei/verkey")
+        serialized = params.model_dump(by_alias=True, exclude_none=True)
+
+        # Freshness, digest and signature are one call in `verify_request`, which raises the layer
+        # that failed. Splitting the report by layer keeps each line meaningful without duplicating
+        # the checks themselves.
+        for name in ("freshness", "digest", "signature"):
+            report.start(name)
         if verkey:
-            verify_request(
-                signature,
-                "tools/call",
-                params.model_dump(by_alias=True, exclude_none=True),
-                verkey,
-                freshness_seconds=self.freshness_seconds,
-                replay_cache=self._replay,
+            try:
+                verify_request(
+                    signature, "tools/call", serialized, verkey,
+                    freshness_seconds=self.freshness_seconds,
+                    replay_cache=self._replay,
+                )
+            except VleiError as exc:
+                stage = {
+                    "stale_signature": "freshness",
+                    "digest_mismatch": "digest",
+                    "invalid_signature": "signature",
+                }.get(exc.layer.value, "signature")
+                report.failed(stage, exc.layer.value, exc.message)
+                raise
+            for name in ("freshness", "digest", "signature"):
+                report.passed(name)
+        else:
+            for name in ("freshness", "digest", "signature"):
+                report.skipped(name, "no verification key was presented with the request")
+
+        report.start("delegation")
+        report.passed(
+            "delegation",
+            f"delegated AID {delegated}" if report.delegate_aid else "signed by the holder",
+        )
+
+        report.start("chain")
+        try:
+            result = await self.offline.verify(
+                credential, said=said, aid=holder, source="presented"
+            )
+        except VleiError as exc:
+            report.failed("chain", exc.layer.value, exc.message)
+            raise
+        if delegated and delegated != holder:
+            result.aid = delegated
+        report.lei, report.role = result.lei, result.role
+        report.passed("chain", f"root {result.root_aid}")
+        if not result.signatures_checked:
+            report.caveats.append(
+                "issuer signatures were not verified: that needs each issuer's key event log"
             )
 
         # Revocation is the one thing that cannot be established from the request alone: it lives
         # in the issuer's transaction event log, and a holder presenting a withdrawn credential
-        # would simply omit the withdrawal. Ask whichever source this deployment trusts, and
-        # refuse if the answer cannot be had — "we could not check" is not "not revoked".
-        if self.revocation_source == "tel" and self.tel is not None:
-            await self.tel.check(result.credential_said or said, aid=holder)
-            result.revocation_checked = True
-        elif self.revocation_source == "verifier" and self.verifier is not None:
-            live = await self.verifier.verify(
-                credential, said=said, aid=holder, source="presented"
-            )
-            result.revocation_checked = True
-            result.role = live.role or result.role
-            result.lei = live.lei or result.lei
+        # would simply omit the withdrawal.
+        report.start("revocation")
+        try:
+            if self.revocation_source == "tel" and self.tel is not None:
+                await self.tel.check(result.credential_said or said, aid=holder)
+                result.revocation_checked = True
+                report.passed("revocation", "issuer's transaction event log")
+            elif self.revocation_source == "verifier" and self.verifier is not None:
+                live = await self.verifier.verify(
+                    credential, said=said, aid=holder, source="presented"
+                )
+                result.revocation_checked = True
+                result.role = live.role or result.role
+                result.lei = live.lei or result.lei
+                report.lei, report.role = result.lei, result.role
+                report.passed("revocation", "vlei-verifier")
+            else:
+                report.skipped("revocation", "no revocation source configured")
+        except VleiError as exc:
+            report.failed("revocation", exc.layer.value, exc.message)
+            raise
 
+        report.start("authority")
         if requirement:
             wanted_role = requirement.get("role")
             if wanted_role and result.role != wanted_role:
-                raise RoleMismatch(
+                detail = (
                     f"tool requires role {wanted_role!r}; "
-                    f"the presented credential carries {result.role!r}",
-                    aid=result.aid,
-                    credential_said=result.credential_said,
+                    f"the presented credential carries {result.role!r}"
+                )
+                report.failed("authority", "role_mismatch", detail)
+                raise RoleMismatch(
+                    detail, aid=result.aid, credential_said=result.credential_said
                 )
             ok, reason = scope_satisfied(requirement.get("scope"), result.scope)
             if not ok:
+                report.failed("authority", "scope_exceeded", reason)
                 raise ScopeExceeded(
                     reason, aid=result.aid, credential_said=result.credential_said
                 )
+            report.passed("authority", f"role {result.role!r}")
+        else:
+            report.skipped("authority", "this tool declares no requirement")
 
         return result
 
@@ -312,10 +382,13 @@ class VleiIdentity(Extension):
         *,
         allowed: bool,
         note: str = "",
+        report: "VerificationReport | None" = None,
     ) -> None:
         if self.on_decision is None:
             return
         record: dict[str, Any] = {"tool": tool, "allowed": allowed, "note": note}
+        if report is not None:
+            record["report"] = report.as_dict()
         if result:
             record |= {
                 "lei": result.lei,
@@ -365,12 +438,23 @@ def _issuee_of(cesr: str, said: str = "") -> str:
 
 
 def _text_result(
-    text: str, *, is_error: bool = False, detail: dict[str, Any] | None = None
+    text: str,
+    *,
+    is_error: bool = False,
+    detail: dict[str, Any] | None = None,
+    report: "VerificationReport | None" = None,
 ) -> CallToolResult:
+    result_meta: dict[str, Any] = {}
+    if detail:
+        result_meta[META_FAILURE] = detail
+    if report is not None:
+        # The caller gets the whole sequence, not just the verdict: which checks ran, which one
+        # stopped the call, and what each cost. The dashboard renders this; a log keeps it.
+        result_meta[META_REPORT] = report.as_dict()
     return CallToolResult(
         content=[TextContent(type="text", text=text)],
         is_error=is_error,
-        meta={META_FAILURE: detail} if detail else None,
+        meta=result_meta or None,
     )
 
 

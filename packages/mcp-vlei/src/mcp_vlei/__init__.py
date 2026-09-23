@@ -27,6 +27,7 @@ from .errors import (
 from .chain import Acdc, parse_stream, recompute_said, walk_chain
 from .extension import EXTENSION_ID, VleiIdentity
 from .signing import ReplayCache, Signer, canonicalize, digest_params, sign_request, verify_request
+from .report import CHECK_ORDER, CheckResult, VerificationReport
 from .revocation import TelRevocationChecker
 from .verifier import OfflineVerifier, VerificationResult, VleiVerifier
 
@@ -43,6 +44,9 @@ __all__ = [
     "VleiVerifier",
     "OfflineVerifier",
     "TelRevocationChecker",
+    "VerificationReport",
+    "CheckResult",
+    "CHECK_ORDER",
     "Acdc",
     "parse_stream",
     "recompute_said",

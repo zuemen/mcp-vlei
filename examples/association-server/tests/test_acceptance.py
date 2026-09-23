@@ -81,6 +81,32 @@ def presented(env: dict[str, Any]) -> None:
     )
 
 
+def show_report(result: Any) -> None:
+    """Print the layer-by-layer report the server attached to its answer.
+
+    This is the recording: a viewer sees which checks ran, which one stopped the call, and that the
+    ones before it passed. A single line saying `revoked` is correct and unconvincing.
+    """
+    report = (getattr(result, "meta", None) or {}).get("org.gleif.vlei/report")
+    if not report:
+        return
+    marks = {True: "+", False: "x", None: "-"}
+    print(f"
+  verifying {report['tool']}")
+    for check in report["checks"]:
+        mark = marks[check["passed"]]
+        tail = check["layer"] or f"{check['durationMs']:6.1f} ms"
+        print(f"    {mark} {check['label']:<44} {tail}")
+        if check["passed"] is False and check["detail"]:
+            print(f"      {check['detail']}")
+    for caveat in report["caveats"]:
+        print(f"    ! {caveat}")
+    verdict = f"REFUSED: {report['layer']}" if report["layer"] else "ALLOWED"
+    identity = report["identity"]
+    suffix = " ".join(filter(None, [identity["lei"], identity["role"]]))
+    print(f"  {verdict}{'  ' + suffix if suffix and not report['layer'] else ''}")
+
+
 def show(title: str, **fields: Any) -> None:
     print(f"\n  {title}")
     for key, value in fields.items():
@@ -139,6 +165,7 @@ async def test_1_register_member_with_credential(env):
         result = await session.call_tool(
             "register_member", {"name": "Chen Wei-Ting", "email": "weiting@example.org.tw"}
         )
+        show_report(result)
         show("stage 6 — result", isError=result.is_error, text=_text(result)[:120])
         assert not result.is_error
 
@@ -158,7 +185,9 @@ async def test_2_register_member_without_credential(env):
         result = await session.call_tool(
             "register_member", {"name": "Nobody", "email": "nobody@example.org"}, present=False
         )
-        show("refused", layer=_layer(result), text=_text(result)[:120])
+        show_report(result)
+        show_report(result)
+    show("refused", layer=_layer(result), text=_text(result)[:120])
         assert result.is_error
         assert _layer(result) == "missing_credential"
 
@@ -193,7 +222,9 @@ async def test_3_revoked_credential_is_refused(env):
         result = await session.call_tool(
             "register_member", {"name": "Chen Wei-Ting", "email": "weiting@example.org.tw"}
         )
-        show("refused", layer=_layer(result), text=_text(result)[:120])
+        show_report(result)
+        show_report(result)
+    show("refused", layer=_layer(result), text=_text(result)[:120])
         assert result.is_error
         assert _layer(result) == "revoked"
 
@@ -225,6 +256,7 @@ async def test_4_tampered_arguments_are_refused(env):
             {"name": "Someone Else", "email": "attacker@example.org"},
             meta=meta,
         )
+    show_report(result)
     show("refused", layer=_layer(result), text=_text(result)[:120])
     assert _layer(result) == "digest_mismatch"
 
@@ -254,6 +286,7 @@ async def test_5_unmodified_client_is_additive(env):
         protected = await plain.call_tool(
             "register_member", {"name": "X", "email": "x@example.org"}
         )
+        show_report(protected)
         show("protected tool", layer=_layer(protected))
         assert protected.is_error
         assert _layer(protected) == "missing_credential"
