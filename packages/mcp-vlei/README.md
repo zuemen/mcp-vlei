@@ -74,10 +74,37 @@ audit log.
 **Verification logic lives here, never in a server.** A server declares what it requires; it does
 not decide what "valid" means.
 
-**Failures name their layer.** `revoked`, `role_mismatch`, `digest_mismatch`, `scope_exceeded`,
-`chain_invalid`, `unknown_root`, `invalid_signature`, `stale_signature`. The correct recovery
-differs per layer, and `skills/vlei-identity/SKILL.md` keys its behavior off these exact strings. Of
-the eight, exactly one — `stale_signature` — is worth retrying.
+**Failures name their layer.** The correct recovery differs per layer, and
+`skills/vlei-identity/SKILL.md` keys its behaviour off these exact strings.
+
+| Layer | Means | Retry? |
+|---|---|---|
+| `missing_credential` | Nothing was presented. Not a failure to verify — a failure to present | no; attach one |
+| `stale_signature` | Outside the freshness window, or a replay | **once** |
+| `digest_mismatch` | Arguments do not match the signed digest — altered after signing | no |
+| `invalid_signature` | Does not verify under the signing AID's key state | no |
+| `chain_invalid` | A SAID does not recompute, a link is broken, or a log could not be read | no |
+| `revoked` | Withdrawn in the issuer's transaction event log | no; a new credential must be issued |
+| `unknown_root` | The chain is sound but terminates at a root this party does not accept | no; the two organizations must agree |
+| `role_mismatch` | The ECR role does not satisfy the tool's requirement | no |
+| `scope_exceeded` | The request exceeds the tool's declared scope | no; ask before retrying in scope |
+
+Nine layers, and exactly one — `stale_signature` — is worth retrying.
+
+## Settings
+
+| Setting | Default | Notes |
+|---|---|---|
+| `accepted_roots` | — | **Security critical.** The entire trust decision. An empty list raises rather than accepting anything |
+| `revocation_source` | `"tel"` | `"tel"` reads the issuer's log from a witness; `"verifier"` asks a `vlei-verifier`; `"none"` marks every result `revocation_checked=False` |
+| `witness_url` | — | Required by `revocation_source="tel"` |
+| `verifier_url` | — | Required by `revocation_source="verifier"` |
+| `freshness_seconds` | 60 | Signature freshness window, paired with a replay cache that retains for twice as long |
+| `ttl_ms` | 30000 | How long a verification result may be cached. **Set to 0 for high-value tools** — a revocation takes effect no later than cache expiry |
+
+Two of these are security critical and worth stating plainly: **`accepted_roots` must never be
+empty**, and **an unreadable revocation source refuses rather than allows**. Reporting "could not
+check" as "not revoked" is the one failure this package is built to prevent.
 
 **Signature freshness defaults to 60 seconds, plus a replay cache.** The window alone bounds replay
 to a minute rather than eliminating it; the cache is the other half.

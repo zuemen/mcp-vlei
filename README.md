@@ -1,5 +1,7 @@
 # mcp-vlei
 
+[![tests](https://github.com/zuemen/mcp-vlei/actions/workflows/test.yml/badge.svg)](https://github.com/zuemen/mcp-vlei/actions/workflows/test.yml)
+
 **Reference design · v0.2 · root of trust self-configured**
 
 Verifiable **organizational** identity for the Model Context Protocol, using GLEIF's vLEI ecosystem.
@@ -24,6 +26,7 @@ extension mechanism. The MCP core schema is not modified.
 | `spec/examples/` | Wire-format examples |
 | `skills/implementing-vlei/` | **Build time** — how to implement the extension correctly. Output is code: reviewed once, then executed every time |
 | `skills/vlei-identity/` | **Runtime** — how a running agent presents credentials and reads a refusal. Output is behaviour: guidance, not a guarantee |
+| `docs/CONFORMANCE.md` | Every normative statement in the spec, with its implementation and its test |
 | `docs/upstream/` | A defect found in `vlei-verifier` while building this, written up for GLEIF |
 | `scripts/` | One-command credential environment bootstrap |
 | `packages/mcp-vlei/` | Python implementation (`VleiIdentity` server extension, `VleiClient`) |

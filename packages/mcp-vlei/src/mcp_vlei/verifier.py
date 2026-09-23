@@ -42,6 +42,10 @@ class VerificationResult:
     revocation_checked: bool = True
     #: Whether issuer signatures were verified.
     signatures_checked: bool = True
+    #: When `source == "attestation"`, the AID whose judgment this rests on. A relying party that
+    #: accepted someone else's verification must be able to say whose — `spec/SPEC.md`
+    #: §Security Considerations requires the decision to record it.
+    attested_by: str | None = None
 
     def to_headers(self) -> dict[str, str]:
         """The headers a gateway passes downstream so a legacy system needs no vLEI code at all."""

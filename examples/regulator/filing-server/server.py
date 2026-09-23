@@ -18,10 +18,24 @@ import os
 from datetime import date
 from typing import Any
 
-from mcp.server import MCPServer
-from mcp.server.http import create_http_app
+from pathlib import Path
+
+from mcp.server.mcpserver import MCPServer
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 mcp = MCPServer(name="filing-server", version="0.1.0")
+
+# The regulator's own Legal Entity credential, published for passive verification. Mode (a) of
+# `spec/SPEC.md` is a MUST, and it applies to a regulator as much as to anyone: an agent about to
+# file a return should be able to establish who operates the endpoint *before* sending it.
+#
+# Note what this does not do. The file is served as published; nothing here parses or verifies a
+# credential, which is the whole claim of this example.
+LE_CREDENTIAL = Path(
+    os.environ.get("VLEI_LE_CREDENTIAL", Path(__file__).resolve().parents[3] / "credentials" / "le.cesr")
+)
+ACCEPTED_ROOTS = [r for r in os.environ.get("VLEI_ACCEPTED_ROOTS", "").split(",") if r]
 
 FORMS = [
     {"id": "A1", "title": "Quarterly capital adequacy return", "periods": ["2026Q1", "2026Q2"]},
@@ -50,6 +64,21 @@ def _caller(ctx: Any) -> dict[str, str]:
         "holder": headers.get("x-vlei-holder-aid", ""),
         "agent": headers.get("x-vlei-delegate-aid", ""),
     }
+
+
+@mcp.custom_route("/.well-known/vlei", methods=["GET"])
+async def well_known(request: Request) -> JSONResponse:
+    """Who operates this endpoint, fetchable without a session."""
+    if not LE_CREDENTIAL.exists():
+        return JSONResponse({"error": "no LE credential configured"}, status_code=404)
+    return JSONResponse(
+        {
+            "extension": "org.gleif.vlei/identity",
+            "credential": LE_CREDENTIAL.read_text(encoding="utf-8").strip(),
+            "acceptedRoots": ACCEPTED_ROOTS,
+            "signatureAlgs": ["Ed25519"],
+        }
+    )
 
 
 @mcp.tool()
@@ -101,9 +130,9 @@ def submit_filing(form: str, period: str, payload: dict[str, Any], ctx: Any = No
     return record
 
 
-app = create_http_app(mcp)
-
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8081")))
+    uvicorn.run(
+        mcp.streamable_http_app(), host="0.0.0.0", port=int(os.environ.get("PORT", "8081"))
+    )

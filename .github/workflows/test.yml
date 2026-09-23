@@ -1,0 +1,29 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  package:
+    # Only the tests that need nothing running. The acceptance suite in examples/ needs a KERI
+    # witness network, a schema server and a verifier, so it belongs on a machine with Docker and
+    # patience rather than in a pull-request check.
+    name: package (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install
+        run: pip install -e "packages/mcp-vlei[dev]"
+      - name: Test
+        run: pytest packages/mcp-vlei/tests -q
+      - name: The package ships its type marker
+        run: python -c "import importlib.resources as r, mcp_vlei; assert (r.files(mcp_vlei) / 'py.typed').is_file()"

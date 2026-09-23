@@ -145,4 +145,9 @@ def verify_attestation(
         credential_said=attestation.get("credentialSaid"),
         holder_aid=attestation["subjectAid"],
         source="attestation",
+        # Whose judgment this rests on. A relying party that accepted an attestation did not check
+        # the credential; it trusted a party that says it did, and the record has to name them.
+        attested_by=attestation["verifierAid"],
+        revocation_checked=False,
+        signatures_checked=False,
     )
