@@ -1,0 +1,59 @@
+# The regulator scenario, end to end.
+#
+#   docker compose -f deploy/agentgateway/docker-compose.yml up -d
+#   MCP_SERVER_URL=http://localhost:3000/mcp python examples/my-agent/agent.py "..."
+#
+# Assumes scripts/docker-compose.yml is already up (witnesses, schema server, verifier) and
+# scripts/bootstrap-credentials.sh has produced credentials/.
+
+name: mcp-vlei-regulator
+
+services:
+  # Does no vLEI verification at all. Reads four headers. That is the deliverable.
+  filing-server:
+    build:
+      context: ../..
+      dockerfile: deploy/agentgateway/Dockerfile.python
+    command: python examples/regulator/filing-server/server.py
+    environment:
+      - PORT=8081
+      - PYTHONUNBUFFERED=1
+    expose:
+      - "8081"
+
+  # The same mcp_vlei verification logic as the in-process extension, behind HTTP.
+  vlei-authz:
+    build:
+      context: ../..
+      dockerfile: deploy/agentgateway/Dockerfile.python
+    command: python examples/regulator/vlei-authz/service.py
+    environment:
+      - PORT=9000
+      - PYTHONUNBUFFERED=1
+      - VLEI_VERIFIER_URL=http://vlei-verifier:7676
+      - VLEI_GATEWAY_AID=${VLEI_GATEWAY_AID:-}
+      - VLEI_GATEWAY_KEYS=/app/examples/my-agent/keys
+    volumes:
+      - ../../credentials:/app/credentials:ro
+      - ../../examples/my-agent/keys:/app/examples/my-agent/keys:ro
+    expose:
+      - "9000"
+    networks:
+      - default
+      - mcp-vlei_default
+
+  agentgateway:
+    image: ghcr.io/agentgateway/agentgateway:latest
+    command: ["-f", "/etc/agentgateway/config.yaml"]
+    volumes:
+      - ./config.yaml:/etc/agentgateway/config.yaml:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - filing-server
+      - vlei-authz
+
+networks:
+  # Reach the verifier started by scripts/docker-compose.yml.
+  mcp-vlei_default:
+    external: true

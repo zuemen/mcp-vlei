@@ -1,0 +1,86 @@
+# Credential environment for mcp-vlei.
+#
+# Real KERI, real ACDC, real verifier. The root of trust is self-configured — in production it
+# would be GLEIF's. Nothing here depends on a GLEIF-issued credential.
+#
+#   docker compose -f scripts/docker-compose.yml up -d
+#   bash scripts/bootstrap-credentials.sh
+
+name: mcp-vlei
+
+services:
+  # Three demo witnesses (wan, wil, wes) on 5642-5644. Their AIDs are the well-known demo set,
+  # derived from the fixed salt baked into `kli witness demo`.
+  witness-demo:
+    image: weboftrust/keri:1.2.6
+    container_name: mcp-vlei-witness
+    environment:
+      - PYTHONUNBUFFERED=1
+    command: kli witness demo
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5642/oobi"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    ports:
+      - "5642:5642"
+      - "5643:5643"
+      - "5644:5644"
+
+  # Serves the published vLEI ACDC schemas by SAID, so `kli vc create --schema <SAID>` can resolve
+  # them. This is the WebOfTrust/vLEI schema set, unmodified.
+  vlei-server:
+    image: gleif/vlei:0.2.0
+    container_name: mcp-vlei-schema
+    command:
+      - vLEI-server
+      - -s
+      - ./schema/acdc
+      - -c
+      - ./samples/acdc/
+      - -o
+      - ./samples/oobis/
+      - -p
+      - "7723"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7723/oobi/EBfdlu8R27Fbx-ehrqwImnK-8Cm79sqbAQ4MmvEAYqao"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    ports:
+      - "7723:7723"
+
+  # GLEIF-IT/vlei-verifier. VERIFY_ROOT_OF_TRUST empty at start; the bootstrap script installs our
+  # self-configured root via POST /root_of_trust/{aid}, which is the documented mechanism for
+  # running the verifier against a non-GLEIF root.
+  vlei-verifier:
+    # No `latest` tag is published for this image — pin an explicit release.
+    image: gleif/vlei-verifier:1.0.0
+    container_name: mcp-vlei-verifier
+    environment:
+      - VERIFY_ROOT_OF_TRUST=
+      - VLEI_VERIFIER_PORT=7676
+    depends_on:
+      witness-demo:
+        condition: service_healthy
+      vlei-server:
+        condition: service_healthy
+    ports:
+      - "7676:7676"
+
+  # Long-running container that holds the keystores. The bootstrap script drives `kli` here via
+  # `docker compose exec`, so keystores survive between steps and can be inspected afterwards.
+  keri-cli:
+    image: weboftrust/keri:1.2.6
+    container_name: mcp-vlei-cli
+    entrypoint: ["tail", "-f", "/dev/null"]
+    depends_on:
+      witness-demo:
+        condition: service_healthy
+      vlei-server:
+        condition: service_healthy
+    volumes:
+      - ./keri-config:/keri-config:ro
+      - ../credentials:/credentials

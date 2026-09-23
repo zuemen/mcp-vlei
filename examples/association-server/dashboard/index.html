@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Association Server — identity decisions</title>
+<style>
+  :root {
+    --bg: #faf9f6; --panel: #ffffff; --ink: #1b1b1a; --muted: #6b6b66;
+    --line: #e3e1da; --ok: #1f7a4d; --bad: #a5321f; --warn: #8a6d1f;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  }
+  :root:not([data-theme="light"]) { }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #16161a; --panel: #1e1e23; --ink: #ececea; --muted: #9a9a94;
+      --line: #2e2e35; --ok: #5fc08c; --bad: #e0705a; --warn: #d6b45e;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 32px 16px 64px; }
+  header { display: flex; flex-wrap: wrap; gap: 16px; align-items: baseline; justify-content: space-between; }
+  h1 { font-size: 22px; margin: 0; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); font-size: 13px; margin: 4px 0 0; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin: 24px 0; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .card .k { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+  .card .v { font-size: 20px; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; }
+  tr:last-child td { border-bottom: 0; }
+  td.mono, .mono { font-family: var(--mono); font-size: 12.5px; word-break: break-all; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .pill.ok { background: color-mix(in srgb, var(--ok) 15%, transparent); color: var(--ok); }
+  .pill.bad { background: color-mix(in srgb, var(--bad) 15%, transparent); color: var(--bad); }
+  .pill.warn { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
+  button {
+    font: inherit; font-weight: 600; padding: 9px 16px; border-radius: 8px;
+    border: 1px solid var(--bad); background: transparent; color: var(--bad); cursor: pointer;
+  }
+  button:hover { background: color-mix(in srgb, var(--bad) 12%, transparent); }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .note { color: var(--muted); font-size: 13px; margin-top: 28px; border-top: 1px solid var(--line); padding-top: 14px; }
+  .empty { color: var(--muted); padding: 24px 12px; }
+  @media (max-width: 640px) { .wrap { padding: 20px 16px 48px; } h1 { font-size: 19px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Association Server — identity decisions</h1>
+      <p class="sub">Every connection, the credential it presented, and the layer-by-layer outcome.</p>
+    </div>
+    <button id="revoke">Revoke the ECR credential</button>
+  </header>
+
+  <div class="grid">
+    <div class="card"><div class="k">Decisions</div><div class="v" id="count">0</div></div>
+    <div class="card"><div class="k">Allowed</div><div class="v" id="allowed">0</div></div>
+    <div class="card"><div class="k">Refused</div><div class="v" id="refused">0</div></div>
+    <div class="card"><div class="k">Members registered</div><div class="v" id="members">0</div></div>
+  </div>
+
+  <table>
+    <thead>
+      <tr><th>Time</th><th>Tool</th><th>Outcome</th><th>LEI / role</th><th>AIDs</th><th>Credential</th></tr>
+    </thead>
+    <tbody id="rows">
+      <tr><td class="empty" colspan="6">No calls yet. Start the agent to populate this table.</td></tr>
+    </tbody>
+  </table>
+
+  <p class="note">
+    Real KERI, real ACDC, real verifier. The root of trust is self-configured; in production it
+    would be GLEIF's. A connection that presented no credential is marked <b>unverified</b> — which
+    is a different statement from <b>refused</b>, and a different statement again from
+    <b>verified</b>.
+  </p>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+function outcome(d) {
+  if (d.allowed && d.note === 'public tool') return '<span class="pill warn">public</span>';
+  if (d.allowed) return '<span class="pill ok">allowed</span>';
+  return `<span class="pill bad">${d.note || 'refused'}</span>`;
+}
+
+function shorten(aid) {
+  return aid ? `${aid.slice(0, 10)}…${aid.slice(-4)}` : '—';
+}
+
+function render(data) {
+  const rows = data.decisions || [];
+  $('count').textContent = rows.length;
+  $('allowed').textContent = rows.filter(d => d.allowed).length;
+  $('refused').textContent = rows.filter(d => !d.allowed).length;
+  $('members').textContent = data.members ?? 0;
+
+  if (!rows.length) return;
+  $('rows').innerHTML = rows.map(d => {
+    const identity = d.identity === 'unverified'
+      ? '<span class="pill warn">unverified</span>'
+      : `${d.lei || '—'}<br><span class="mono">${d.role || '—'}</span>`;
+    const aids = d.identity === 'unverified' ? '—'
+      : `<span class="mono">holder ${shorten(d.holderAid)}</span>` +
+        (d.delegateAid ? `<br><span class="mono">agent&nbsp; ${shorten(d.delegateAid)}</span>` : '');
+    return `<tr>
+      <td class="mono">${d.at || ''}</td>
+      <td class="mono">${d.tool}</td>
+      <td>${outcome(d)}</td>
+      <td>${identity}</td>
+      <td>${aids}</td>
+      <td class="mono">${shorten(d.credentialSaid)}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function poll() {
+  try {
+    render(await (await fetch('/api/audit')).json());
+  } catch (e) { /* server not up yet; try again next tick */ }
+}
+
+$('revoke').addEventListener('click', async (e) => {
+  e.target.disabled = true;
+  e.target.textContent = 'Revoking…';
+  try {
+    await fetch('/api/revoke', { method: 'POST' });
+    e.target.textContent = 'ECR revoked';
+  } catch {
+    e.target.textContent = 'Revoke failed';
+    e.target.disabled = false;
+  }
+  poll();
+});
+
+poll();
+setInterval(poll, 1000);
+</script>
+</body>
+</html>

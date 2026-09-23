@@ -42,15 +42,20 @@ extension mechanism. The MCP core schema is not modified.
 
 | Task | State |
 |---|---|
-| 0 — Problem statement | done |
-| 1 — Schema extension | done |
-| 2 — Skill and workflow | done |
-| 3 — Credential environment | not started |
-| 4 — Python package | not started |
-| 5 — Reference implementation | not started |
-| 6A — Government adoption path | not started |
-| 6B — Government gateway | optional |
-| 7 — Talk and recording | not started |
+| 0 — Problem statement | `docs/PROBLEM.md` |
+| 1 — Schema extension | `spec/` |
+| 2 — Skill and workflow | `skills/vlei-identity/` |
+| 3 — Credential environment | `scripts/` — written; **not yet executed end to end** |
+| 4 — Python package | `packages/mcp-vlei/` — 44 tests passing |
+| 5 — Reference implementation | `examples/association-server/`, `examples/my-agent/` |
+| 6A — Government adoption path | `docs/GOVERNMENT.md` |
+| 6B — Government gateway | `examples/regulator/`, `deploy/agentgateway/` |
+| 7 — Talk and recording | `docs/DEMO.md` |
+
+The one gap is deliberate and worth stating plainly: `scripts/bootstrap-credentials.sh` has not yet
+completed a full run against live containers, so its `kli` invocations are unverified. Everything
+downstream of it is tested against the package's own decision logic rather than against issued
+credentials. Closing that gap is the next step.
 
 ## Honesty statement
 
