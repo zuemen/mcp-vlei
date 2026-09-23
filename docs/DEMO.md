@@ -288,7 +288,16 @@ Slide 8 uses the full file. Same interface in both places, so nobody has to lear
 
 # Slides
 
-Seventeen slides for thirteen minutes. Notes are what to say, not what is on the slide.
+Nineteen slides for thirteen minutes. Notes are what to say, not what is on the slide.
+
+The deck is **generated from this section** — `scripts/build-deck.py` carries each slide's layout
+and copies these block quotes into its speaker notes verbatim. Edit the talk here, then:
+
+```bash
+python scripts/build-deck.py     # -> docs/slides/mcp-vlei.pptx
+```
+
+Native PowerPoint, real text boxes and tables, editable on the machine that meets the projector.
 
 ### 1 — Title
 
