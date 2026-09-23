@@ -7,3 +7,4 @@ credentials/
 node_modules/
 bootstrap.log
 verify.log
+server.log
