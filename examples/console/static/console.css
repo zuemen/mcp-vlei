@@ -1,0 +1,256 @@
+/*
+  Trust Console — design: docs/DEMO-CONSOLE.md
+
+  Built for one size (1920×1080) and one medium (a recording played on a projector). Light, because
+  a dark panel washes out in a lit room. Fixed, because responsive layout solves a problem this
+  screen does not have.
+*/
+
+:root {
+  --bg:       #F7F5EF;
+  --panel:    #FFFFFF;
+  --ink:      #1B2330;
+  --ink-2:    #5B6472;
+  --muted:    #8A93A0;
+  --pass:     #2E5D89;
+  --fail:     #C0392B;
+  --code-bg:  #EFEDE6;
+  --rule:     #D8D3C8;
+
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
+  --col-1: 420px;
+  --col-2: 860px;
+  --col-3: 640px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  width: 1920px;
+  height: 1080px;
+  overflow: hidden;              /* a scrollbar appearing mid-take is a reshoot */
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-feature-settings: "tnum" 1;
+  -webkit-font-smoothing: antialiased;
+}
+
+.console {
+  display: grid;
+  grid-template-rows: 72px 1fr 96px;
+  height: 1080px;
+}
+
+/* ---------------------------------------------------------------- header */
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 32px;
+  border-bottom: 1px solid var(--rule);
+  background: var(--panel);
+}
+.title { font-size: 28px; font-weight: 600; letter-spacing: -0.01em; }
+.title .x { color: var(--muted); font-weight: 400; margin: 0 6px; }
+
+.header-right { display: flex; align-items: center; gap: 28px; }
+
+.live { display: flex; align-items: center; gap: 9px; font-size: 15px; color: var(--ink-2); }
+.dot {
+  width: 9px; height: 9px; border-radius: 50%;
+  background: var(--pass);
+  transition: background 220ms ease;
+}
+.dot.down { background: var(--fail); }
+
+.scene-indicator {
+  font-size: 15px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--ink-2);
+}
+.scene-title { color: var(--muted); font-weight: 400; letter-spacing: 0; text-transform: none; }
+body.no-chrome .scene-indicator { visibility: hidden; }
+
+/* ----------------------------------------------------------------- panes */
+
+.panes {
+  display: grid;
+  grid-template-columns: var(--col-1) var(--col-2) var(--col-3);
+  min-height: 0;
+}
+.pane {
+  padding: 26px 28px;
+  border-right: 1px solid var(--rule);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.pane:last-child { border-right: 0; }
+
+.pane > h2 {
+  margin: 0 0 20px;
+  font-size: 15px; font-weight: 600;
+  letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--ink-2);
+}
+
+/* ------------------------------------------------------------ identities */
+
+.card {
+  position: relative;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  padding: 18px 20px 18px 26px;
+  margin-bottom: 18px;
+  overflow: hidden;
+  transition: opacity 260ms ease;
+}
+.card::before {
+  content: "";
+  position: absolute; left: 0; top: 0; bottom: 0;
+  width: 4px;
+  background: var(--muted);
+  transition: background 260ms ease;
+}
+.card.valid::before   { background: var(--pass); }
+.card.revoked::before { background: var(--fail); }
+.card.revoked         { opacity: .6; }
+
+.card .kind {
+  font-size: 13px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--muted);
+  display: flex; justify-content: space-between;
+}
+.card .lei { font-size: 20px; font-weight: 600; font-family: var(--mono); margin: 10px 0 4px; }
+.card .label { font-size: 16px; color: var(--ink-2); }
+.card .status { margin-top: 12px; font-size: 15px; font-weight: 600; color: var(--muted); }
+.card.valid   .status { color: var(--pass); }
+.card.revoked .status { color: var(--fail); }
+.card .stamp { margin-top: 5px; font-size: 13px; font-family: var(--mono); color: var(--fail); }
+.card .note  { margin-top: 10px; font-size: 13px; color: var(--muted); font-style: italic; }
+
+.revoke {
+  width: 100%;
+  font: 600 16px var(--sans);
+  padding: 13px;
+  border: 1.5px solid var(--fail);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--fail);
+  cursor: pointer;
+  transition: background 200ms ease, color 200ms ease, opacity 200ms ease;
+}
+.revoke:hover:not(:disabled) { background: rgba(192, 57, 43, .07); }
+.revoke:disabled { opacity: .55; cursor: default; }
+
+.evidence {
+  margin-top: auto;
+  padding-top: 18px;
+  border-top: 1px solid var(--rule);
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.7;
+}
+.evidence b { color: var(--ink-2); font-weight: 600; }
+
+/* --------------------------------------------------------------- request */
+
+.req-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 16px; }
+.req-method { font-family: var(--mono); font-size: 17px; color: var(--ink-2); }
+.req-name   { font-family: var(--mono); font-size: 21px; font-weight: 600; }
+
+pre.json {
+  flex: 1;
+  margin: 0;
+  padding: 20px 22px;
+  background: var(--code-bg);
+  border-radius: 10px;
+  font-family: var(--mono);
+  font-size: 17px;
+  line-height: 1.62;
+  overflow: hidden;              /* truncation is the design, not a scrollbar */
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.k    { color: var(--ink-2); }
+.s    { color: var(--ink); }
+.n    { color: var(--ink); }
+.vlei { color: var(--fail); background: rgba(192, 57, 43, .06); border-radius: 3px; padding: 0 2px; }
+
+.self-asserted {
+  margin-top: 14px;
+  font-size: 15px;
+  color: var(--muted);
+}
+
+/* ---------------------------------------------------------- verification */
+
+.checks { list-style: none; margin: 0; padding: 0; }
+.check {
+  position: relative;
+  display: grid;
+  grid-template-columns: 30px 1fr auto;
+  align-items: baseline;
+  gap: 12px;
+  padding: 11px 0 11px 10px;
+  font-size: 19px; font-weight: 500;
+  color: var(--muted);
+  border-bottom: 1px solid var(--rule);
+  transition: color 240ms ease;
+}
+.check:last-of-type { border-bottom: 0; }
+.check .mark { font-family: var(--mono); font-weight: 700; text-align: center; }
+.check .ms   { font-family: var(--mono); font-size: 14px; color: var(--muted); }
+.check .why  { grid-column: 2 / -1; font-size: 14.5px; font-weight: 400; color: var(--fail); }
+
+.check.pass    { color: var(--pass); }
+.check.fail    { color: var(--fail); }
+.check.skipped { color: var(--rule); }
+.check.running { color: var(--pass); }
+.check.running::before {
+  content: "";
+  position: absolute; left: 0; top: 8px; bottom: 8px;
+  width: 2px;
+  background: var(--pass);
+}
+
+.outcome {
+  margin-top: 26px;
+  padding: 24px 22px;
+  border-radius: 12px;
+  color: #fff;
+  font-size: 34px; font-weight: 700;
+  letter-spacing: -0.01em;
+  background: var(--muted);
+  transition: background 260ms ease;
+}
+.outcome.allowed       { background: var(--pass); }
+.outcome.refused       { background: var(--fail); }
+.outcome.self-asserted { background: var(--muted); }
+.outcome .layer { font-weight: 600; }
+.outcome .note  { display: block; margin-top: 9px; font-size: 15px; font-weight: 400; opacity: .92; }
+
+/* ------------------------------------------------------------------- log */
+
+.log {
+  display: flex;
+  align-items: center;
+  gap: 26px;
+  padding: 0 32px;
+  border-top: 1px solid var(--rule);
+  background: var(--panel);
+  font-size: 14px;
+  color: var(--ink-2);
+  overflow: hidden;
+}
+.log .lbl {
+  font-size: 13px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--muted);
+}
+.log .entry { white-space: nowrap; }
+.log .entry .ts { font-family: var(--mono); color: var(--muted); margin-right: 7px; }

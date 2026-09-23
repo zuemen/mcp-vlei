@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>MCP × vLEI Trust Console</title>
+<link rel="stylesheet" href="/console.css">
+</head>
+<body>
+<div class="console">
+
+  <header class="header">
+    <div class="title">MCP <span class="x">×</span> vLEI Trust Console</div>
+    <div class="header-right">
+      <div class="live"><span class="dot" id="dot"></span><span id="live-text">live</span></div>
+      <div class="scene-indicator">
+        Scene <span id="scene-n">0</span> / 6
+        <span class="scene-title" id="scene-title"></span>
+      </div>
+    </div>
+  </header>
+
+  <main class="panes">
+
+    <section class="pane">
+      <h2>Identities</h2>
+      <div id="card-server"></div>
+      <div id="card-agent"></div>
+      <button class="revoke" id="revoke">Revoke the ECR credential</button>
+      <div class="evidence" id="evidence"></div>
+    </section>
+
+    <section class="pane">
+      <h2>Request</h2>
+      <div class="req-head">
+        <span class="req-method" id="req-method">tools/call</span>
+        <span class="req-name" id="req-name"></span>
+      </div>
+      <pre class="json" id="req-json"></pre>
+      <div class="self-asserted" id="self-asserted" hidden>
+        self-asserted · not verified by the protocol
+      </div>
+    </section>
+
+    <section class="pane">
+      <h2>Verification</h2>
+      <ul class="checks" id="checks"></ul>
+      <div class="outcome" id="outcome"></div>
+    </section>
+
+  </main>
+
+  <footer class="log">
+    <span class="lbl">Log</span>
+    <span id="log-entries"></span>
+  </footer>
+
+</div>
+<script src="/console.js"></script>
+</body>
+</html>
