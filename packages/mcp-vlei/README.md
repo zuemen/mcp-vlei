@@ -8,7 +8,6 @@ Nothing in MCP's core schema is modified: every field this package puts on the w
 
 ```bash
 pip install mcp-vlei
-pip install "mcp-vlei[keri]"   # adds keripy for offline chain walking
 ```
 
 Requires the MCP Python SDK 2.2.0+ (`mcp.server.extension.Extension`, SEP-2133).
@@ -19,12 +18,14 @@ Requires the MCP Python SDK 2.2.0+ (`mcp.server.extension.Extension`, SEP-2133).
 from mcp.server import MCPServer
 from mcp_vlei import VleiIdentity
 
-mcp = MCPServer(name="association", version="0.1.0", extensions=[VleiIdentity(
+vlei = VleiIdentity(
     le_credential="credentials/le.cesr",
     requires="ECR",
-    verifier_url="http://localhost:7676",
-    accepted_roots=["EHJ2kA8vQZ4Yd3mRr7TcN1sWpLxFbGuV9oKqDzXnA5eM"],
-)])
+    accepted_roots=["EM-uSa3-ZH6ynbMtqUE0aOce0memXiuXHDOVNQia8x6n"],
+    witness_url="http://localhost:5642",   # revocation, from the issuer's own log
+)
+mcp = MCPServer(name="association", version="0.1.0", extensions=[vlei])
+vlei.bind(mcp)   # so the extension can read each tool's declared requirement
 ```
 
 A tool states its own requirement, and the extension enforces it:
@@ -45,7 +46,8 @@ the tool changing.
 from mcp_vlei import VleiClient
 
 session = VleiClient(session, credential="credentials/ecr.cesr",
-                     key_store="./keys", verify_server=True)
+                     signer=agent_signer(),      # the key stays in the keystore
+                     verify_server=True)
 await session.connect()          # verifies the server's LE before anything is called
 await session.list_tools()       # reads each tool's org.gleif.vlei/requires
 
@@ -65,7 +67,10 @@ audit log.
 | `extension.py` | `VleiIdentity(Extension)` — `settings()`, `tools()` (`vlei_whoami`), `intercept_tool_call()`; reads `Tool._meta` requirements and enforces role and scope |
 | `client.py` | `VleiClient` — verifies the server's LE (from `discover` or `/.well-known/vlei`), signs each call, verifies an attestation before believing it |
 | `signing.py` | RFC 8785 canonicalization, digest, Ed25519 signing and verification, replay cache, scope comparison |
-| `verifier.py` | Thin adapter over GLEIF-IT/vlei-verifier, result caching, offline fallback |
+| `chain.py` | Reads an ACDC chain, recomputes every SAID, walks the edges to an accepted root — no service required |
+| `verifier.py` | `OfflineVerifier` for a counterparty's credential; a thin adapter over GLEIF-IT/vlei-verifier for revocation |
+| `revocation.py` | Three selectable revocation sources, and a refusal when the log cannot be read |
+| `report.py` | `VerificationReport` — which checks ran, what each cost, which one stopped the call |
 | `attest.py` | Producing and verifying `VleiAttestation` (mode (b), letter of confirmation) |
 | `errors.py` | Failure layers |
 
@@ -106,16 +111,6 @@ Two of these are security critical and worth stating plainly: **`accepted_roots`
 empty**, and **an unreadable revocation source refuses rather than allows**. Reporting "could not
 check" as "not revoked" is the one failure this package is built to prevent.
 
-**Signature freshness defaults to 60 seconds, plus a replay cache.** The window alone bounds replay
-to a minute rather than eliminating it; the cache is the other half.
-
-**Verification results are cached per `ttl_ms` (default 30s).** A revocation therefore takes effect
-no later than cache expiry. Set `ttl_ms=0` for high-value tools, where a stale "valid" costs more
-than a round trip.
-
-**An empty `accepted_roots` raises.** It is not "accept anything" — it is the entire trust decision,
-and an empty list is a configuration error.
-
 **`digest_mismatch` is checked before `invalid_signature`.** Altered arguments and a bad key state
 are operationally different problems and must not be collapsed into one message.
 
@@ -126,18 +121,23 @@ pip install -e ".[dev]"
 pytest
 ```
 
-44 tests covering the acceptance list — valid call, no credential, revoked, tampered arguments,
-expired signature, role mismatch, scope exceeded — plus canonicalization, replay, check ordering,
-and the attestation safety property that a key the attester chose for itself does not help.
+77 tests, no containers required. They cover every failure layer, RFC 8785 canonicalization, replay,
+check ordering, chain walking against minted credentials, the report's contents, and the attestation
+safety property that a key the attester chose for itself does not help.
 
-The tests use a stub verifier: what they exercise is this package's decision logic. The live
-`vlei-verifier` is exercised end to end by `scripts/bootstrap-credentials.sh` checks 3–6.
+They use a stub verifier: what they exercise is this package's decision logic. A live chain, a live
+witness and a live `vlei-verifier` are exercised end to end by `scripts/bootstrap-credentials.sh`
+and `examples/association-server/tests/`.
 
 ## Key custody
 
-`Signer.from_key_store` reads a raw Ed25519 seed from disk. That is a demo affordance so the
-reference agent is runnable and inspectable. **In production, use Signify**: the private key stays
-on the holder's device and the agent receives signatures rather than keys.
+Two signers ship. `CommandSigner` never holds a key: it sends the payload to something that holds
+one — `kli sign` against a KERI keystore in the reference agent — and receives a signature back.
+That is the arrangement Signify provides in production, reached through a local command instead of
+a KERIA agent, and swapping one for the other changes one class.
+
+`Signer.from_key_store` reads a raw Ed25519 seed from disk. It exists for tests. keripy exposes no
+way to export a private seed, which is correct: a key you can copy is a key that can be taken.
 
 ## Honesty statement
 
