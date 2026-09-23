@@ -9,6 +9,12 @@ be plugged into the projector. No images, no screenshots of text, nothing that s
 editable when someone wants to fix a word the morning of.
 
     python scripts/build-deck.py            # -> docs/slides/mcp-vlei.pptx
+    python scripts/build-deck.py --render   # ... and contact sheets, to look at the result
+
+`--render` is not decoration. Every dimension in this file is arithmetic, and arithmetic produces
+footers that collide with page numbers and beige panels with three empty inches under them — both
+of which were in the first build and neither of which is visible from the code. It needs
+LibreOffice on PATH (or at its usual Windows location) and PyMuPDF.
 """
 
 from __future__ import annotations
@@ -38,6 +44,13 @@ MONO = "Consolas"
 W, H = Inches(13.333), Inches(7.5)
 MARGIN = Inches(0.95)
 BODY_W = W - 2 * MARGIN
+
+# Everything below the rule and above the footer. Content is centred in it rather than hung from
+# the top: a four-line slide otherwise sits in the upper third with the lower half empty, which on
+# a projector reads as a slide that is missing something.
+BODY_TOP = Inches(2.16)
+BODY_BOTTOM = Inches(6.34)
+BODY_H = BODY_BOTTOM - BODY_TOP
 
 
 # ------------------------------------------------------------------------------------------- #
@@ -98,12 +111,13 @@ def _heading(slide, kicker, title):
 
 
 def _footer(slide, text, *, color=MUTED):
-    frame = _text(slide, MARGIN, Inches(6.62), BODY_W, Inches(0.4))
+    # Stop short of the page number: a two-line footer used to run straight through it.
+    frame = _text(slide, MARGIN, Inches(6.5), BODY_W - Inches(1.5), Inches(0.5))
     _run(frame.paragraphs[0], text, size=13, color=color, italic=True, font=SERIF)
 
 
 def _page(slide, n, total):
-    frame = _text(slide, W - MARGIN - Inches(1.2), Inches(6.66), Inches(1.2), Inches(0.3),
+    frame = _text(slide, W - MARGIN - Inches(1.2), Inches(6.54), Inches(1.2), Inches(0.3),
                   align=PP_ALIGN.RIGHT)
     _run(frame.paragraphs[0], f"{n} / {total}", size=10, color=MUTED, spacing=0.8)
 
@@ -133,8 +147,7 @@ def bullets_slide(deck, spec):
     slide = _slide(deck, spec["notes"])
     _heading(slide, spec["kicker"], spec["title"])
 
-    top = Inches(2.24)
-    frame = _text(slide, MARGIN, top, BODY_W, Inches(4.1))
+    frame = _text(slide, MARGIN, BODY_TOP, BODY_W, BODY_H, anchor=MSO_ANCHOR.MIDDLE)
     for i, item in enumerate(spec["bullets"]):
         p = frame.paragraphs[0] if i == 0 else frame.add_paragraph()
         p.space_after = Pt(spec.get("gap", 16))
@@ -153,7 +166,8 @@ def table_slide(deck, spec):
     _heading(slide, spec["kicker"], spec["title"])
 
     rows, cols = len(spec["rows"]) + 1, len(spec["head"])
-    top, height = Inches(2.26), Inches(0.46) * rows
+    height = Inches(0.46) * rows
+    top = BODY_TOP + (BODY_H - height) // 2
     shape = slide.shapes.add_table(rows, cols, MARGIN, top, BODY_W, height)
     table = shape.table
     table.first_row = True
@@ -177,9 +191,9 @@ def table_slide(deck, spec):
             frame = cell.text_frame
             frame.word_wrap = True
             frame.margin_left = frame.margin_right = Inches(0.1)
-            mono = value.startswith("`") and value.endswith("`")
-            negative = value.startswith("—")
-            _run(frame.paragraphs[0], value.strip("`"),
+            mono = value.startswith("`") and value.endswith("`")  # the whole cell, or none of it
+            negative = value.startswith("— ")  # "—" alone means "nothing today", not a refusal
+            _run(frame.paragraphs[0], value.replace("`", ""),
                  size=spec.get("size", 14),
                  color=RED if negative else INK,
                  font=MONO if mono else SANS)
@@ -191,21 +205,27 @@ def mono_slide(deck, spec):
     slide = _slide(deck, spec["notes"])
     _heading(slide, spec["kicker"], spec["title"])
 
-    panel = slide.shapes.add_shape(1, MARGIN, Inches(2.24), BODY_W, Inches(3.9))
+    size = spec.get("size", 15)
+    pad = Inches(0.32)
+    # A panel with three inches of empty beige under the last line looks like a rendering failure.
+    height = pad * 2 + Pt(size * 1.3 + 3) * len(spec["lines"])
+    top = BODY_TOP + (BODY_H - height) // 2
+
+    panel = slide.shapes.add_shape(1, MARGIN, top, BODY_W, height)
     panel.fill.solid()
     panel.fill.fore_color.rgb = RGBColor(0xEF, 0xEB, 0xE1)
     panel.line.fill.background()
     panel.shadow.inherit = False
 
-    frame = _text(slide, MARGIN + Inches(0.34), Inches(2.52), BODY_W - Inches(0.68), Inches(3.4))
+    frame = _text(slide, MARGIN + pad, top + pad, BODY_W - pad * 2, height - pad * 2)
     for i, line in enumerate(spec["lines"]):
         p = frame.paragraphs[0] if i == 0 else frame.add_paragraph()
         p.space_after = Pt(3)
         # A leading marker colours the key rather than the whole line.
         if line.startswith("*"):
-            _run(p, line[1:], size=spec.get("size", 15), color=BLUE, font=MONO, bold=True)
+            _run(p, line[1:], size=size, color=BLUE, font=MONO, bold=True)
         else:
-            _run(p, line, size=spec.get("size", 15), color=INK, font=MONO)
+            _run(p, line, size=size, color=INK, font=MONO)
     if spec.get("footer"):
         _footer(slide, spec["footer"], color=INK)
 
@@ -213,10 +233,10 @@ def mono_slide(deck, spec):
 def statement_slide(deck, spec):
     """One sentence, alone. Used for the honesty statement, which is read aloud verbatim."""
     slide = _slide(deck, spec["notes"])
-    frame = _text(slide, MARGIN, Inches(2.0), BODY_W, Inches(0.4))
+    frame = _text(slide, MARGIN, Inches(2.6), BODY_W, Inches(0.4))
     _run(frame.paragraphs[0], spec["kicker"].upper(), size=11, color=BLUE, bold=True, spacing=1.6)
 
-    frame = _text(slide, MARGIN, Inches(2.7), BODY_W, Inches(2.6))
+    frame = _text(slide, MARGIN, Inches(3.2), BODY_W, Inches(2.2))
     for i, line in enumerate(spec["lines"]):
         p = frame.paragraphs[0] if i == 0 else frame.add_paragraph()
         p.space_after = Pt(14)
@@ -451,8 +471,7 @@ SLIDES = [
                                          "institution's judgment — exactly as relying on a letter "
                                          "does today.")],
      "gap": 22, "size": 19,
-     "footer": "What the system enforces is that the attesting institution was itself verified "
-               "first, and that every decision records whose attestation it rested on.",
+     "footer": "The attesting institution must itself have been verified first.",
      "notes": "Institutions already have both. The first is a public key directory: publish once, "
               "and anyone verifies independently, including before making contact.\n\n"
               "The second is the letter of confirmation. District office A writes to office B to "
@@ -574,6 +593,41 @@ def build(path: Path = OUT) -> Path:
     return path
 
 
+def render(deck_path: Path, out_dir: Path) -> list[Path]:
+    """Rasterize into 2x2 contact sheets, so the whole deck can be looked at rather than sampled."""
+    import shutil
+    import subprocess
+
+    import fitz
+
+    soffice = shutil.which("soffice") or shutil.which("libreoffice") or         r"C:\Program Files\LibreOffice\program\soffice.exe"
+    if not Path(soffice).exists():
+        raise SystemExit(f"no LibreOffice at {soffice}; install it or render by hand")
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    subprocess.run([soffice, "--headless", "--convert-to", "pdf", "--outdir", str(out_dir),
+                    str(deck_path)], check=True, capture_output=True)
+
+    pdf = fitz.open(out_dir / f"{deck_path.stem}.pdf")
+    width, height = 1600, 900
+    sheets = []
+    for first in range(0, len(pdf), 4):
+        sheet = fitz.open().new_page(width=width, height=height)
+        for i, page in enumerate(range(first, min(first + 4, len(pdf)))):
+            box = fitz.Rect((i % 2) * width / 2, (i // 2) * height / 2,
+                            (i % 2 + 1) * width / 2, (i // 2 + 1) * height / 2)
+            sheet.show_pdf_page(box, pdf, page)
+        path = out_dir / f"sheet{first // 4}.png"
+        sheet.get_pixmap(dpi=150).save(path)
+        sheets.append(path)
+    return sheets
+
+
 if __name__ == "__main__":
-    out = build(Path(sys.argv[1]) if len(sys.argv) > 1 else OUT)
+    args = [a for a in sys.argv[1:] if a != "--render"]
+    out = build(Path(args[0]) if args else OUT)
     print(f"{len(SLIDES)} slides -> {out}")
+
+    if "--render" in sys.argv:
+        for sheet in render(out, out.parent / "render"):
+            print(f"  {sheet}")
