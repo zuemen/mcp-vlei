@@ -27,9 +27,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from contextlib import asynccontextmanager
 import json
 import os
 import secrets
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -190,6 +192,66 @@ SCENES: dict[int, dict[str, Any]] = {
 
 ARGUMENTS = {"form": "A1", "period": "2026Q2", "payload": {"totalAssets": 84_200_000}}
 
+#: Scene 0's claim, the one it actually sends. Everything a well-known client would plausibly
+#: send, and nothing that anything checks.
+IMPERSONATION_CLAIM = {
+    "name": "Claude Desktop",
+    "version": "1.2.3",
+    "description": "Anthropic official client",
+    "websiteUrl": "https://claude.ai",
+}
+IMPERSONATION_HOURS = 50
+
+#: Filled by the first scene-0 load and reused: spawning the server takes a couple of seconds, and
+#: it answers the same way every time.
+_impersonation_result: dict[str, Any] | None = None
+
+
+async def _run_impersonation() -> dict[str, Any]:
+    """Call `examples/impersonation/vendor_server.py` and return what it actually granted.
+
+    Scene 0's number is measured, not asserted. The console's whole claim is that nothing on screen
+    is written by hand, and a hardcoded "50 hours" would be the one exception — precisely the thing
+    someone should ask about in questions.
+    """
+    global _impersonation_result
+    if _impersonation_result is not None:
+        return _impersonation_result
+
+    from mcp import StdioServerParameters
+    from mcp.client.client import Client
+    from mcp.types import Implementation
+
+    server = ROOT / "examples" / "impersonation" / "vendor_server.py"
+    fallback = {"approved": None, "tier": None, "received": None, "live": False}
+    if not server.exists():
+        _impersonation_result = fallback
+        return fallback
+
+    try:
+        params = StdioServerParameters(command=sys.executable, args=[str(server)])
+        async with Client(params, client_info=Implementation(**IMPERSONATION_CLAIM)) as client:
+            result = await client.call_tool(
+                "reserve_gpu_quota", {"hours": IMPERSONATION_HOURS}
+            )
+        payload = getattr(result, "structured_content", None)
+        if not isinstance(payload, dict):
+            for item in getattr(result, "content", []) or []:
+                text = getattr(item, "text", None)
+                if text:
+                    payload = json.loads(text)
+                    break
+        payload = payload or {}
+        _impersonation_result = {
+            "approved": payload.get("approved"),
+            "tier": payload.get("tier"),
+            "received": (payload.get("clientInfoAsReceived") or {}).get("name"),
+            "live": True,
+        }
+    except Exception:  # noqa: BLE001 - a scene that cannot measure says so rather than inventing
+        _impersonation_result = fallback
+    return _impersonation_result
+
 REQUIREMENT = {"credential": "ECR", "role": ENV.role}
 
 
@@ -222,11 +284,10 @@ def _truncate(value: str, keep: int = 18) -> str:
 def _request_json(scene: dict[str, Any], signature: dict[str, Any] | None) -> str:
     if scene["mode"] == "plain":
         return json.dumps(
-            {"clientInfo": {"name": "Claude Desktop", "version": "1.2.3",
-                            "description": "Anthropic official client",
-                            "websiteUrl": "https://claude.ai"},
+            {"clientInfo": dict(IMPERSONATION_CLAIM),
              "name": scene["tool"],
-             "arguments": {"hours": 50} if scene["tool"] == "reserve_gpu_quota" else ARGUMENTS},
+             "arguments": {"hours": IMPERSONATION_HOURS}
+                          if scene["tool"] == "reserve_gpu_quota" else ARGUMENTS},
             indent=2,
         )
     meta = {
@@ -323,8 +384,16 @@ def _checks_payload(report: VerificationReport, scene: dict[str, Any]) -> list[d
 
 def _outcome(report: VerificationReport, scene: dict[str, Any]) -> dict[str, Any]:
     if scene is SCENES[0]:
-        return {"status": "self-asserted", "layer": None,
-                "note": "approved 50 hours on a name the caller chose"}
+        measured = _impersonation_result or {}
+        if measured.get("live"):
+            note = (
+                f"approved {measured['approved']} hours · "
+                f"{measured['tier']} tier · "
+                f"granted on the name {measured['received']!r}, which the caller chose"
+            )
+        else:
+            note = "the impersonation server could not be reached; nothing was measured"
+        return {"status": "self-asserted", "layer": None, "note": note}
     if report.failure:
         return {"status": "refused", "layer": report.failure.layer,
                 "note": report.failure.detail}
@@ -357,12 +426,18 @@ _revoked_in_this_session = False
 async def load_scene(n: int) -> None:
     global _revoked_in_this_session
     scene = SCENES[n]
+    if n == 0:
+        await _run_impersonation()
     if n == 3:
         _revoked_in_this_session = True
         TEL.revoked = True
         TEL.revoked_at = TEL.revoked_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
     elif n in (1, 2, 4, 5):
+        # Leaving scene 3 undoes the session's own revocation — and the flag that records it, or
+        # the readiness warning goes quiet for the rest of the session and a genuinely withdrawn
+        # credential stops being reported. Found by a test, not by a take.
         TEL.revoked = False
+        _revoked_in_this_session = False
 
     report, signature = await _run_verification(scene)
 
@@ -406,7 +481,14 @@ async def load_scene(n: int) -> None:
 
 # ------------------------------------------------------------------------------------------- #
 
-app = FastAPI(title="mcp-vlei trust console")
+@asynccontextmanager
+async def _lifespan(_: FastAPI):
+    """Load scene 0 before the first request, so a browser opened early is never blank."""
+    await load_scene(0)
+    yield
+
+
+app = FastAPI(title="mcp-vlei trust console", lifespan=_lifespan)
 
 
 @app.get("/")
@@ -500,11 +582,6 @@ async def events() -> StreamingResponse:
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
-
-
-@app.on_event("startup")
-async def startup() -> None:
-    await load_scene(0)
 
 
 if __name__ == "__main__":
