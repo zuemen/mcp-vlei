@@ -15,6 +15,7 @@ from typing import Any
 
 import httpx
 
+from .chain import Acdc, parse_stream, walk_chain
 from .errors import ChainInvalid, MissingCredential, Revoked, RoleMismatch, UnknownRoot
 
 __all__ = ["VerificationResult", "VleiVerifier", "OfflineVerifier"]
@@ -35,6 +36,12 @@ class VerificationResult:
     root_aid: str | None = None
     #: Where the credential came from: "presented", "well-known", "discover", "attestation".
     source: str = "presented"
+    #: Whether revocation was actually established. False means the chain was checked but the
+    #: issuer's transaction event log was not reached — a distinction a relying party must be able
+    #: to see, because "valid as far as we could tell" is not "valid".
+    revocation_checked: bool = True
+    #: Whether issuer signatures were verified.
+    signatures_checked: bool = True
 
     def to_headers(self) -> dict[str, str]:
         """The headers a gateway passes downstream so a legacy system needs no vLEI code at all."""
@@ -260,42 +267,94 @@ class VleiVerifier:
 
 
 class OfflineVerifier:
-    """Fallback for when the verifier service is unreachable.
+    """Verifies a counterparty's credential without asking a verification service.
 
-    It parses the presented CESR, walks the edges to a root, and checks that the root is accepted.
-    What it deliberately **cannot** do is check revocation, because revocation state lives in the
-    issuer's TEL and reaching it is exactly what "offline" rules out.
+    This is mode (a) of ``spec/SPEC.md``, and it is the only option for a **counterparty's**
+    credential: ``/presentations`` requires headers signed by the AID the credential was issued to,
+    so a relying party cannot hand someone else's credential to a verifier and ask about it.
 
-    Every result it returns is therefore marked, and a relying party that wants revocation
-    guarantees must not use it. It exists so that a network partition degrades to a stated, visible
-    weakening rather than to a silent one.
+    It establishes that the chain is internally sound and terminates at a root this party accepts.
+    It does **not** establish issuer signatures or revocation, and it says so in the result rather
+    than letting a caller assume otherwise — see :mod:`mcp_vlei.chain` for why each is out of reach
+    offline.
+
+    Use it to decide who you are talking to. Use :class:`VleiVerifier` for anything that turns on a
+    credential still being valid.
     """
 
     def __init__(self, accepted_roots: list[str]) -> None:
         if not accepted_roots:
-            raise ValueError("accepted_roots must be non-empty")
+            raise ValueError(
+                "accepted_roots must be non-empty: it is the entire trust decision"
+            )
         self.accepted_roots = list(accepted_roots)
+        #: Present for interface parity with VleiVerifier; nothing is cached, because nothing is
+        #: fetched.
+        self.ttl_ms = 0
 
     async def verify(
         self,
         cesr: str,
         *,
-        said: str,
-        aid: str,
+        said: str = "",
+        aid: str = "",
         expected_role: str | None = None,
         source: str = "presented",
     ) -> VerificationResult:
-        try:
-            from keri.vdr import verifying  # noqa: F401
-        except ImportError as exc:  # pragma: no cover - depends on optional extra
-            raise ChainInvalid(
-                "offline verification requires the 'keri' extra: pip install mcp-vlei[keri]",
-                aid=aid,
-            ) from exc
+        if not cesr:
+            raise MissingCredential("no credential was presented", aid=aid)
 
-        raise ChainInvalid(
-            "offline verification cannot establish revocation state; "
-            "configure a reachable vlei-verifier for any decision that depends on it",
-            aid=aid,
-            credential_said=said,
+        credentials = parse_stream(cesr)
+        if not credentials:
+            raise ChainInvalid(
+                "no credential was found in the presented stream", aid=aid
+            )
+
+        target = said or _last_in_chain(credentials)
+        chain = walk_chain(credentials, target, self.accepted_roots)
+        leaf, root = chain[0], chain[-1]
+
+        if expected_role is not None and leaf.role != expected_role:
+            raise RoleMismatch(
+                f"tool requires role {expected_role!r}; credential carries {leaf.role!r}",
+                aid=leaf.issuee,
+                credential_said=leaf.said,
+            )
+
+        lei = next((link.lei for link in chain if link.lei), None)
+        if not lei:
+            raise ChainInvalid(
+                "no LEI appears anywhere in the chain", credential_said=leaf.said
+            )
+
+        return VerificationResult(
+            aid=aid or leaf.issuee,
+            lei=lei,
+            role=leaf.role,
+            credential_said=leaf.said,
+            holder_aid=leaf.issuee,
+            scope=leaf.attributes.get("scope") or {},
+            root_aid=root.issuer,
+            source=source,
+            revocation_checked=False,
+            signatures_checked=False,
         )
+
+    def invalidate(self, aid: str) -> None:  # pragma: no cover - nothing is cached
+        return None
+
+
+def _last_in_chain(credentials: dict[str, Acdc]) -> str:
+    """The credential nothing else points at — the end of the chain, when no SAID was named.
+
+    A `--full` export carries the whole chain, so "the first credential in the stream" is the root
+    of it, not the one being presented. Naming the SAID is better; this is the fallback.
+    """
+    referenced = {target for cred in credentials.values() for target in cred.edges.values()}
+    leaves = [said for said in credentials if said not in referenced]
+    if len(leaves) != 1:
+        raise ChainInvalid(
+            "the stream does not contain exactly one leaf credential; "
+            "name the SAID being presented"
+        )
+    return leaves[0]

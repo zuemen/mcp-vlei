@@ -22,7 +22,13 @@ from mcp_vlei import Signer  # noqa: E402
 from mcp_vlei.errors import Revoked  # noqa: E402
 from mcp_vlei.verifier import VerificationResult  # noqa: E402
 
-ROOT_AID = "EHJ2kA8vQZ4Yd3mRr7TcN1sWpLxFbGuV9oKqDzXnA5eM"
+ROOT_AID = "EM-uSa3-ZH6ynbMtqUE0aOce0memXiuXHDOVNQia8x6n"
+QVI_AID = "EDFRI3MOLPx4mOQNKlHOS1O_JLWMGRFiaiwO1FSxheW0"
+LE_AID = "EKPdng_ffec4VInvOsswAeIoe0C0LtDDBbk-5YbDHDMe"
+QVI_SCHEMA = "EBfdlu8R27Fbx-ehrqwImnK-8Cm79sqbAQ4MmvEAYqao"
+LE_SCHEMA = "ENPXp1vQzRF6JwIuS-mp2U8Uf1MoADoP_GqQ62VsDZWY"
+ECR_SCHEMA = "EEy9PkikFcANV1l7EHukCeXqrzT1hNZjGlUk7wuMO5jw"
+REGISTRY = "EHsH7DfMGlfOsAVjTw1EZMhbHQJovsqmBYXHFYDgiz2K"
 HOLDER_AID = "EDq8WnPrK3xLm5ZvTcYbJi1RoUa9HgNsEf7QdMwXy2Vt"
 AGENT_AID = "EFn3RtYqXmLdW5oJbP2TvNcUiSpRyEg7ZhKa4QsMxVwB"
 CRED_SAID = "EBcd7TqLmN4pR2wXyZ1vHsJk8QgUeA3nCfDoI6t0PyWr"
@@ -45,11 +51,61 @@ def key_store(tmp_path: Path, seed: bytes) -> Path:
     return tmp_path
 
 
+def mint(schema: str, issuer: str, issuee: str, attributes: dict, edge=None) -> str:
+    """Serialize a credential and fill in the SAID its contents imply.
+
+    Real chains, not placeholder JSON: the extension now walks and re-hashes what it is given, so a
+    fixture that was not a valid chain would only prove the checks were skipped.
+    """
+    import base64
+    import json
+
+    import blake3
+
+    body: dict = {
+        "v": "ACDC10JSON000000_",
+        "d": "#" * 44,
+        "i": issuer,
+        "ri": REGISTRY,
+        "s": schema,
+        "a": {"i": issuee, "dt": "2026-09-23T00:00:00.000000+00:00", **attributes},
+    }
+    if edge:
+        label, target = edge
+        body["e"] = {"d": "E" + "A" * 43, label: {"n": target, "s": schema}}
+
+    text = json.dumps(body, separators=(",", ":"))
+    digest = blake3.blake3(text.encode("utf-8")).digest(length=32)
+    said = "E" + base64.urlsafe_b64encode(b"\x00" + digest).decode("ascii")[1:]
+    return text.replace('"d":"' + "#" * 44 + '"', f'"d":"{said}"', 1)
+
+
+def build_chain(role: str = "member-registration", root: str = ROOT_AID) -> tuple[str, str]:
+    """A full root -> QVI -> LE -> ECR chain, and the ECR's SAID."""
+    import json
+
+    qvi = mint(QVI_SCHEMA, root, QVI_AID, {"LEI": LEI})
+    le = mint(LE_SCHEMA, QVI_AID, LE_AID, {"LEI": LEI}, edge=("qvi", json.loads(qvi)["d"]))
+    ecr = mint(
+        ECR_SCHEMA, LE_AID, HOLDER_AID,
+        {"LEI": LEI, "personLegalName": "Chen Wei-Ting", "engagementContextRole": role},
+        edge=("le", json.loads(le)["d"]),
+    )
+    return qvi + le + ecr, json.loads(ecr)["d"]
+
+
 @pytest.fixture
 def credential_file(tmp_path: Path) -> Path:
+    stream, said = build_chain()
     path = tmp_path / "ecr.cesr"
-    path.write_text('{"v":"ACDC10JSON","d":"' + CRED_SAID + '","a":{"LEI":"' + LEI + '"}}')
+    path.write_text(stream, encoding="utf-8")
     return path
+
+
+@pytest.fixture
+def credential_said() -> str:
+    """The ECR's SAID. `build_chain` is deterministic, so this matches `credential_file`."""
+    return build_chain()[1]
 
 
 class StubVerifier:
@@ -130,6 +186,7 @@ def stub_verifier() -> StubVerifier:
 
 @pytest.fixture
 def le_credential(tmp_path: Path) -> Path:
+    stream, _ = build_chain()
     path = tmp_path / "le.cesr"
-    path.write_text('{"v":"ACDC10JSON","d":"' + CRED_SAID + '","a":{"LEI":"' + LEI + '"}}')
+    path.write_text(stream, encoding="utf-8")
     return path

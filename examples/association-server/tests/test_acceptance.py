@@ -102,11 +102,11 @@ async def vlei_session(env: dict[str, Any], **overrides: Any):
             accepted_roots=env["acceptedRoots"],
             verifier_url=env["verifierUrl"],
             role=env.get("role"),
-            # The server's LE credential is fetched and recorded, but not cryptographically
-            # verified here: that is an offline chain walk, not something the holder-facing
-            # `/presentations` API can do for us. See VleiClient.connect().
-            verify_server=False,
-            on_unverified_server="warn",
+            # Mode (a): the client checks the server's LE credential itself — chain, SAIDs and
+            # root — because a relying party cannot present a counterparty's credential to the
+            # holder-facing `/presentations` API.
+            verify_server=True,
+            on_unverified_server="stop",
         )
         kwargs.update(overrides)
         yield VleiClient(raw, **kwargs)
@@ -120,13 +120,16 @@ async def vlei_session(env: dict[str, Any], **overrides: Any):
 @pytest.mark.anyio
 async def test_1_register_member_with_credential(env):
     async with vlei_session(env) as session:
-        await session.connect()
+        identity = await session.connect()
         show(
-            "stage 2 — server credential obtained",
-            presented=bool(session.server_credential),
-            wellKnown=(session.server_capability or {}).get("discovery", {}).get("wellKnown"),
-            verified="not checked (offline chain walk unimplemented)",
+            "stage 2 — server LE verified offline",
+            lei=identity.lei,
+            root=identity.root_aid,
+            source=identity.source,
+            revocationChecked=identity.revocation_checked,
+            signaturesChecked=identity.signatures_checked,
         )
+        assert identity.lei
 
         await session.list_tools()
         entitlement = session.entitlement_for("register_member")

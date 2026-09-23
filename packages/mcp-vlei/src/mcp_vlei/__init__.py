@@ -24,6 +24,7 @@ from .errors import (
     UnknownRoot,
     VleiError,
 )
+from .chain import Acdc, parse_stream, recompute_said, walk_chain
 from .extension import EXTENSION_ID, VleiIdentity
 from .signing import ReplayCache, Signer, canonicalize, digest_params, sign_request, verify_request
 from .verifier import OfflineVerifier, VerificationResult, VleiVerifier
@@ -40,6 +41,10 @@ __all__ = [
     "Entitlement",
     "VleiVerifier",
     "OfflineVerifier",
+    "Acdc",
+    "parse_stream",
+    "recompute_said",
+    "walk_chain",
     "VerificationResult",
     "Signer",
     "ReplayCache",

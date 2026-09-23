@@ -21,6 +21,9 @@ dependencies = [
   "mcp>=2.2.0",
   "httpx>=0.27",
   "cryptography>=42.0",
+  # Recomputing an ACDC SAID, which is how a relying party checks a counterparty's credential
+  # without asking anyone.
+  "blake3>=0.4",
 ]
 
 [project.optional-dependencies]

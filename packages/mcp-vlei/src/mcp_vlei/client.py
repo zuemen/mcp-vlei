@@ -44,7 +44,7 @@ from .extension import (
     META_SIGNATURE,
 )
 from .signing import Signer, scope_satisfied, sign_request
-from .verifier import VerificationResult, VleiVerifier
+from .verifier import OfflineVerifier, VerificationResult, VleiVerifier
 
 __all__ = ["VleiClient", "VleiCapability", "Entitlement"]
 
@@ -145,6 +145,14 @@ class VleiClient:
         if self._verifier is None and verifier_url and self.accepted_roots:
             self._verifier = VleiVerifier(verifier_url, accepted_roots=self.accepted_roots)
 
+        #: Used for the *server's* credential. Deliberately not the same verifier: a relying party
+        #: cannot hand a counterparty's credential to `/presentations`, which requires headers
+        #: signed by the AID the credential was issued to. Mode (a) says the relying party checks
+        #: it, so that is what happens — and the result reports what it could not establish.
+        self._server_verifier = (
+            OfflineVerifier(self.accepted_roots) if self.accepted_roots else None
+        )
+
         #: A fallback for deployments whose gateway cannot forward the request body. agentgateway
         #: can (``extAuthz.includeRequestBody``), so this is off by default and the body is
         #: preferred wherever one is available. This does not weaken anything — the signature's
@@ -216,21 +224,15 @@ class VleiClient:
         # the mistake this project exists to point out.
         self.server_credential = credential
 
-        if not self.verify_server or self._verifier is None:
+        if not self.verify_server or self._server_verifier is None:
             return None
 
-        # NOTE. `vlei-verifier`'s `/presentations` endpoint is for a **holder** presenting their
-        # own credential, signed by them — it is not a "verify this third party's credential for
-        # me" API, and using it that way is rejected. Verifying a counterparty's LE credential is
-        # properly an offline operation: recompute the SAID, verify the issuer's signature, walk
-        # the chain to an accepted root, and check revocation against the issuer's TEL. That is
-        # `OfflineVerifier`'s job and it is not finished, so a deployment that needs it today
-        # should pass a verifier that can do it.
-        self.server_identity = await self._verifier.verify(
-            credential,
-            said=_said_of(credential),
-            aid=(self.server_capability or {}).get("aid", ""),
-            source=source,
+        # Mode (a): check the counterparty's credential here rather than asking anyone. This
+        # establishes the chain, the SAIDs and the root; it does not establish issuer signatures
+        # or revocation, and `server_identity` carries flags saying so. A caller that needs those
+        # must pass a verifier that can reach the issuer's logs.
+        self.server_identity = await self._server_verifier.verify(
+            credential, source=source
         )
         return self.server_identity
 

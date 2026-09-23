@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from conftest import AGENT_AID, Ctx, StubVerifier, make_params  # noqa: E402
+from conftest import AGENT_AID, ROOT_AID, Ctx, StubVerifier, make_params  # noqa: E402
 from mcp_vlei import Signer, VleiIdentity
 from mcp_vlei.extension import META_CREDENTIAL, META_DELEGATED_AID, META_SIGNATURE
 from mcp_vlei.signing import sign_request
@@ -23,7 +23,7 @@ REQUIRES_FILING = {
     "role": "regulatory-filing",
     "scope": {"maxAmount": 1_000_000},
 }
-ROOT = "EHJ2kA8vQZ4Yd3mRr7TcN1sWpLxFbGuV9oKqDzXnA5eM"
+ROOT = ROOT_AID
 
 
 def build(le_credential, verifier, requirements=None, **kwargs) -> VleiIdentity:
@@ -41,10 +41,13 @@ def build(le_credential, verifier, requirements=None, **kwargs) -> VleiIdentity:
     return ext
 
 
-def signed_meta(signer: Signer, credential_file, tool: str, arguments: dict) -> dict:
+def signed_meta(signer: Signer, credential_file, tool: str, arguments: dict, said: str = "") -> dict:
     params = make_params(tool, arguments)
     return {
         META_CREDENTIAL: credential_file.read_text(),
+        # Name the credential being presented. A chain export carries several, and "the first one
+        # in the stream" is the root of the chain, not this one.
+        "org.gleif.vlei/credentialSaid": said,
         META_DELEGATED_AID: AGENT_AID,
         META_SIGNATURE: sign_request(
             signer, "tools/call", params.model_dump(by_alias=True, exclude_none=True)
@@ -71,7 +74,7 @@ def text_of(result) -> str:
 # 1. Happy path
 # --------------------------------------------------------------------------------------------- #
 
-async def test_valid_credential_is_allowed(le_credential, credential_file, signer):
+async def test_valid_credential_is_allowed(le_credential, credential_file, credential_said, signer):
     ext = build(
         le_credential,
         StubVerifier(role="member-registration"),
@@ -79,7 +82,7 @@ async def test_valid_credential_is_allowed(le_credential, credential_file, signe
     )
     args = {"name": "A", "email": "a@example.org"}
     params = make_params(
-        "register_member", args, signed_meta(signer, credential_file, "register_member", args)
+        "register_member", args, signed_meta(signer, credential_file, "register_member", args, credential_said)
     )
     result = await ext.intercept_tool_call(params, Ctx(), call_next)
 
@@ -116,7 +119,7 @@ async def test_public_tool_needs_nothing(le_credential):
 # 3. Revoked
 # --------------------------------------------------------------------------------------------- #
 
-async def test_revoked_credential_is_refused(le_credential, credential_file, signer):
+async def test_revoked_credential_is_refused(le_credential, credential_file, credential_said, signer):
     ext = build(
         le_credential,
         StubVerifier(revoked=True),
@@ -124,7 +127,7 @@ async def test_revoked_credential_is_refused(le_credential, credential_file, sig
     )
     args = {"name": "A", "email": "a@example.org"}
     params = make_params(
-        "register_member", args, signed_meta(signer, credential_file, "register_member", args)
+        "register_member", args, signed_meta(signer, credential_file, "register_member", args, credential_said)
     )
     result = await ext.intercept_tool_call(params, Ctx(), call_next)
 
@@ -135,7 +138,7 @@ async def test_revoked_credential_is_refused(le_credential, credential_file, sig
 # 4. Tampered arguments
 # --------------------------------------------------------------------------------------------- #
 
-async def test_tampered_arguments_are_refused(le_credential, credential_file, signer):
+async def test_tampered_arguments_are_refused(le_credential, credential_file, credential_said, signer):
     """Sign one set of arguments, send another — the gap the digest exists to close."""
     ext = build(
         le_credential, StubVerifier(), requirements={"register_member": REQUIRES_REGISTRATION}
@@ -155,7 +158,7 @@ async def test_tampered_arguments_are_refused(le_credential, credential_file, si
 # 5. Stale signature
 # --------------------------------------------------------------------------------------------- #
 
-async def test_stale_signature_is_refused(le_credential, credential_file, signer):
+async def test_stale_signature_is_refused(le_credential, credential_file, credential_said, signer):
     from datetime import datetime, timedelta, timezone
 
     ext = build(
@@ -186,7 +189,7 @@ async def test_stale_signature_is_refused(le_credential, credential_file, signer
 # 6. Role mismatch
 # --------------------------------------------------------------------------------------------- #
 
-async def test_role_mismatch_is_refused(le_credential, credential_file, signer):
+async def test_role_mismatch_is_refused(le_credential, credential_file, credential_said, signer):
     ext = build(
         le_credential,
         StubVerifier(role="member-registration"),
@@ -194,7 +197,7 @@ async def test_role_mismatch_is_refused(le_credential, credential_file, signer):
     )
     args = {"form": "A1", "period": "2026Q2", "payload": {}}
     params = make_params(
-        "submit_filing", args, signed_meta(signer, credential_file, "submit_filing", args)
+        "submit_filing", args, signed_meta(signer, credential_file, "submit_filing", args, credential_said)
     )
     result = await ext.intercept_tool_call(params, Ctx(), call_next)
 
@@ -206,7 +209,7 @@ async def test_role_mismatch_is_refused(le_credential, credential_file, signer):
 # 7. Scope exceeded
 # --------------------------------------------------------------------------------------------- #
 
-async def test_scope_exceeded_is_refused(le_credential, credential_file, signer):
+async def test_scope_exceeded_is_refused(le_credential, credential_file, credential_said, signer):
     ext = build(
         le_credential,
         StubVerifier(role="regulatory-filing", scope={"maxAmount": 100_000}),
@@ -214,7 +217,7 @@ async def test_scope_exceeded_is_refused(le_credential, credential_file, signer)
     )
     args = {"form": "A1", "period": "2026Q2", "payload": {}}
     params = make_params(
-        "submit_filing", args, signed_meta(signer, credential_file, "submit_filing", args)
+        "submit_filing", args, signed_meta(signer, credential_file, "submit_filing", args, credential_said)
     )
     result = await ext.intercept_tool_call(params, Ctx(), call_next)
 
@@ -225,7 +228,7 @@ async def test_scope_exceeded_is_refused(le_credential, credential_file, signer)
 # 8. Unknown root — the chain validates, but not to a root we accept
 # --------------------------------------------------------------------------------------------- #
 
-async def test_unknown_root_is_refused(le_credential, credential_file, signer):
+async def test_unknown_root_is_refused(le_credential, credential_file, credential_said, signer):
     """A perfectly valid chain to the wrong root is still refused.
 
     This is the layer most likely to be mistaken for a bug in the field, which is why it is named
@@ -241,7 +244,7 @@ async def test_unknown_root_is_refused(le_credential, credential_file, signer):
     )
     args = {"name": "A", "email": "a@example.org"}
     params = make_params(
-        "register_member", args, signed_meta(signer, credential_file, "register_member", args)
+        "register_member", args, signed_meta(signer, credential_file, "register_member", args, credential_said)
     )
     result = await ext.intercept_tool_call(params, Ctx(), call_next)
 
@@ -296,9 +299,9 @@ async def test_whoami_reports_unverified_without_a_credential(le_credential):
     assert "unverified" in text_of(result)
 
 
-async def test_whoami_reports_identity_when_verified(le_credential, credential_file, signer):
+async def test_whoami_reports_identity_when_verified(le_credential, credential_file, credential_said, signer):
     ext = build(le_credential, StubVerifier(role="member-registration"))
-    meta = signed_meta(signer, credential_file, "vlei_whoami", {})
+    meta = signed_meta(signer, credential_file, "vlei_whoami", {}, credential_said)
     result = await ext.intercept_tool_call(
         make_params("vlei_whoami", {}, meta), Ctx(), call_next
     )

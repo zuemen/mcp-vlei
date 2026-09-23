@@ -33,7 +33,7 @@ from .errors import (
     VleiError,
 )
 from .signing import DEFAULT_FRESHNESS_SECONDS, ReplayCache, scope_satisfied, verify_request
-from .verifier import VerificationResult, VleiVerifier
+from .verifier import OfflineVerifier, VerificationResult, VleiVerifier
 
 EXTENSION_ID = "org.gleif.vlei/identity"
 META_CREDENTIAL = "org.gleif.vlei/credential"
@@ -70,9 +70,14 @@ class VleiIdentity(Extension):
         self.accepted_roots = list(accepted_roots or [])
         self.well_known = well_known
         self.freshness_seconds = freshness_seconds
-        self.verifier = verifier or VleiVerifier(
-            verifier_url, accepted_roots=self.accepted_roots, ttl_ms=ttl_ms
+        self.verifier = verifier or (
+            VleiVerifier(verifier_url, accepted_roots=self.accepted_roots, ttl_ms=ttl_ms)
+            if verifier_url
+            else None
         )
+        #: Establishes the chain, the SAIDs and the root without asking anyone. What it cannot
+        #: establish — revocation — is what `self.verifier` is for.
+        self.offline = OfflineVerifier(self.accepted_roots)
         self._replay = ReplayCache(window_seconds=freshness_seconds)
         #: Tool name -> requirement. Populated from the bound server's tool list, or supplied
         #: directly for a deployment that keeps its policy elsewhere (a gateway, for instance).
@@ -101,7 +106,7 @@ class VleiIdentity(Extension):
             "presents": ["LE"],
             "acceptedRoots": self.accepted_roots,
             "signatureAlgs": ["Ed25519"],
-            "ttlMs": self.verifier.ttl_ms,
+            "ttlMs": getattr(self.verifier, "ttl_ms", 0),
         }
         if self.requires:
             capability["requires"] = self.requires
@@ -235,11 +240,10 @@ class VleiIdentity(Extension):
         # cannot point the question at someone else's record.
         holder = _issuee_of(credential, said) or aid
 
-        # Chain, revocation and root first: a signature that verifies under a revoked credential
-        # is still worthless, and checking it first would report the wrong layer.
-        result = await self.verifier.verify(
-            credential, said=said, aid=holder, source="presented"
-        )
+        # Local checks first, the remote one last. The chain, the SAIDs, the root and the
+        # signature can all be decided from the request itself, so a verification service that is
+        # slow or unreachable degrades one specific check instead of every check.
+        result = await self.offline.verify(credential, said=said, aid=holder, source="presented")
         if delegated and delegated != holder:
             # Record who actually acted, while the identity established stays the holder's.
             result.aid = delegated
@@ -254,6 +258,17 @@ class VleiIdentity(Extension):
                 freshness_seconds=self.freshness_seconds,
                 replay_cache=self._replay,
             )
+
+        # Revocation is the one thing that cannot be established locally: it lives in the issuer's
+        # transaction event log. Ask, and refuse if the answer cannot be had — a credential that
+        # may have been withdrawn is not a credential that was checked.
+        if self.verifier is not None:
+            live = await self.verifier.verify(
+                credential, said=said, aid=holder, source="presented"
+            )
+            result.revocation_checked = True
+            result.role = live.role or result.role
+            result.lei = live.lei or result.lei
 
         if requirement:
             wanted_role = requirement.get("role")
