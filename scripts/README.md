@@ -85,18 +85,20 @@ Override from the environment:
 
 ## Status, 2026-09-23
 
-Checks 1-5 pass on a clean run. Check 6 does not yet.
+**All six acceptance checks pass on a clean run.** Real KERI, real ACDC, real verifier, real
+revocation. The root of trust is self-configured; in production it would be GLEIF's.
 
-### Verified working, end to end
+```
+Check 3 — presenting the ECR credential      ok  HTTP 202
+Check 4 — the holder is authorized           ok  HTTP 200, LEI + role returned
+Check 5 — revoking the ECR credential        ok  rev event written to the LE's TEL
+Check 6 — the holder is no longer authorized ok  HTTP 401, "Credential revoked"
+```
 
-| Check | Result |
-|---|---|
-| 1 — witnesses, schema server, verifier start | healthy |
-| 2 — credential chain issued | root → QVI → LE → ECR, with edges and an agent delegated AID |
-| 3 — present the ECR credential | **HTTP 202** |
-| 4 — query the holder's authorization | **HTTP 200**, `has valid login account`, with LEI and role |
-| 5 — revoke the ECR credential | `rev` event written to the LE's TEL and served by the witness |
-| 6 — the holder is no longer authorized | **still reports valid** — see below |
+Check 6 returns in seconds rather than at the observer's next poll, because the script re-exports
+the credential with `--include-revoked` and re-presents it: the revocation event travels in the
+presentation itself. The 60-second background observer is the fallback for relying parties that
+are never presented to again.
 
 ### Eight things that had to be fixed to get there
 
@@ -113,8 +115,8 @@ Each produced a misleading error, so each is worth keeping written down.
    names a natural person, and the salt is what stops one credential being correlatable across
    presentations.
 4. **Rules blocks are `const`-matched per schema.** ECR requires a third disclaimer,
-   `privacyDisclaimer`, whose text differs from the one used elsewhere. `rules_for()` now derives
-   them from the schema instead of hardcoding them.
+   `privacyDisclaimer`, whose text differs from the one used elsewhere. `rules_for()` derives them
+   from the schema instead of hardcoding them.
 5. **Failures 3 and 4 both surface as `'CredentialIssuer' object has no attribute '_tock'`** —
    keripy catches the validation error, returns from a half-built Doer, and the real message is
    lost. It is printed above, as `error issuing credential …`; read that, not the `ERR:` line.
@@ -131,35 +133,26 @@ Each produced a misleading error, so each is worth keeping written down.
    copy of a credential could present it as their own. `keri-config/present.py` signs from the
    keystore against exactly the serialization the verifier reconstructs.
 
-### Check 6: revocation does not propagate yet
+Two configuration details that are easy to lose:
 
-The revocation itself is real — the `rev` event is in the LE's TEL and the witness serves it:
+- **`revocationCheck` defaults to false** and is read from the verifier's **config file only** —
+  there is no environment variable. `scripts/verifier-config/` sets it true.
+- **That config file must be mounted writable.** keripy's Configer opens a config file for writing
+  even when it only reads it, and silently falls back to a path that does not exist.
+
+### If a re-run behaves strangely
+
+The verifier keeps its decisions in a database inside its container. A stale database will keep
+answering `has valid login account` for a credential the current run has just revoked, because the
+account it holds was established by a previous run. When in doubt, recreate everything:
 
 ```bash
-curl "http://localhost:5642/query?typ=tel&vcid=<ecr-said>"   # returns the rev event
+docker rm -f mcp-vlei-cli mcp-vlei-verifier mcp-vlei-witness mcp-vlei-schema
+docker compose -f scripts/docker-compose.yml up -d
 ```
 
-What has not been made to work is the verifier noticing. Detection is **asynchronous**: a
-background observer polls `{witness_url}/query?typ=tel&vcid={said}` for every credential it holds,
-on a 60-second interval, and `witness_url` comes from a query parameter on the presentation.
-
-Established so far:
-
-- `revocationCheck` defaults to **false** and is read from the **config file only** — there is no
-  environment variable. `scripts/verifier-config/` now sets it true, and the container confirms
-  `revocationCheck=True` at startup.
-- That config file must be mounted **writable**: keripy's Configer opens a config file for writing
-  even when it only reads it, and silently falls back to a path that does not exist.
-- The presentation passes `?witness_url=http://witness-demo:5642`. The signature covers `@path`,
-  which falcon reports without the query string, so the parameter does not disturb signing.
-- Check 6 re-exports with `--include-revoked` and re-presents before polling, and polls for up to
-  `REVOCATION_WAIT` (default 150s).
-
-Even so the account stays valid, and the observer logs nothing — neither a successful poll nor the
-"Witness … is unavailable" it would print on failure. **The next thing to determine is whether the
-observer is running at all**: `start.py` only adds `CredentialRevocationChecker` to its doers when
-`revocationCheck` is true at startup, so confirm the doer is in the loop before looking any further
-at witness URLs or TEL contents.
+`docker compose down -v` has been observed to leave containers behind on this setup, which produces
+exactly this symptom, so prefer the explicit `rm -f` when a run misbehaves for no visible reason.
 
 ## If it does not run
 

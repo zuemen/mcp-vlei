@@ -45,17 +45,20 @@ extension mechanism. The MCP core schema is not modified.
 | 0 — Problem statement | `docs/PROBLEM.md` |
 | 1 — Schema extension | `spec/` |
 | 2 — Skill and workflow | `skills/vlei-identity/` |
-| 3 — Credential environment | `scripts/` — written; **not yet executed end to end** |
+| 3 — Credential environment | `scripts/` — **all six acceptance checks pass** |
 | 4 — Python package | `packages/mcp-vlei/` — 44 tests passing |
 | 5 — Reference implementation | `examples/association-server/`, `examples/my-agent/` |
 | 6A — Government adoption path | `docs/GOVERNMENT.md` |
 | 6B — Government gateway | `examples/regulator/`, `deploy/agentgateway/` |
 | 7 — Talk and recording | `docs/DEMO.md` |
 
-The one gap is deliberate and worth stating plainly: `scripts/bootstrap-credentials.sh` has not yet
-completed a full run against live containers, so its `kli` invocations are unverified. Everything
-downstream of it is tested against the package's own decision logic rather than against issued
-credentials. Closing that gap is the next step.
+`scripts/bootstrap-credentials.sh` now runs end to end against live containers: it issues the
+chain, installs the self-configured root, presents the ECR credential to GLEIF's verifier (202),
+reads back the LEI and role (200), revokes, and confirms the revocation is honoured (401).
+
+The remaining gap is the reference implementations in `examples/`: they have credentials to use
+now, but have not yet been run against the official MCP SDK, so their server and client API calls
+are written from the SEP-2133 description rather than verified. That is the next step.
 
 ## Honesty statement
 
