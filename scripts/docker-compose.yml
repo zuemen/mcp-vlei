@@ -69,8 +69,17 @@ services:
     image: gleif/vlei-verifier:1.0.0
     container_name: mcp-vlei-verifier
     environment:
-      - VERIFY_ROOT_OF_TRUST=
+      - VERIFY_ROOT_OF_TRUST=True
       - VLEI_VERIFIER_PORT=7676
+    volumes:
+      # The shipped config has `revocationCheck: false`, and the flag is read from the config file
+      # only — there is no environment variable for it. With it off the verifier never polls a
+      # witness for a credential's TEL, so a revoked credential keeps returning "valid login
+      # account" indefinitely. Ours turns it on and points the schema and witness URLs at this
+      # compose network instead of GLEIF's testnet. Not read-only: keripy's Configer
+      # opens a config file for writing even when it only reads it, and falls back to a path that
+      # does not exist if it cannot.
+      - ./verifier-config/verifier-config-public.json:/usr/local/var/vlei-verifier/scripts/keri/cf/verifier-config-public.json
     depends_on:
       witness-demo:
         condition: service_healthy

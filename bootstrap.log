@@ -1,0 +1,22 @@
+
+[36m==> Stage 1 — starting witness network, schema server and verifier[0m
+ Container mcp-vlei-schema  Running
+ Container mcp-vlei-witness  Running
+ Container mcp-vlei-cli  Running
+ Container mcp-vlei-verifier  Running
+ Container mcp-vlei-witness  Waiting
+ Container mcp-vlei-schema  Waiting
+ Container mcp-vlei-schema  Waiting
+ Container mcp-vlei-witness  Waiting
+ Container mcp-vlei-schema  Healthy
+ Container mcp-vlei-witness  Healthy
+ Container mcp-vlei-witness  Healthy
+ Container mcp-vlei-schema  Healthy
+[32m  ok[0m  witnesses wan/wil/wes up on 5642-5644
+[32m  ok[0m  vLEI schema server up on 7723
+[32m  ok[0m  vlei-verifier up on 7676
+
+[36m==> Stage 2 — creating controllers: root qvi le ecr[0m
+
+EXIT=255
+EXIT=0

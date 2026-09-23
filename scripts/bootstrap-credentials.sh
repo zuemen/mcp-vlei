@@ -188,9 +188,19 @@ delegated_incept() {
     | grep -q "$(cat "${WORK}/${parent}.aid")" \
     || fail "${child} does not know ${parent} after resolving ${parent_oobi} — delegation cannot proceed"
 
+  # A delegated AID cannot deliver its own delegation request: it does not exist yet, so it has no
+  # established key state to sign transport with. keripy requires a *proxy* — an ordinary AID in
+  # the same keystore — to carry the request to the delegator. Without it the proposer exits
+  # immediately with "no proxy to send messages for delegation", and since it runs in the
+  # background that message is never seen.
+  if ! kli status --name "$child" --alias "${child}-proxy" >/dev/null 2>&1; then
+    kli incept --name "$child" --alias "${child}-proxy" \
+      --file /keri-config/incept-witnesses.json >/dev/null
+  fi
+
   kli incept --name "$child" --alias "$child" \
     --file /keri-config/incept-witnesses.json --delpre "$(cat "${WORK}/${parent}.aid")" \
-    >/dev/null 2>&1 &
+    --proxy "${child}-proxy" >/dev/null 2>&1 &
   local proposer=$!
 
   # Let the proposer publish before confirming: a confirm that lands first does nothing, and both
@@ -482,9 +492,14 @@ introduce_to_verifier() {
     -H 'Content-Type: application/json' -d "{\"oobi\":\"${oobi}\"}"
 }
 
+# The witness URL is passed on every presentation: the verifier reads the credential's TEL from a
+# witness to learn about revocation. Without it, it keeps answering "valid" after a revocation,
+# because nothing ever tells it otherwise.
+WITNESS_INTERNAL="http://witness-demo:5642"
+
 present() {
   local said="$1"
-  kli_py present ecr ecr "$said" /credentials/ecr.cesr "$VERIFIER_INTERNAL"
+  kli_py present ecr ecr "$said" /credentials/ecr.cesr "$VERIFIER_INTERNAL" "$WITNESS_INTERNAL"
 }
 
 authorized() {
@@ -517,21 +532,47 @@ verify_all() {
     || fail "expected 200, got ${code}: $(cat "${WORK}/verifier.out")"
 
   step "Check 5 — revoking the ECR credential"
-  kli vc revoke --name le --alias le --registry-name leRegistry --said "$ecr_said" \
-      --send "$ecr_aid" >/dev/null
+  # Tolerate an already-revoked credential so `--verify` can be re-run: revocation is not
+  # reversible, and a second run of the checks should exercise check 6 rather than stop here.
+  if kli vc revoke --name le --alias le --registry-name leRegistry --said "$ecr_said" \
+       --send "$ecr_aid" >/dev/null 2>&1; then
+    ok "revoked in the LE's TEL"
+  else
+    note "already revoked — continuing to check 6"
+  fi
   sleep 3
-  ok "revoked in the LE's TEL"
 
   step "Check 6 — the holder is no longer authorized"
+  # Re-export before re-presenting. The CESR written in stage 5 predates the revocation, so
+  # presenting it again tells the verifier nothing new.
+  kli vc export --name ecr --alias ecr --said "$ecr_said" --full --include-revoked \
+    > "${OUT}/ecr.cesr"
   present "$ecr_said" >/dev/null || true
-  sleep 2
-  code="$(authorized "$ecr_aid")"
-  if [[ "$code" == "200" ]] && grep -qi '"\?revoked"\?' "${WORK}/verifier.out"; then
-    ok "reported revoked: $(cat "${WORK}/verifier.out")"
-  elif [[ "$code" != "200" ]]; then
-    ok "no longer authorized (HTTP ${code})"
+
+  # Revocation detection is asynchronous. The verifier runs a background observer that polls
+  # {witness_url}/query?typ=tel for each credential it holds, on a 60-second interval by default,
+  # so a revocation takes effect at the next poll rather than at the next request. Poll for it
+  # rather than sleeping a fixed amount — and note the delay, because it is the real-world answer
+  # to "how quickly does a withdrawal of authority take effect".
+  local waited=0
+  while [[ $waited -lt ${REVOCATION_WAIT:-150} ]]; do
+    code="$(authorized "$ecr_aid")"
+    if [[ "$code" != "200" ]] || grep -qi 'revok' "${WORK}/verifier.out"; then
+      break
+    fi
+    sleep 10
+    waited=$((waited+10))
+  done
+
+  if [[ "$code" != "200" ]]; then
+    ok "no longer authorized after ${waited}s (HTTP ${code}): $(cat "${WORK}/verifier.out")"
+  elif grep -qi 'revok' "${WORK}/verifier.out"; then
+    ok "reported revoked after ${waited}s: $(cat "${WORK}/verifier.out")"
   else
-    fail "still authorized after revocation — this check must fail loudly: $(cat "${WORK}/verifier.out")"
+    fail "still authorized ${waited}s after revocation — this check must fail loudly.
+      The verifier's observer polls the witness for each credential's TEL every 60s by default;
+      raise REVOCATION_WAIT if this machine is slower, but a permanent 'valid' here means the
+      revocation never reached the verifier: $(cat "${WORK}/verifier.out")"
   fi
 }
 

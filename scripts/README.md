@@ -85,23 +85,20 @@ Override from the environment:
 
 ## Status, 2026-09-23
 
-Most of the chain now runs. What follows is what has actually been observed, so the next session
-starts from evidence rather than from guesses.
+Checks 1-5 pass on a clean run. Check 6 does not yet.
 
-### Verified working
+### Verified working, end to end
 
-| Step | Evidence |
+| Check | Result |
 |---|---|
-| Witness receipting | Inception completes; `Prefix ...` printed with receipts collected |
-| Root, LE, ECR inception | Four controllers created with witnessed KELs |
-| Agent delegated AID under the ECR holder | Completed in one run: `agent (delegated) = EKo7EPKx…` |
-| Credential chain: QVI -> LE -> ECR | All three issued, with edges and SAIDs |
-| CESR export | `credentials/le.cesr`, `credentials/ecr.cesr` written with `--full` |
-| Root of trust installed | `POST /root_of_trust/{aid}` -> HTTP 202 |
-| Signed presentation | `PUT /presentations/{said}` -> **HTTP 202**, verifier returned the parsed credential |
-| Authorization query | Answers with a reasoned verdict (see below) |
+| 1 — witnesses, schema server, verifier start | healthy |
+| 2 — credential chain issued | root → QVI → LE → ECR, with edges and an agent delegated AID |
+| 3 — present the ECR credential | **HTTP 202** |
+| 4 — query the holder's authorization | **HTTP 200**, `has valid login account`, with LEI and role |
+| 5 — revoke the ECR credential | `rev` event written to the LE's TEL and served by the witness |
+| 6 — the holder is no longer authorized | **still reports valid** — see below |
 
-### Six things that had to be fixed to get there
+### Eight things that had to be fixed to get there
 
 Each produced a misleading error, so each is worth keeping written down.
 
@@ -112,50 +109,57 @@ Each produced a misleading error, so each is worth keeping written down.
 2. **The LE schema SAID was wrong** (`…62VPxROE` instead of `…62VsDZWY`). The schema server answers
    `200` with a zero-byte body for an unknown SAID, so `kli init` aborted its whole OOBI load and
    left keystores with no witness endpoints — appearing as failure 1.
-3. **ECR credentials need `--private`.** The ECR schema requires `u`, the privacy salt, at the top
-   level. An ECR names a natural person, and the salt is what stops one credential being
-   correlatable across presentations.
+3. **ECR credentials need `--private`.** The ECR schema requires `u`, the privacy salt. An ECR
+   names a natural person, and the salt is what stops one credential being correlatable across
+   presentations.
 4. **Rules blocks are `const`-matched per schema.** ECR requires a third disclaimer,
-   `privacyDisclaimer`, whose text differs from the one used elsewhere. The script now derives
-   rules from the schema instead of hardcoding them.
-5. **Any of the above surfaces as `'CredentialIssuer' object has no attribute '_tock'`** — keripy
-   catches the validation error, returns from a half-built Doer, and the real message is lost. The
-   underlying error is printed above it as `error issuing credential …`; read that, not the `ERR:`
-   line.
-6. **vlei-verifier 1.0.0 requires signed HTTP headers** (`SIGNATURE-INPUT`, `SIGNATURE`,
-   `SIGNIFY-RESOURCE`, `SIGNIFY-TIMESTAMP`), and it must be given the presenter's OOBI first
-   (`POST /oobi`) or it answers *"unknown … used to sign header"*. `keri-config/present.py` signs
-   from the keystore, against exactly the serialization the verifier reconstructs.
+   `privacyDisclaimer`, whose text differs from the one used elsewhere. `rules_for()` now derives
+   them from the schema instead of hardcoding them.
+5. **Failures 3 and 4 both surface as `'CredentialIssuer' object has no attribute '_tock'`** —
+   keripy catches the validation error, returns from a half-built Doer, and the real message is
+   lost. It is printed above, as `error issuing credential …`; read that, not the `ERR:` line.
+6. **A delegated AID needs a `--proxy`.** It cannot deliver its own delegation request — it does
+   not exist yet, so it has no key state to sign transport with. Without one the proposer exits
+   immediately with *"no proxy to send messages for delegation"*, and because it runs in the
+   background that message is never seen. `delegated_incept` creates `<name>-proxy` first.
+7. **A QVI AID must be delegated from the root.** The verifier enforces it: *"The QVI AID must be
+   delegated"*. It is right to — a QVI's authority derives from the root, so a standalone QVI AID
+   would carry authority of its own.
+8. **vlei-verifier 1.0.0 requires signed HTTP headers** (`SIGNATURE-INPUT`, `SIGNATURE`,
+   `SIGNIFY-RESOURCE`, `SIGNIFY-TIMESTAMP`), and must be given the presenter's OOBI first
+   (`POST /oobi`) or it answers *"unknown … used to sign header"*. Without this, anyone holding a
+   copy of a credential could present it as their own. `keri-config/present.py` signs from the
+   keystore against exactly the serialization the verifier reconstructs.
 
-### The remaining blocker
+### Check 6: revocation does not propagate yet
 
-`delegated_incept qvi root` fails: the proposer exits before the first confirm attempt.
-
-This became necessary once presentation worked, because the verifier rejects the chain with:
-
-> ECR chain validation failed, LE chain validation failed, **The QVI AID must be delegated**
-
-That is the verifier correctly enforcing an ecosystem rule — a QVI's authority derives from the
-root, so a standalone QVI AID would have authority of its own. The same delegation machinery
-**does** work for the agent under the ECR holder, so the mechanism is sound; something about doing
-it for `qvi` under `root`, as the first delegation in a fresh environment, is not.
-
-Ruled out: the delegator's OOBI is generated and resolves (`… resolved`), the delegator's KEL is
-reachable, witnesses receipt normally, and `kli delegate confirm` takes the documented flags. The
-one observed proposer error, when the OOBI step is skipped, is *"delegator … not found, unable to
-process delegation"* — so the next thing to check is whether the resolved contact is actually
-usable by the delegation code, rather than merely present.
-
-**Next step:** run the delegated inception by hand with the proposer in the foreground, so its
-error is visible instead of being swallowed by the background job:
+The revocation itself is real — the `rev` event is in the LE's TEL and the witness serves it:
 
 ```bash
-docker compose -f scripts/docker-compose.yml exec keri-cli sh -c '
-  kli incept --name qvi --alias qvi --file /keri-config/incept-witnesses.json --delpre <root-aid>'
-# and in a second shell:
-docker compose -f scripts/docker-compose.yml exec keri-cli sh -c '
-  kli delegate confirm --name root --alias root --interact --auto'
+curl "http://localhost:5642/query?typ=tel&vcid=<ecr-said>"   # returns the rev event
 ```
+
+What has not been made to work is the verifier noticing. Detection is **asynchronous**: a
+background observer polls `{witness_url}/query?typ=tel&vcid={said}` for every credential it holds,
+on a 60-second interval, and `witness_url` comes from a query parameter on the presentation.
+
+Established so far:
+
+- `revocationCheck` defaults to **false** and is read from the **config file only** — there is no
+  environment variable. `scripts/verifier-config/` now sets it true, and the container confirms
+  `revocationCheck=True` at startup.
+- That config file must be mounted **writable**: keripy's Configer opens a config file for writing
+  even when it only reads it, and silently falls back to a path that does not exist.
+- The presentation passes `?witness_url=http://witness-demo:5642`. The signature covers `@path`,
+  which falcon reports without the query string, so the parameter does not disturb signing.
+- Check 6 re-exports with `--include-revoked` and re-presents before polling, and polls for up to
+  `REVOCATION_WAIT` (default 150s).
+
+Even so the account stays valid, and the observer logs nothing — neither a successful poll nor the
+"Witness … is unavailable" it would print on failure. **The next thing to determine is whether the
+observer is running at all**: `start.py` only adds `CredentialRevocationChecker` to its doers when
+`revocationCheck` is true at startup, so confirm the doer is in the loop before looking any further
+at witness URLs or TEL contents.
 
 ## If it does not run
 

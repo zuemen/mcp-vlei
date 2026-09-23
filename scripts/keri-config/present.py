@@ -51,10 +51,10 @@ def build_headers(hab, method: str, path: str) -> dict[str, str]:
     return headers
 
 
-def _send(hab, verifier: str, path: str, methods, body: bytes | None) -> int:
+def _send(hab, verifier: str, path: str, methods, body: bytes | None, query: str = "") -> int:
     for method in methods:
         request = urllib.request.Request(
-            f"{verifier}{path}", data=body,
+            f"{verifier}{path}{query}", data=body,
             headers=build_headers(hab, method, path), method=method,
         )
         try:
@@ -77,11 +77,23 @@ def open_hab(keystore: str, alias: str):
     return hab
 
 
-def present(keystore: str, alias: str, said: str, cesr_file: str, verifier: str) -> int:
+def present(keystore: str, alias: str, said: str, cesr_file: str, verifier: str,
+            witness_url: str = "") -> int:
+    """Present a credential.
+
+    ``witness_url`` matters more than it looks. The verifier uses it to read the credential's
+    transaction event log from a witness, which is how it learns about **revocation**. Presenting
+    without it produces a verifier that will happily keep answering "valid login account" after the
+    credential has been revoked — the credential it holds is genuine, and nothing ever tells it
+    otherwise.
+    """
     hab = open_hab(keystore, alias)
     body = open(cesr_file, "rb").read()
-    # Released versions have accepted the presentation on either verb.
-    return _send(hab, verifier, f"/presentations/{said}", ("PUT", "POST"), body)
+    path = f"/presentations/{said}"
+    query = f"?witness_url={witness_url}" if witness_url else ""
+    # The signature covers `@path`, which falcon reports without the query string, so the
+    # parameter does not participate in signing.
+    return _send(hab, verifier, path, ("PUT", "POST"), body, query=query)
 
 
 def authorizations(keystore: str, alias: str, aid: str, verifier: str) -> int:
@@ -93,7 +105,7 @@ def authorizations(keystore: str, alias: str, aid: str, verifier: str) -> int:
 if __name__ == "__main__":
     command = sys.argv[1]
     if command == "present":
-        print(present(*sys.argv[2:7]))
+        print(present(*sys.argv[2:8]))
     elif command == "authorizations":
         print(authorizations(*sys.argv[2:6]))
     else:
