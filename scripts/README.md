@@ -61,6 +61,27 @@ credentials/
 
 `credentials/` is gitignored. Private keys never leave this machine.
 
+## Recording
+
+```bash
+bash scripts/reset-demo.sh                      # clean slate; ends with READY
+bash scripts/reset-demo.sh --keep-credentials   # between takes: verifier and console only
+bash scripts/record-check.sh                    # preconditions; non-zero if any fail
+bash scripts/demo-run.sh                        # drive the six scenes, pausing between
+bash scripts/demo-run.sh --scene 3              # one scene
+```
+
+`record-check.sh` gates on the thing that actually ruins takes: **the agent's credential must not
+already be revoked.** The acceptance suite revokes it, so a console started after a test run shows
+`revoked` in scene 1 — the console reading the issuer's log correctly, and a reshoot. The check
+reports it in seconds; discovering it mid-take costs a scene.
+
+`demo-run.sh` drives the console over HTTP and prints each scene's verification report to the
+terminal, so it works as a second screen. The console's own keyboard shortcuts still work — use
+whichever suits the take. Hands on a keyboard look less staged than a terminal.
+
+`docs/DEMO.md` has the shot-by-shot script.
+
 ## Other commands
 
 ```bash
