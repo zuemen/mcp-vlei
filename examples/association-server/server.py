@@ -37,6 +37,7 @@ ENV = json.loads((CREDENTIALS / "env.json").read_text()) if (CREDENTIALS / "env.
 VERIFIER_URL = os.environ.get("VLEI_VERIFIER_URL", ENV.get("verifierUrl", "http://localhost:7676"))
 ACCEPTED_ROOTS = ENV.get("acceptedRoots") or [os.environ["VLEI_ROOT_AID"]]
 PUBLIC_URL = os.environ.get("PUBLIC_URL", "http://localhost:8080")
+WITNESS_URL = os.environ.get("VLEI_WITNESS_URL", "http://localhost:5642")
 
 # ------------------------------------------------------------------------------------------- #
 # In-memory state. A real deployment would have a database; the point here is the identity path.
@@ -64,12 +65,14 @@ def record(decision: dict[str, Any]) -> None:
 vlei = VleiIdentity(
     le_credential=CREDENTIALS / "le.cesr",
     requires="ECR",
-    verifier_url=VERIFIER_URL,
     accepted_roots=ACCEPTED_ROOTS,
+    # Revocation is read from the issuer's transaction event log, served by a witness, rather than
+    # from a verification service. Same authority, one fewer moving part — and it sidesteps an
+    # upstream defect in vlei-verifier 1.0.0/0.1.5 that takes the service down on this exact path
+    # (docs/upstream/issue.md). Set revocation_source="verifier" to use the service instead.
+    revocation_source="tel",
+    witness_url=WITNESS_URL,
     well_known=f"{PUBLIC_URL}/.well-known/vlei",
-    # Zero TTL: this server exists to demonstrate revocation, and a cached "valid" would make
-    # revocation look slower than it is. A production deployment would trade this off per tool.
-    ttl_ms=0,
     on_decision=record,
 )
 
@@ -157,7 +160,8 @@ async def revoke(request: Request) -> JSONResponse:
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
     )
     out, _ = await proc.communicate()
-    vlei.verifier.invalidate(env.get("agentAid") or ecr_aid)
+    if vlei.verifier is not None:
+        vlei.verifier.invalidate(env.get("agentAid") or ecr_aid)
     record({"tool": "(dashboard)", "allowed": True, "note": "ECR revoked in the LE's TEL"})
     return JSONResponse({"ok": proc.returncode == 0, "output": out.decode()[-500:]})
 
@@ -166,7 +170,7 @@ if __name__ == "__main__":
     import uvicorn
 
     print(f"association-server on {PUBLIC_URL}")
-    print(f"  verifier:       {VERIFIER_URL}")
+    print(f"  revocation via: {WITNESS_URL} (transaction event log)")
     print(f"  accepted roots: {ACCEPTED_ROOTS}")
     print(f"  dashboard:      {PUBLIC_URL}/dashboard/")
     uvicorn.run(mcp.streamable_http_app(), host="0.0.0.0", port=int(os.environ.get("PORT", "8080")))

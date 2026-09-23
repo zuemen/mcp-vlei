@@ -27,7 +27,14 @@ ROOT = ROOT_AID
 
 
 def build(le_credential, verifier, requirements=None, **kwargs) -> VleiIdentity:
+    """An extension wired to the stub verifier.
+
+    `revocation_source="verifier"` here because these tests stub that service. The TEL source —
+    the default, which reads the issuer's log from a witness and needs nothing else running — has
+    its own tests below.
+    """
     records: list[dict] = []
+    kwargs.setdefault("revocation_source", "verifier")
     ext = VleiIdentity(
         le_credential=le_credential,
         verifier_url="http://unused",
@@ -315,3 +322,105 @@ def test_empty_accepted_roots_is_a_configuration_error():
 
     with pytest.raises(ValueError, match="accepted_roots"):
         VleiVerifier("http://localhost:7676", accepted_roots=[])
+
+
+# --------------------------------------------------------------------------------------------- #
+# Revocation sources
+# --------------------------------------------------------------------------------------------- #
+
+class StubTel:
+    """Stands in for a witness's transaction event log."""
+
+    def __init__(self, revoked: bool = False, reachable: bool = True) -> None:
+        self.revoked = revoked
+        self.reachable = reachable
+        self.asked: list[str] = []
+
+    async def check(self, said: str, *, aid: str | None = None) -> None:
+        self.asked.append(said)
+        if not self.reachable:
+            from mcp_vlei.errors import ChainInvalid
+
+            raise ChainInvalid("witness unreachable; revocation was not established", aid=aid)
+        if self.revoked:
+            from mcp_vlei.errors import Revoked
+
+            raise Revoked("the credential has been revoked", aid=aid, credential_said=said)
+
+
+def build_tel(le_credential, tel, requirements=None) -> VleiIdentity:
+    records: list[dict] = []
+    ext = VleiIdentity(
+        le_credential=le_credential,
+        accepted_roots=[ROOT],
+        revocation_source="tel",
+        witness_url="http://witness.invalid",
+        requirements=requirements,
+        on_decision=records.append,
+    )
+    ext.tel = tel
+    ext.records = records  # type: ignore[attr-defined]
+    return ext
+
+
+async def test_tel_source_allows_a_live_credential(
+    le_credential, credential_file, credential_said, signer
+):
+    """No verification service in the picture at all — the issuer's log is the authority."""
+    tel = StubTel()
+    ext = build_tel(le_credential, tel, {"register_member": REQUIRES_REGISTRATION})
+    args = {"name": "A", "email": "a@example.org"}
+    params = make_params(
+        "register_member", args,
+        signed_meta(signer, credential_file, "register_member", args, credential_said),
+    )
+    result = await ext.intercept_tool_call(params, Ctx(), call_next)
+
+    assert result.is_error is False
+    assert tel.asked == [credential_said]
+
+
+async def test_tel_source_refuses_a_revoked_credential(
+    le_credential, credential_file, credential_said, signer
+):
+    ext = build_tel(le_credential, StubTel(revoked=True), {"register_member": REQUIRES_REGISTRATION})
+    args = {"name": "A", "email": "a@example.org"}
+    params = make_params(
+        "register_member", args,
+        signed_meta(signer, credential_file, "register_member", args, credential_said),
+    )
+    result = await ext.intercept_tool_call(params, Ctx(), call_next)
+
+    assert layer_of(result) == "revoked"
+
+
+async def test_an_unreadable_log_refuses_rather_than_allows(
+    le_credential, credential_file, credential_said, signer
+):
+    """The failure this project exists to prevent: reporting "could not check" as "not revoked"."""
+    ext = build_tel(
+        le_credential, StubTel(reachable=False), {"register_member": REQUIRES_REGISTRATION}
+    )
+    args = {"name": "A", "email": "a@example.org"}
+    params = make_params(
+        "register_member", args,
+        signed_meta(signer, credential_file, "register_member", args, credential_said),
+    )
+    result = await ext.intercept_tool_call(params, Ctx(), call_next)
+
+    assert result.is_error is True
+    assert "revocation was not established" in text_of(result)
+
+
+def test_tel_source_requires_a_witness(le_credential):
+    with pytest.raises(ValueError, match="witness_url"):
+        VleiIdentity(
+            le_credential=le_credential, accepted_roots=[ROOT], revocation_source="tel"
+        )
+
+
+def test_an_unknown_revocation_source_is_refused(le_credential):
+    with pytest.raises(ValueError, match="revocation_source"):
+        VleiIdentity(
+            le_credential=le_credential, accepted_roots=[ROOT], revocation_source="vibes"
+        )

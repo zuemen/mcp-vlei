@@ -65,8 +65,12 @@ services:
   # self-configured root via POST /root_of_trust/{aid}, which is the documented mechanism for
   # running the verifier against a non-GLEIF root.
   vlei-verifier:
-    # No `latest` tag is published for this image — pin an explicit release.
-    image: gleif/vlei-verifier:1.0.0
+    # No `latest` tag is published for this image, and the version ordering is not what it looks
+    # like: 0.1.5 (2026-08-20) is newer than 1.0.0 (2026-06-29). Both carry the same defect in
+    # process_revocations_from_event_log — verified by reading 0.1.5's own source — so changing
+    # the tag does not avoid it. The variable is here so a fixed release can be adopted the day it
+    # appears, without editing this file.
+    image: gleif/vlei-verifier:${VLEI_VERIFIER_TAG:-1.0.0}
     container_name: mcp-vlei-verifier
     # vlei-verifier 1.0.0 crashes the whole service when its revocation observer meets a stored
     # state whose `aid` is None: `process_revocations_from_event_log` does

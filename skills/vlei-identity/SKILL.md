@@ -5,6 +5,11 @@ description: Use when an MCP server declares the org.gleif.vlei/identity extensi
 
 # vLEI Identity for MCP
 
+**Runtime skill.** For writing a server or client that implements the extension, see
+`skills/implementing-vlei/` instead — that one is build time, and its output is code that will be
+reviewed and then executed. This one is guidance to a running agent, which is a weaker guarantee,
+so nothing here is load-bearing for security.
+
 This skill teaches you the **rules** of the `org.gleif.vlei/identity` extension. It does not perform
 cryptography — signing, chain validation, revocation checking and canonicalization are done by the
 `mcp_vlei` package. Your job is to know what must be true at each stage, to refuse to proceed when

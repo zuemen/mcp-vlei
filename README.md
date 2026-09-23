@@ -1,5 +1,7 @@
 # mcp-vlei
 
+**Reference design · v0.2 · root of trust self-configured**
+
 Verifiable **organizational** identity for the Model Context Protocol, using GLEIF's vLEI ecosystem.
 
 MCP authenticates domains (TLS, OAuth `iss`, OAuth `client_id`) and human users (OAuth `sub`). No
@@ -20,7 +22,9 @@ extension mechanism. The MCP core schema is not modified.
 | `spec/SPEC.md` | The extension specification |
 | `spec/schema.ts` | Type definitions — additive, nothing in core MCP redefined |
 | `spec/examples/` | Wire-format examples |
-| `skills/vlei-identity/` | Skill and staged workflow so a model uses the extension correctly |
+| `skills/implementing-vlei/` | **Build time** — how to implement the extension correctly. Output is code: reviewed once, then executed every time |
+| `skills/vlei-identity/` | **Runtime** — how a running agent presents credentials and reads a refusal. Output is behaviour: guidance, not a guarantee |
+| `docs/upstream/` | A defect found in `vlei-verifier` while building this, written up for GLEIF |
 | `scripts/` | One-command credential environment bootstrap |
 | `packages/mcp-vlei/` | Python implementation (`VleiIdentity` server extension, `VleiClient`) |
 | `examples/` | Reference server, reference agent, regulator scenario |
@@ -46,8 +50,8 @@ extension mechanism. The MCP core schema is not modified.
 | 1 — Schema extension | `spec/` |
 | 2 — Skill and workflow | `skills/vlei-identity/` |
 | 3 — Credential environment | `scripts/` — **all six acceptance checks pass** |
-| 4 — Python package | `packages/mcp-vlei/` — 47 tests, against the real SDK types |
-| 5 — Reference implementation | runs on SDK 2.2.0 at protocol 2026-07-28; 3 of 6 acceptance tests green — see `examples/README.md` |
+| 4 — Python package | `packages/mcp-vlei/` — 67 tests, against the real SDK types |
+| 5 — Reference implementation | runs on SDK 2.2.0 at protocol 2026-07-28; acceptance tests green — see `examples/README.md` |
 | 6A — Government adoption path | `docs/GOVERNMENT.md` |
 | 6B — Government gateway | `examples/regulator/`, `deploy/agentgateway/` |
 | 7 — Talk and recording | `docs/DEMO.md` |
@@ -56,12 +60,14 @@ extension mechanism. The MCP core schema is not modified.
 chain, installs the self-configured root, presents the ECR credential to GLEIF's verifier (202),
 reads back the LEI and role (200), revokes, and confirms the revocation is honoured (401).
 
-The reference implementations now run against the official SDK: the server registers its tools with
-their `_meta` requirements, advertises `org.gleif.vlei/identity` at protocol 2026-07-28, and refuses
-a protected tool to an unmodified client with a named failure layer. Three of the six acceptance
-tests are green; the other three are blocked by a crash in `vlei-verifier` 1.0.0 that takes the
-service down and empties its database mid-test. `examples/README.md` has the detail and the
-upstream bug.
+The reference implementations run against the official SDK: the server registers its tools with
+their `_meta` requirements, advertises `org.gleif.vlei/identity` at protocol 2026-07-28, verifies a
+counterparty's credential locally, reads revocation from the issuer's transaction event log, and
+refuses a protected tool to an unmodified client with a named failure layer.
+
+A defect in `vlei-verifier` 1.0.0 that used to block half the acceptance suite is now off the
+critical path — three selectable revocation sources, local checks before the remote one — and
+written up for upstream in `docs/upstream/`. `examples/README.md` has the detail.
 
 ## Honesty statement
 

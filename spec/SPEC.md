@@ -2,7 +2,8 @@
 
 **Extension identifier:** `org.gleif.vlei/identity`
 **Base specification:** MCP 2026-07-28
-**Status:** Draft · **Repo:** `mcp-vlei`
+**Status:** v0.2 — validated against a reference implementation; field details may still change
+**Repo:** `mcp-vlei`
 
 This extension adds verifiable **organizational** identity and **role-scoped** authorization to MCP
 using GLEIF's vLEI ecosystem (KERI AIDs, ACDC credentials, LE and ECR credential types). It does not
@@ -82,6 +83,14 @@ own AID. The verifier checks the attesting party's signature and chain, and then
 statement. This mirrors the way one government office writes to another to confirm a record, and it
 is what makes inter-agency lookup expressible as a verifiable agent call.
 
+**Presentation is the holder's step.** This is not a stylistic point; it decides the shape of every
+deployment. GLEIF's `vlei-verifier` requires a presentation to carry HTTP headers signed by the AID
+the credential was issued to, so a relying party **cannot** hand a counterparty's credential to a
+verification service and ask about it. The division of labour follows: the holder presents once, and
+the relying party reads back what that established (`GET /authorizations/{aid}`). GLEIF's regulatory
+filing pilot is arranged the same way. A relying party checking a *counterparty's* credential —
+mode (a) — therefore has no service to delegate to and MUST verify the chain itself.
+
 An attestation is a statement *about* a verification, not a substitute for the credential. A verifier
 MUST validate the attesting party's own identity under mode (a) before accepting any attestation
 from it.
@@ -107,6 +116,13 @@ This produces **two independent revocation switches**, and the distinction matte
 An institution that discovers a misbehaving agent does not have to strip a member of staff of their
 role to stop it. An institution whose member of staff changes jobs revokes one credential and every
 agent under it stops at once.
+
+**A verifier MUST establish the holder from the credential, not from the caller.** The agent signs
+with its delegated AID; the credential was issued to the person; a verification service keys its
+record by that person. An implementation MUST read the issuee out of the presented credential and
+MUST NOT accept a caller's assertion of whose record to consult — otherwise a caller could point the
+question at an identifier whose record happens to be favourable. The delegated AID identifies who
+acted; the issuee identifies whose authority they acted under, and the two are recorded separately.
 
 `delegatedAid` is nonetheless **optional** in the schema. A deployment that cannot support delegated
 inception may sign directly with the ECR holder's AID; it keeps every other property and loses only
@@ -209,6 +225,14 @@ Freshness plus a replay cache buys the same property at gateway-compatible cost.
   presented no identity and follows its configured policy (warn or stop).
 - Every field introduced here is ignorable. No message shape changes. No core type is redefined.
 
+**Protocol negotiation decides whether the extension exists at all.** Extensions are active only at
+protocol revision 2026-07-28. A client that completes only the legacy handshake negotiates an earlier
+revision, and `capabilities.extensions` then comes back empty however the server is configured. In
+the MCP Python SDK this is the difference between the high-level `Client`, which negotiates the
+modern revision, and `ClientSession.initialize()` alone, which does not. A server that appears to
+advertise nothing is, in our experience, usually a client that never got past the legacy handshake —
+check the negotiated revision before concluding the server is misconfigured.
+
 This is demonstrated, not merely asserted: `examples/` includes a test in which Claude Desktop — an
 unmodified host — connects to the reference server, lists tools, successfully calls the public tool,
 and is refused on the protected one.
@@ -219,7 +243,10 @@ and is refused on the protected one.
 - `spec/examples/` — wire-format examples for each message shape.
 - `packages/mcp-vlei/` — Python implementation (`VleiIdentity` server extension, `VleiClient`).
 - `examples/association-server/`, `examples/my-agent/` — end-to-end reference deployment.
-- `skills/vlei-identity/` — the skill and workflow that let a model use the extension correctly.
+- `skills/implementing-vlei/` — build-time guidance for implementing this specification.
+- `skills/vlei-identity/` — runtime guidance for an agent using it.
+- `examples/README.md` — the acceptance status of the reference deployment, including what is
+  currently blocked and why.
 
 ## Security Considerations
 

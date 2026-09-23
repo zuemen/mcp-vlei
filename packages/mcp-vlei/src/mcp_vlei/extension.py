@@ -33,6 +33,7 @@ from .errors import (
     VleiError,
 )
 from .signing import DEFAULT_FRESHNESS_SECONDS, ReplayCache, scope_satisfied, verify_request
+from .revocation import TelRevocationChecker
 from .verifier import OfflineVerifier, VerificationResult, VleiVerifier
 
 EXTENSION_ID = "org.gleif.vlei/identity"
@@ -62,6 +63,8 @@ class VleiIdentity(Extension):
         freshness_seconds: int = DEFAULT_FRESHNESS_SECONDS,
         ttl_ms: int = 30_000,
         verifier: VleiVerifier | None = None,
+        revocation_source: str = "tel",
+        witness_url: str = "",
         requirements: dict[str, dict[str, Any]] | None = None,
         on_decision: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
@@ -75,9 +78,20 @@ class VleiIdentity(Extension):
             if verifier_url
             else None
         )
-        #: Establishes the chain, the SAIDs and the root without asking anyone. What it cannot
-        #: establish — revocation — is what `self.verifier` is for.
+        #: Establishes the chain, the SAIDs and the root without asking anyone.
         self.offline = OfflineVerifier(self.accepted_roots)
+
+        #: Where revocation is established. See `mcp_vlei.revocation` for why there are three.
+        if revocation_source not in ("tel", "verifier", "none"):
+            raise ValueError("revocation_source must be 'tel', 'verifier' or 'none'")
+        self.revocation_source = revocation_source
+        self.tel = (
+            TelRevocationChecker(witness_url)
+            if revocation_source == "tel" and witness_url
+            else None
+        )
+        if revocation_source == "tel" and self.tel is None:
+            raise ValueError("revocation_source='tel' needs a witness_url to read the log from")
         self._replay = ReplayCache(window_seconds=freshness_seconds)
         #: Tool name -> requirement. Populated from the bound server's tool list, or supplied
         #: directly for a deployment that keeps its policy elsewhere (a gateway, for instance).
@@ -259,10 +273,14 @@ class VleiIdentity(Extension):
                 replay_cache=self._replay,
             )
 
-        # Revocation is the one thing that cannot be established locally: it lives in the issuer's
-        # transaction event log. Ask, and refuse if the answer cannot be had — a credential that
-        # may have been withdrawn is not a credential that was checked.
-        if self.verifier is not None:
+        # Revocation is the one thing that cannot be established from the request alone: it lives
+        # in the issuer's transaction event log, and a holder presenting a withdrawn credential
+        # would simply omit the withdrawal. Ask whichever source this deployment trusts, and
+        # refuse if the answer cannot be had — "we could not check" is not "not revoked".
+        if self.revocation_source == "tel" and self.tel is not None:
+            await self.tel.check(result.credential_said or said, aid=holder)
+            result.revocation_checked = True
+        elif self.revocation_source == "verifier" and self.verifier is not None:
             live = await self.verifier.verify(
                 credential, said=said, aid=holder, source="presented"
             )

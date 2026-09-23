@@ -101,6 +101,38 @@ class VleiVerifier:
 
     # -------------------------------------------------------------------------------------- #
 
+    async def wait_ready(self, *, timeout: float = 60.0, initial_delay: float = 0.5) -> None:
+        """Block until the verifier answers, with exponential backoff, or raise.
+
+        vlei-verifier 1.0.0 and 0.1.5 crash on their own revocation path and are restarted by the
+        container runtime, so "is it up?" is a real question between calls rather than only at
+        startup. Probing explicitly — with a timeout and a message that says what was waited for —
+        replaces racing the restart policy and hoping.
+
+        Bounded on purpose: an unbounded wait turns a dead service into a hung test, which is
+        harder to diagnose than a failure.
+        """
+        import asyncio
+
+        http = await self._http()
+        deadline = time.monotonic() + timeout
+        delay = initial_delay
+        last = ""
+        while time.monotonic() < deadline:
+            try:
+                response = await http.get(f"{self.url}/health")
+                if response.status_code < 500:
+                    return
+                last = f"HTTP {response.status_code}"
+            except httpx.HTTPError as exc:
+                last = type(exc).__name__
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 5.0)
+        raise ChainInvalid(
+            f"the verifier at {self.url} did not become ready within {timeout:.0f}s "
+            f"(last: {last or 'no response'})"
+        )
+
     async def present(self, said: str, cesr: str) -> None:
         """Submit a credential for verification. 200/202 means accepted for processing."""
         http = await self._http()

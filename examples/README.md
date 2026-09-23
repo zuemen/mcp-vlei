@@ -38,32 +38,55 @@ advertises nothing is usually a client that never got past the legacy handshake.
 |---|---|
 | 2 — no credential → `missing_credential` | passes |
 | 2b — public tool needs nothing | passes |
+| 4 — tampered arguments → `digest_mismatch` | passes |
 | 5 — unmodified client is additive | passes |
-| 1 — valid credential succeeds | blocked, see below |
-| 3 — revoked credential refused | blocked, see below |
-| 4 — tampered arguments refused | blocked, see below |
+| 3 — revoked credential → `revoked` | passes (revocation read from the issuer's log) |
+| 1 — valid credential succeeds | passes when the credential is live; see below |
 
-**What blocks the other three.** `vlei-verifier` 1.0.0 crashes on its own revocation path —
-`process_revocations_from_event_log` writes a database key of `None` and keripy raises
-`TypeError: sequence item 0: expected str instance, NoneType found`. It takes the HTTP service
-down with it and comes back with an empty database, so a credential presented a moment earlier is
-answered with `unknown AID`. The compose file restarts it automatically and the tests re-present
-before each case, and it still loses the race often enough that these three cannot be called
-green.
+### How the verifier was taken off the critical path
 
-This is worth raising with GLEIF. It is also why the failures in this repository's history read as
-connection errors rather than credential errors: a crashed verifier looks, from the client, exactly
-like a network problem.
+`vlei-verifier` 1.0.0 crashes on its own revocation path — `process_revocations_from_event_log`
+writes a database key of `None` and keripy raises `TypeError: sequence item 0: expected str
+instance, NoneType found`. It takes the HTTP service down with it and comes back with an empty
+database, so a credential presented a moment earlier is answered `unknown AID`. Written up for
+upstream in [`docs/upstream/issue.md`](../docs/upstream/issue.md).
 
-**Two flow facts learned along the way**, both now encoded in the package:
+**Changing the image version does not help.** `0.1.5` (2026-08-20) is newer than `1.0.0`
+(2026-06-29) despite the numbering, and carries the same code at `utils.py:133-143` — verified by
+reading it. The tag is now `VLEI_VERIFIER_TAG` so a fixed release can be adopted without editing
+the compose file.
+
+**Three revocation sources, selectable, all kept:**
+
+| `revocation_source` | Reads | Why you would choose it |
+|---|---|---|
+| `"tel"` *(default)* | `GET {witness}/query?typ=tel&vcid={said}` — the issuer's transaction event log | No dependency on a verification service. Same authority, one fewer moving part |
+| `"verifier"` | `vlei-verifier` | Right in production, where the verifier is operated and has its own view of the ecosystem |
+| `"none"` | nothing | Every result is marked `revocation_checked=False`. Legitimate only if the relying party is told |
+
+Two structural changes did as much as the source switch:
+
+- **Local checks before the remote one.** The chain, the SAIDs, the root and the signature are all
+  decided from the request itself; only revocation requires asking anyone. Ordering it last means a
+  verification service that is slow or down degrades one specific check instead of every check —
+  which is why test 4 reports `digest_mismatch` today where it used to report a connection error.
+- **`VleiVerifier.wait_ready()`**, with a bounded exponential backoff, replaces racing the
+  container restart policy. Bounded on purpose: an unbounded wait turns a dead service into a hung
+  test, which is harder to diagnose than a failure.
+
+Test 1 needs a credential that has not been revoked. The acceptance suite's own test 3 revokes it,
+so re-run `bash scripts/bootstrap-credentials.sh` — it re-issues at the end for exactly this
+reason — before a run where test 1 matters.
+
+**Two flow facts learned along the way**, both now in `spec/SPEC.md`:
 
 - **Presentation is the holder's step.** `/presentations` requires headers signed by the AID the
   credential was issued to, so a relying party cannot present someone else's credential — it reads
-  back what the holder established, at `/authorizations/{aid}`. This is how GLEIF's regulatory
-  filing pilot works too.
+  back what the holder established, at `/authorizations/{aid}`. A counterparty's credential is
+  therefore verified locally, by `mcp_vlei.chain`.
 - **Ask about the issuee, not the signer.** The agent signs with its delegated AID; the credential
-  was issued to the person. The verifier's record is keyed by the holder, so the extension reads
-  the issuee out of the credential rather than trusting the caller to name it.
+  was issued to the person. The extension reads the issuee out of the credential rather than
+  trusting the caller to name it.
 
 ## What the five acceptance tests establish
 
