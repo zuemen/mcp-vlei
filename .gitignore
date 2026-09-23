@@ -5,3 +5,5 @@ keys/
 credentials/
 .env
 node_modules/
+bootstrap.log
+verify.log
