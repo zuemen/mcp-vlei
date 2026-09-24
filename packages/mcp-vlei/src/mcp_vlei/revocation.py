@@ -94,7 +94,18 @@ class TelRevocationChecker:
                 credential_said=said,
             )
 
-        if _has_revocation(response.text, said):
+        events = _events(response.text)
+        if not _has_issuance(events, said):
+            # A witness that has never seen the issuance is not saying "valid". It is saying
+            # nothing, and reading silence as "not revoked" is the failure this checker exists
+            # to prevent.
+            raise ChainInvalid(
+                f"the issuer's transaction event log at {self.witness_url} records no issuance "
+                f"of {said}; its status was not established",
+                aid=aid,
+                credential_said=said,
+            )
+        if _has_revocation(events, said):
             raise Revoked(
                 "the credential has been revoked in the issuer's transaction event log",
                 aid=aid,
@@ -102,16 +113,13 @@ class TelRevocationChecker:
             )
 
 
-def _has_revocation(stream: str, said: str) -> bool:
-    """Is there a `rev` event for this credential in the log?
+def _has_issuance(events: list[dict[str, Any]], said: str) -> bool:
+    return any(e.get("t") in ("iss", "bis") and e.get("i") == said for e in events)
 
-    The stream interleaves JSON events with CESR attachments, so the events are picked out by
-    balancing braces rather than parsing the whole body.
-    """
-    for event in _events(stream):
-        if event.get("t") == "rev" and event.get("i") == said:
-            return True
-    return False
+
+def _has_revocation(events: list[dict[str, Any]], said: str) -> bool:
+    """Is there a `rev` event for this credential in the log?"""
+    return any(e.get("t") in ("rev", "brv") and e.get("i") == said for e in events)
 
 
 def _events(stream: str) -> list[dict[str, Any]]:

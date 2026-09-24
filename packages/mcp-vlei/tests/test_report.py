@@ -141,3 +141,16 @@ def test_marks_fall_back_when_the_terminal_cannot_encode_them(monkeypatch: pytes
 
     monkeypatch.setattr(sys, "stdout", Cp950Stdout())
     assert module._marks() == module._MARKS_ASCII
+
+
+def test_a_skipped_check_says_so_in_the_record():
+    """A dict that reads `passed: True` for a check nobody ran is how a skipped signature once
+    looked verified. A skipped check is marked as skipped, whatever else it carries."""
+    report = VerificationReport()
+    run(report, *CHECK_ORDER[:6])
+    report.start("revocation")
+    report.skipped("revocation", "no revocation source configured")
+    checks = {c["name"]: c for c in report.as_dict()["checks"]}
+
+    assert checks["revocation"]["skipped"] is True
+    assert checks["chain"]["skipped"] is False

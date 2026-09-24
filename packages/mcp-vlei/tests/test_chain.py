@@ -16,7 +16,8 @@ import json
 import pytest
 
 from mcp_vlei.chain import parse_stream, recompute_said, walk_chain
-from mcp_vlei.errors import ChainInvalid, MissingCredential, RoleMismatch
+from mcp_vlei.testing import World
+from mcp_vlei.errors import ChainInvalid, MissingCredential, RoleMismatch, UnknownRoot
 from mcp_vlei.verifier import OfflineVerifier
 
 ROOT = "EM-uSa3-ZH6ynbMtqUE0aOce0memXiuXHDOVNQia8x6n"
@@ -107,8 +108,12 @@ def test_walks_to_the_root(chain_stream: str, ecr_said: str):
 
 
 def test_a_root_we_do_not_accept_is_refused(chain_stream: str, ecr_said: str):
-    """Nothing is wrong with the credential. Two organizations disagree about whom they trust."""
-    with pytest.raises(ChainInvalid, match="not an accepted root"):
+    """Nothing is wrong with the credential. Two organizations disagree about whom they trust.
+
+    So the layer is `unknown_root`, not `chain_invalid` — the remedy is a conversation between the
+    two parties, not a new credential, and the skill tells the agent which one it is facing.
+    """
+    with pytest.raises(UnknownRoot, match="not an accepted root"):
         walk_chain(parse_stream(chain_stream), ecr_said, ["ESomeoneElsesRootXXXXXXXXXXXXXXXXXXXXXXXXXXX"])
 
 
@@ -143,33 +148,43 @@ def test_a_chain_whose_issuer_does_not_match_the_edge_is_refused():
 # OfflineVerifier
 # --------------------------------------------------------------------------------------------- #
 
-async def test_offline_verifier_establishes_the_entity(chain_stream: str, ecr_said: str):
-    result = await OfflineVerifier([ROOT]).verify(chain_stream, said=ecr_said)
+@pytest.fixture(scope="module")
+def issued() -> World:
+    """A chain issued through real registries: what the offline verifier now requires."""
+    return World(role="regulatory-filing", label="offline")
+
+
+async def test_offline_verifier_establishes_the_entity(issued: World):
+    result = await OfflineVerifier([issued.root.pre]).verify(
+        issued.ecr_stream, said=issued.ecr_credential.said
+    )
 
     assert result.lei == LEI
     assert result.role == "regulatory-filing"
-    assert result.holder_aid == HOLDER
-    assert result.root_aid == ROOT
+    assert result.holder_aid == issued.holder.pre
+    assert result.root_aid == issued.root.pre
 
 
-async def test_offline_verifier_admits_what_it_did_not_check(chain_stream: str, ecr_said: str):
-    """The point of the whole exercise: 'checked as far as we could' is not 'valid'."""
-    result = await OfflineVerifier([ROOT]).verify(chain_stream, said=ecr_said)
+async def test_offline_verifier_admits_what_it_did_not_check(issued: World):
+    """'Checked as far as we could' is not 'valid': issuance is established offline, revocation is not."""
+    result = await OfflineVerifier([issued.root.pre]).verify(
+        issued.ecr_stream, said=issued.ecr_credential.said
+    )
 
+    assert result.signatures_checked is True
     assert result.revocation_checked is False
-    assert result.signatures_checked is False
 
 
-async def test_offline_verifier_finds_the_leaf_without_being_told(chain_stream: str):
+async def test_offline_verifier_finds_the_leaf_without_being_told(issued: World):
     """A --full export carries the chain; the leaf is the credential nothing points at."""
-    result = await OfflineVerifier([ROOT]).verify(chain_stream)
+    result = await OfflineVerifier([issued.root.pre]).verify(issued.ecr_stream)
     assert result.role == "regulatory-filing"
 
 
-async def test_offline_verifier_checks_the_role(chain_stream: str, ecr_said: str):
+async def test_offline_verifier_checks_the_role(issued: World):
     with pytest.raises(RoleMismatch):
-        await OfflineVerifier([ROOT]).verify(
-            chain_stream, said=ecr_said, expected_role="member-registration"
+        await OfflineVerifier([issued.root.pre]).verify(
+            issued.ecr_stream, said=issued.ecr_credential.said, expected_role="member-registration"
         )
 
 

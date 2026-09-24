@@ -15,7 +15,8 @@ from typing import Any
 
 import httpx
 
-from .chain import Acdc, parse_stream, walk_chain
+from .chain import Acdc, parse_stream, verify_issuance, verify_vlei_chain, walk_chain
+from .kel import StreamKeyStates, parse_messages
 from .errors import ChainInvalid, MissingCredential, Revoked, RoleMismatch, UnknownRoot
 
 __all__ = ["VerificationResult", "VleiVerifier", "OfflineVerifier"]
@@ -40,8 +41,11 @@ class VerificationResult:
     #: issuer's transaction event log was not reached — a distinction a relying party must be able
     #: to see, because "valid as far as we could tell" is not "valid".
     revocation_checked: bool = True
-    #: Whether issuer signatures were verified.
+    #: Whether issuance was established — each credential anchored in its issuer's key event log.
     signatures_checked: bool = True
+    #: Every credential in the chain, leaf first. Revocation is established for each of them: an
+    #: ECR under a withdrawn LE is withdrawn authority, whatever its own log says.
+    chain_saids: list[str] = field(default_factory=list)
     #: When `source == "attestation"`, the AID whose judgment this rests on. A relying party that
     #: accepted someone else's verification must be able to say whose — `spec/SPEC.md`
     #: §Security Considerations requires the decision to record it.
@@ -91,7 +95,7 @@ class VleiVerifier:
         self.ttl_ms = ttl_ms
         self._timeout = timeout
         self._client = client
-        self._cache: dict[str, _CacheEntry] = {}
+        self._cache: dict[tuple[str, str], _CacheEntry] = {}
 
     async def _http(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -197,7 +201,9 @@ class VleiVerifier:
         if not cesr:
             raise MissingCredential("no credential was presented", aid=aid)
 
-        cached = self._cache.get(aid)
+        # Keyed by the credential as well as the holder: an answer about one of a holder's
+        # credentials is not an answer about another.
+        cached = self._cache.get((aid, said))
         if cached and cached.expires_at > time.monotonic():
             result = cached.result
         else:
@@ -223,7 +229,7 @@ class VleiVerifier:
                 ) from exc
             result = self._interpret(body, aid=aid, said=said, source=source)
             if self.ttl_ms > 0:
-                self._cache[aid] = _CacheEntry(
+                self._cache[(aid, said)] = _CacheEntry(
                     result, time.monotonic() + self.ttl_ms / 1000.0
                 )
 
@@ -242,8 +248,9 @@ class VleiVerifier:
         return result
 
     def invalidate(self, aid: str) -> None:
-        """Drop a cached result — used by the dashboard's revoke button so the demo is immediate."""
-        self._cache.pop(aid, None)
+        """Drop every cached result for ``aid`` — used by the dashboard's revoke button."""
+        for key in [k for k in self._cache if k[0] == aid]:
+            del self._cache[key]
 
     # -------------------------------------------------------------------------------------- #
 
@@ -267,6 +274,17 @@ class VleiVerifier:
                 if n in attrs and attrs[n] not in (None, ""):
                     return attrs[n]
             return default
+
+        # The verifier answers about the credential this AID presented to it. If that is not the
+        # one in front of us, its answer — revoked or not — is about something else.
+        reported = pick("said", "credentialSaid", "d")
+        if said and reported and reported != said:
+            raise ChainInvalid(
+                f"the verifier's record for {aid} is credential {reported}, not the presented "
+                f"{said}; the holder has not presented this one to it",
+                aid=aid,
+                credential_said=said,
+            )
 
         if str(pick("revoked", default=False)).lower() in ("true", "1"):
             raise Revoked("the credential has been revoked", aid=aid, credential_said=said)
@@ -309,10 +327,10 @@ class OfflineVerifier:
     credential: ``/presentations`` requires headers signed by the AID the credential was issued to,
     so a relying party cannot hand someone else's credential to a verifier and ask about it.
 
-    It establishes that the chain is internally sound and terminates at a root this party accepts.
-    It does **not** establish issuer signatures or revocation, and it says so in the result rather
-    than letting a caller assume otherwise — see :mod:`mcp_vlei.chain` for why each is out of reach
-    offline.
+    It establishes that the chain is internally sound, that every credential in it was issued by the
+    identifier it names — anchored in that issuer's key event log, carried in the stream — and that
+    it terminates at a root this party accepts. It does **not** establish revocation, and it says so
+    in the result rather than letting a caller assume otherwise — see :mod:`mcp_vlei.chain`.
 
     Use it to decide who you are talking to. Use :class:`VleiVerifier` for anything that turns on a
     credential still being valid.
@@ -350,6 +368,12 @@ class OfflineVerifier:
         chain = walk_chain(credentials, target, self.accepted_roots)
         leaf, root = chain[0], chain[-1]
 
+        messages = parse_messages(cesr)
+        key_states = StreamKeyStates(messages)
+        for link in chain:
+            verify_issuance(link, messages, key_states)
+        verify_vlei_chain(chain)
+
         if expected_role is not None and leaf.role != expected_role:
             raise RoleMismatch(
                 f"tool requires role {expected_role!r}; credential carries {leaf.role!r}",
@@ -373,7 +397,8 @@ class OfflineVerifier:
             root_aid=root.issuer,
             source=source,
             revocation_checked=False,
-            signatures_checked=False,
+            signatures_checked=True,
+            chain_saids=[link.said for link in chain],
         )
 
     def invalidate(self, aid: str) -> None:  # pragma: no cover - nothing is cached

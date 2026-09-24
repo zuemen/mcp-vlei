@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Sequence
 
 from cryptography.exceptions import InvalidSignature as _CryptoInvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -35,6 +35,10 @@ DEFAULT_MAX_AGE_SECONDS = 3600
 def _signable(body: dict[str, Any]) -> bytes:
     """Everything except the signature itself, canonicalized."""
     return canonicalize({k: v for k, v in body.items() if k != "sig"})
+
+
+#: How far ahead of this clock a `verifiedAt` may be before it is refused.
+DEFAULT_CLOCK_SKEW_SECONDS = 60
 
 
 @dataclass
@@ -90,7 +94,7 @@ def make_attestation(
 def verify_attestation(
     attestation: dict[str, Any],
     *,
-    verifier_verkey: str,
+    verifier_verkey: str | Sequence[str],
     expected_subject_aid: str | None = None,
     max_age_seconds: int = DEFAULT_MAX_AGE_SECONDS,
     now: datetime | None = None,
@@ -118,8 +122,16 @@ def verify_attestation(
     except ValueError as exc:
         raise ChainInvalid("verifiedAt is not RFC 3339") from exc
 
+    if verified_at.tzinfo is None:
+        raise ChainInvalid("verifiedAt carries no time zone")
     now = now or datetime.now(timezone.utc)
     age = now - verified_at
+    if age < -timedelta(seconds=DEFAULT_CLOCK_SKEW_SECONDS):
+        # A verification that has not happened yet never ages past the limit, so a far-future
+        # `verifiedAt` would make an attestation valid indefinitely.
+        raise StaleSignature(
+            f"attestation claims a verification {int(-age.total_seconds())}s in the future"
+        )
     if age > timedelta(seconds=max_age_seconds):
         raise StaleSignature(
             f"attestation describes a verification {int(age.total_seconds())}s old, "
@@ -127,16 +139,25 @@ def verify_attestation(
         )
 
     body = {k: v for k, v in attestation.items() if k != "sig"}
+    keys = [verifier_verkey] if isinstance(verifier_verkey, str) else list(verifier_verkey)
     try:
-        Ed25519PublicKey.from_public_bytes(cesr_decode_verkey(verifier_verkey)).verify(
-            cesr_decode_signature(attestation["sig"]),
-            _signable(body),
-        )
-    except _CryptoInvalidSignature as exc:
+        signature = cesr_decode_signature(attestation["sig"])
+    except (ValueError, TypeError) as exc:
+        raise InvalidSignature("attestation signature is not valid CESR",
+                               aid=attestation["verifierAid"]) from exc
+    for key in keys:
+        try:
+            Ed25519PublicKey.from_public_bytes(cesr_decode_verkey(key)).verify(
+                signature, _signable(body)
+            )
+            break
+        except _CryptoInvalidSignature:
+            continue
+    else:
         raise InvalidSignature(
             "attestation signature does not verify under the attesting party's key",
             aid=attestation["verifierAid"],
-        ) from exc
+        )
 
     return VerificationResult(
         aid=attestation["subjectAid"],

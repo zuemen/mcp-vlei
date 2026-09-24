@@ -26,12 +26,12 @@ from .errors import (
 )
 from .chain import Acdc, parse_stream, recompute_said, walk_chain
 from .extension import EXTENSION_ID, VleiIdentity
-from .signing import ReplayCache, Signer, canonicalize, digest_params, sign_request, verify_request
+from .signing import CommandSigner, ReplayCache, Signer, canonicalize, digest_params, sign_request, verify_request
 from .report import CHECK_ORDER, CheckResult, VerificationReport
 from .revocation import TelRevocationChecker
 from .verifier import OfflineVerifier, VerificationResult, VleiVerifier
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "__version__",
@@ -53,6 +53,7 @@ __all__ = [
     "walk_chain",
     "VerificationResult",
     "Signer",
+    "CommandSigner",
     "ReplayCache",
     "canonicalize",
     "digest_params",

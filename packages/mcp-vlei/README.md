@@ -22,7 +22,7 @@ vlei = VleiIdentity(
     le_credential="credentials/le.cesr",
     requires="ECR",
     accepted_roots=["EM-uSa3-ZH6ynbMtqUE0aOce0memXiuXHDOVNQia8x6n"],
-    witness_url="http://localhost:5642",   # revocation, from the issuer's own log
+    witness_url="http://localhost:5642",   # callers' key state and revocation, from their own logs
 )
 mcp = MCPServer(name="association", version="0.1.0", extensions=[vlei])
 vlei.bind(mcp)   # so the extension can read each tool's declared requirement
@@ -47,7 +47,9 @@ from mcp_vlei import VleiClient
 
 session = VleiClient(session, credential="credentials/ecr.cesr",
                      signer=agent_signer(),      # the key stays in the keystore
-                     verify_server=True)
+                     accepted_roots=["EM-uSa3-ZH6ynbMtqUE0aOce0memXiuXHDOVNQia8x6n"],
+                     witness_url="http://localhost:5642",   # an attester's key state
+                     verify_server=True)          # needs accepted_roots; raises without them
 await session.connect()          # verifies the server's LE before anything is called
 await session.list_tools()       # reads each tool's org.gleif.vlei/requires
 
@@ -102,8 +104,8 @@ Nine layers, and exactly one — `stale_signature` — is worth retrying.
 |---|---|---|
 | `accepted_roots` | — | **Security critical.** The entire trust decision. An empty list raises rather than accepting anything |
 | `revocation_source` | `"tel"` | `"tel"` reads the issuer's log from a witness; `"verifier"` asks a `vlei-verifier`; `"none"` marks every result `revocation_checked=False` |
-| `witness_url` | — | Required by `revocation_source="tel"` |
-| `verifier_url` | — | Required by `revocation_source="verifier"` |
+| `witness_url` | — | **Required.** Every caller's current key state is read from its key event log here — never from the request — and `revocation_source="tel"` reads the issuers' transaction event logs here too |
+| `verifier_url` | — | Required by `revocation_source="verifier"`; choosing that source without one raises |
 | `freshness_seconds` | 60 | Signature freshness window, paired with a replay cache that retains for twice as long |
 | `ttl_ms` | 30000 | How long a verification result may be cached. **Set to 0 for high-value tools** — a revocation takes effect no later than cache expiry |
 
@@ -121,13 +123,18 @@ pip install -e ".[dev]"
 pytest
 ```
 
-77 tests, no containers required. They cover every failure layer, RFC 8785 canonicalization, replay,
-check ordering, chain walking against minted credentials, the report's contents, and the attestation
-safety property that a key the attester chose for itself does not help.
+143 tests, no containers required. They cover every failure layer, RFC 8785 canonicalization, replay,
+check ordering, key event log verification, issuance anchoring, the vLEI chain shape, the report's
+contents, and the attacks the first version let through — someone else's credential signed with your
+own key, a key sent along with the request, a delegate of the wrong person, a credential its issuer
+never anchored, a QVI issuing an ECR with no legal entity in the chain.
 
-They use a stub verifier: what they exercise is this package's decision logic. A live chain, a live
-witness and a live `vlei-verifier` are exercised end to end by `scripts/bootstrap-credentials.sh`
-and `examples/association-server/tests/`.
+Nothing is stubbed but the network. `mcp_vlei.testing.World` mints a real KERI deployment —
+witnessed, delegated key event logs, registries, issuances — and serves it through an
+`httpx.MockTransport` shaped like a witness, so the package's own verification and HTTP code is what
+runs. With a bootstrapped `credentials/`, the same checks also run against what `kli` wrote. The live
+stack is exercised end to end by `scripts/bootstrap-credentials.sh` and
+`examples/association-server/tests/`.
 
 ## Key custody
 

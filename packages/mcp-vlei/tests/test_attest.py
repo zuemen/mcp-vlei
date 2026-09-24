@@ -76,3 +76,20 @@ def test_missing_fields_are_rejected(gateway, result):
     del att["lei"]
     with pytest.raises(ChainInvalid, match="missing"):
         verify_attestation(att, verifier_verkey=gateway.verkey)
+
+
+def test_an_attestation_from_the_future_is_refused(gateway, result):
+    """`verifiedAt` ten years ahead used to pass the age check forever."""
+    future = (datetime.now(timezone.utc) + timedelta(days=3650)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    attestation = make_attestation(gateway, result, verified_at=future)
+    with pytest.raises((StaleSignature, ChainInvalid)):
+        verify_attestation(attestation, verifier_verkey=gateway.verkey)
+
+
+def test_an_attestation_verifies_under_a_key_state(gateway, result):
+    """A key event log establishes a list of current keys; any one of them may have signed."""
+    other = Signer.from_seed(GATEWAY_AID, b"\x01" * 32)
+    attestation = make_attestation(gateway, result)
+    assert verify_attestation(
+        attestation, verifier_verkey=[other.verkey, gateway.verkey]
+    ).lei == result.lei
