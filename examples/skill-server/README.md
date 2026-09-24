@@ -5,10 +5,9 @@ This directory is the output of a **conformance experiment**: a fresh implemente
 `org.gleif.vlei/identity` extension. It is what scene 5 of the talk ("A server written from the
 skill") runs.
 
-What the skill did not say, and what had to be guessed or invented, is summarized in
+What the skill did not say, and what had to be guessed or invented, is in [`REPORT.md`](REPORT.md);
+what was done about it is in
 [`skills/implementing-vlei/CONFORMANCE.md`](../../skills/implementing-vlei/CONFORMANCE.md), *Second run*.
-The implementer's full gap report (`REPORT.md`, referenced by gap number below) is not in the
-repository yet.
 That file is the actual result of the experiment.
 
 ## Provenance
