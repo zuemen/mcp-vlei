@@ -245,3 +245,86 @@ def test_logs_written_by_kli_verify():
     assert len(states) == len(events) >= 3
     for body in events:
         assert states[body["i"]].keys == body["k"]
+
+
+# --------------------------------------------------------------------------------------------- #
+# More than one witness: duplicity
+# --------------------------------------------------------------------------------------------- #
+
+def _witnesses(world, views: dict[str, dict[str, str]] | None = None):
+    """An httpx client that routes by host: each host is a witness, with optional per-AID
+    overrides of the log it serves (a lagging witness, or a duplicitous controller's fork)."""
+    import httpx
+
+    views = views or {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        override = views.get(request.url.host, {})
+        pre = request.url.params.get("pre", "")
+        if request.url.params.get("typ") == "kel" and pre in override:
+            return httpx.Response(200, text=override[pre])
+        if override.get("*") == "down":
+            raise httpx.ConnectError("connection refused", request=request)
+        return world.witness_handler(request)
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+URLS = ["http://wan", "http://wil", "http://wes"]
+
+
+async def test_witnesses_that_agree_establish_the_key_state():
+    from mcp_vlei.testing import World
+
+    world = World()
+    world.agent.interact([])
+    resolver = WitnessKeyStates(URLS, client=_witnesses(world))
+    state = await resolver.resolve(world.agent.pre)
+
+    assert state.sn == 1
+    assert state.delegator == world.holder.pre
+
+
+async def test_a_controller_showing_two_witnesses_two_logs_is_refused():
+    """Duplicity: each log is valid on its own; they disagree at the same sequence number."""
+    from mcp_vlei.testing import World
+
+    world = World()
+    world.agent.interact([{"i": "E" + "a" * 43, "s": "0", "d": "E" + "a" * 43}])
+    fork = world.agent.forked_kel([{"i": "E" + "b" * 43, "s": "0", "d": "E" + "b" * 43}])
+    resolver = WitnessKeyStates(URLS, client=_witnesses(world, {"wes": {world.agent.pre: fork}}))
+
+    with pytest.raises(ChainInvalid, match="duplicit"):
+        await resolver.resolve(world.agent.pre)
+
+
+async def test_a_witness_that_is_behind_is_not_duplicity():
+    """A shorter copy of the same log is a witness catching up, and the longest copy counts."""
+    from mcp_vlei.testing import World
+
+    world = World()
+    behind = world.agent.kel()
+    world.agent.rotate()
+    resolver = WitnessKeyStates(URLS, client=_witnesses(world, {"wil": {world.agent.pre: behind}}))
+    state = await resolver.resolve(world.agent.pre)
+
+    assert state.keys == [world.agent.keys[0].qb64]
+
+
+async def test_too_few_witnesses_answering_is_refused():
+    from mcp_vlei.testing import World
+
+    world = World()
+    client = _witnesses(world, {"wil": {"*": "down"}, "wes": {"*": "down"}})
+    resolver = WitnessKeyStates(URLS, client=client)
+
+    with pytest.raises(ChainInvalid, match="witnesses"):
+        await resolver.resolve(world.agent.pre)
+
+
+async def test_one_witness_down_of_three_still_resolves():
+    from mcp_vlei.testing import World
+
+    world = World()
+    resolver = WitnessKeyStates(URLS, client=_witnesses(world, {"wes": {"*": "down"}}))
+    assert (await resolver.resolve(world.holder.pre)).pre == world.holder.pre

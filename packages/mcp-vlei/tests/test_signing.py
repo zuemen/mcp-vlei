@@ -167,3 +167,19 @@ def test_a_scope_of_the_wrong_type_is_unsatisfied_not_an_exception():
     assert ok is False and "regions" in reason
     ok, _ = scope_satisfied({"maxAmount": 10}, {"maxAmount": True})
     assert ok is False
+
+
+def test_two_identical_calls_in_the_same_second_are_not_a_replay(signer: Signer):
+    """The replay key is (aid, digest, ts). At one-second resolution, a client that legitimately
+    repeats a call within a second had its second call refused as a replay."""
+    import time
+
+    cache = ReplayCache()
+    params = {"name": "submit_filing", "arguments": {"form": "A1"}}
+    first = sign_request(signer, "tools/call", params)
+    time.sleep(0.005)
+    second = sign_request(signer, "tools/call", params)
+
+    verify_request(first, "tools/call", params, signer.verkey, replay_cache=cache)
+    verify_request(second, "tools/call", params, signer.verkey, replay_cache=cache)
+    assert first["ts"] != second["ts"]

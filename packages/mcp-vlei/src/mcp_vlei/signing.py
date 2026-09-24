@@ -274,7 +274,10 @@ class ReplayCache:
 # -------------------------------------------------------------------------------------------- #
 
 def _now_rfc3339() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Milliseconds: the replay key is (aid, digest, ts), and at whole seconds a client that
+    # legitimately repeated a call within the same second had the second one refused as a replay.
+    # RFC 3339 allows the fraction, and every verifier here parses it.
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def sign_request(

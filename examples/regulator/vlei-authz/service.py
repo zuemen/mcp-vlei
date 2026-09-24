@@ -119,6 +119,10 @@ class Settings:
             le_credential=self.le_credential,
             accepted_roots=self.accepted_roots,
             witness_url=self.witness_url,
+            # Several witnesses (VLEI_WITNESS_URLS, comma-separated): each caller's key log is
+            # compared across them and a fork refused.
+            witness_urls=[u.strip() for u in os.environ.get("VLEI_WITNESS_URLS", "").split(",")
+                          if u.strip()] or None,
             revocation_source=self.revocation_source,
             verifier_url=self.verifier_url,
             # Bounded, so an unreachable witness is named (`invalid_signature ... not established`)

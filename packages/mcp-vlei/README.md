@@ -105,6 +105,7 @@ Nine layers, and exactly one — `stale_signature` — is worth retrying.
 | `accepted_roots` | — | **Security critical.** The entire trust decision. An empty list raises rather than accepting anything |
 | `revocation_source` | `"tel"` | `"tel"` reads the issuer's log from a witness; `"verifier"` asks a `vlei-verifier`; `"none"` marks every result `revocation_checked=False` |
 | `witness_url` | — | **Required.** Every caller's current key state is read from its key event log here — never from the request — and `revocation_source="tel"` reads the issuers' transaction event logs here too |
+| `witness_urls` | — | Several witnesses: each caller's key event log is read from all of them and compared; a log they disagree about (duplicity) is refused, and fewer answers than a majority is *not established* |
 | `verifier_url` | — | Required by `revocation_source="verifier"`; choosing that source without one raises |
 | `freshness_seconds` | 60 | Signature freshness window, paired with a replay cache that retains for twice as long |
 | `ttl_ms` | 30000 | How long a verification result may be cached. **Set to 0 for high-value tools** — a revocation takes effect no later than cache expiry |
@@ -123,7 +124,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-143 tests, no containers required. They cover every failure layer, RFC 8785 canonicalization, replay,
+150 tests, no containers required. They cover every failure layer, RFC 8785 canonicalization, replay,
 check ordering, key event log verification, issuance anchoring, the vLEI chain shape, the report's
 contents, and the attacks the first version let through — someone else's credential signed with your
 own key, a key sent along with the request, a delegate of the wrong person, a credential its issuer

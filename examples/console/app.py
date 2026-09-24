@@ -313,12 +313,20 @@ def _signed_meta() -> tuple[dict[str, Any], dict[str, Any]]:
     return meta, signature
 
 
+def _witness_urls() -> list[str] | None:
+    """VLEI_WITNESS_URLS, comma-separated: every caller's key log is compared across them, and a
+    fork refused. Unset, the one VLEI_WITNESS_URL is asked and nothing is compared."""
+    urls = [u.strip() for u in os.environ.get("VLEI_WITNESS_URLS", "").split(",") if u.strip()]
+    return urls or None
+
+
 def _extension() -> VleiIdentity:
     return VleiIdentity(
         le_credential=ENV.le_file,
         accepted_roots=[ENV.root],
         revocation_source="tel",
         witness_url=ENV.witness,
+        witness_urls=_witness_urls() if ENV.live else None,
         witness_client=ENV.witness_client(),
     )
 
