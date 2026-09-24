@@ -13,3 +13,4 @@ skill-server.log
 reset.log
 # vlei-authz decision log (LEI, role, AIDs per call) written by the gateway demo
 deploy/agentgateway/audit/
+gateway.log

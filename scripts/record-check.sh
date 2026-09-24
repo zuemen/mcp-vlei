@@ -111,6 +111,33 @@ else
 fi
 
 # --------------------------------------------------------------------------------------------- #
+# Witnesses agree: every scene reads the agent's and the holder's key logs, and with several
+# witnesses configured a fork between them refuses the call (duplicity).
+# --------------------------------------------------------------------------------------------- #
+
+if [[ -n "${VLEI_WITNESS_URLS:-}" && -f "${ROOT}/credentials/env.json" ]]; then
+  AGREE="$(cd "$ROOT" && PYTHONPATH="packages/mcp-vlei/src" python - <<'PYEOF' 2>&1
+import asyncio, json, os
+from mcp_vlei.kel import WitnessKeyStates
+env = json.load(open("credentials/env.json"))
+urls = [u for u in os.environ["VLEI_WITNESS_URLS"].split(",") if u]
+async def main():
+    resolver = WitnessKeyStates(urls, quorum=len(urls))
+    for key in ("ecrAid", "agentAid"):
+        if env.get(key):
+            await resolver.resolve(env[key])
+    print(f"agree:{len(urls)}")
+asyncio.run(main())
+PYEOF
+)"
+  if [[ "$AGREE" == agree:* ]]; then
+    ok "all ${AGREE#agree:} witnesses hold the same key logs for the holder and the agent"
+  else
+    bad "the witnesses do not agree on a key log, or not all answered" "${AGREE##*$'\n'}"
+  fi
+fi
+
+# --------------------------------------------------------------------------------------------- #
 # Scenes 4 and 5: real servers. The console will not stand in for them — it shows NOT RUNNING.
 # --------------------------------------------------------------------------------------------- #
 

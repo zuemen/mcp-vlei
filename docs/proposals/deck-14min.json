@@ -1,0 +1,80 @@
+{
+  "_comment": "Slide changes for the 14-minute proposal. Build: python scripts/build-deck.py docs/slides/proposal/mcp-vlei-14min.pptx --script docs/proposals/DEMO-14min.md --overrides docs/proposals/deck-14min.json",
+  "Every requirement, traced": {
+    "bullets": [
+      "docs/CONFORMANCE.md — every normative statement, its code, its test",
+      [
+        "One defect every green test missed: ",
+        "the signature was checked under a key the request carried. Found, fixed, recorded."
+      ],
+      [
+        "A server written from the skill alone ",
+        "found one more gap in ours — the ECR's LEI was not tied to its legal entity. Fixed."
+      ],
+      "A section listing what is deliberately not claimed"
+    ]
+  },
+  "Limits": {
+    "bullets": [
+      "Verifiable is not the same as trustworthy",
+      "LEIs are not issued to private individuals",
+      "There is a cost, and QVI coverage is still expanding",
+      "Our demo root is self-configured",
+      "Key logs are compared across the configured witnesses — no independent watcher yet",
+      "Revoking one agent's delegation is not implemented; revoking the credential is",
+      "Agent delegation conventions are not yet settled"
+    ]
+  },
+  "Artifacts": {
+    "lines": [
+      "spec/      specification v0.2 · types · wire examples · test vectors",
+      "packages/  mcp-vlei — KEL + chain verification, 155 tests",
+      "skills/    implementing-vlei (build) · vlei-identity (runtime)",
+      "examples/  console · impersonation · regulator · skill-server",
+      "deploy/    gateway configuration — zero-code-change adoption",
+      "docs/      problem · adoption · conformance · upstream defect"
+    ]
+  },
+  "Taiwan already runs this model": {
+    "head": [
+      "",
+      "Taiwan today",
+      "This proposal"
+    ],
+    "widths": [
+      0.15,
+      0.45,
+      0.4
+    ],
+    "rows": [
+      [
+        "Holder",
+        "People — Digital Identity Wallet 數位憑證皮夾; companies — MOEA business certificate 工商憑證",
+        "Legal entities, and the agents acting for them"
+      ],
+      [
+        "Delegation",
+        "To employees — the certificate's attached card 附卡; per site and time limit announced for the phone",
+        "To an agent — a delegated identifier under the ECR holder, scoped"
+      ],
+      [
+        "Identifier",
+        "Unified business number 統一編號",
+        "LEI — a Taiwanese entity's record carries its 統一編號"
+      ],
+      [
+        "Reach",
+        "Domestic — over 180 G2B and B2B systems",
+        "Verifiable abroad, back to GLEIF — ISO 17442-3:2024"
+      ],
+      [
+        "Built on",
+        "X.509 (certificate) · OpenID4VC, SD-JWT VC (wallet)",
+        "KERI, ACDC — GLEIF's vLEI"
+      ]
+    ],
+    "size": 13,
+    "row_height": 0.56,
+    "footer": "Taiwan already delegates a company's authority to its people. What it does not yet do is delegate it to an agent, or make it verifiable abroad."
+  }
+}
