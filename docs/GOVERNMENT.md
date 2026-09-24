@@ -16,8 +16,9 @@ In it, a filer signs in with a vLEI ECR credential, uploads a signed filing, and
 which legal entity filed, under which role, with a credential that can be revoked.
 
 That pilot has a person in front of a browser. This project extends the same trust structure to an
-**agent** acting through MCP. The credentials are the same, the verifier is the same, the revocation
-mechanism is the same. What is new is where the credential travels: inside the protocol call rather
+**agent** acting through MCP. The credentials are the same and the revocation mechanism is the same;
+GLEIF's verifier can be the same too, though the reference deployment reads revocation from the
+issuer's log directly while an upstream defect is open (`docs/upstream/`). What is new is where the credential travels: inside the protocol call rather
 than inside a web session.
 
 That continuity is the substance of the proposal. Nothing here asks an institution to adopt a novel
@@ -62,7 +63,7 @@ careful. That was always true of the letter as well.
 
 ## 3. The adoption path
 
-Five stages. Each is independently useful: an institution that stops after stage 2 has gained
+Six stages, numbered 0 to 5. Each is independently useful: an institution that stops after stage 2 has gained
 something real, and nothing in a later stage is required to make an earlier one work.
 
 ### Stage 0 — Obtain a credential and define the role vocabulary
@@ -95,7 +96,10 @@ something real, and nothing in a later stage is required to make an earlier one 
 
 - **Who:** the infrastructure team.
 - **What changes:** an authorization gateway in front of existing systems performs the verification
-  and passes the established facts downstream as ordinary request headers — LEI, role, holder.
+  and passes the established facts downstream as ordinary request headers: the LEI, the role, the
+  credential holder and the acting agent, plus a record of the checks behind them — five headers in
+  `examples/regulator/` (`x-vlei-lei`, `x-vlei-role`, `x-vlei-holder-aid`, `x-vlei-delegate-aid`,
+  `x-vlei-report`).
 - **Effect:** **existing systems are not modified.** They read a header, as they already do for
   every other authentication scheme they sit behind. This is the stage that determines whether
   adoption is a procurement question or a rewrite, and `examples/regulator/` demonstrates the
@@ -123,7 +127,7 @@ flowchart TD
     S0["Stage 0 · Legal / administrative office<br/>Obtain the LE credential through a QVI<br/>Business unit defines its ECR role vocabulary"]
     S1["Stage 1 · Service operator<br/>Publish the LE credential at a fixed public location"]
     S2["Stage 2 · Business unit<br/>Each tool declares the role and limits it requires"]
-    S3["Stage 3 · Infrastructure<br/>Gateway verifies and passes LEI, role and holder downstream<br/><b>Existing systems unchanged</b>"]
+    S3["Stage 3 · Infrastructure<br/>Gateway verifies and passes LEI, role, holder and agent downstream<br/><b>Existing systems unchanged</b>"]
     S4["Stage 4 · Pairs of institutions<br/>Confirmation requests become signed attestations"]
     S5["Stage 5 · Records / audit<br/>Store LEI, role, delegated AID, credential SAID"]
 
@@ -155,8 +159,8 @@ sequenceDiagram
     Note over A,B: Before anything: A verifies B's LE credential<br/>from B's public location — mode (a)
 
     A->>B: tools/call, presenting the ECR credential,<br/>delegated AID and signature
-    B->>V: verify chain, revocation, root
-    V-->>B: valid · LEI, role, holder
+    B->>V: verify signature under the signer's key state, delegation,<br/>chain to an accepted root, revocation, role
+    V-->>B: valid · LEI, role, holder, agent
     B->>B: perform the lookup
     B-->>A: result + signed attestation<br/>(verifierAid, subjectAid, LEI, role, verifiedAt, sig)
 
@@ -213,8 +217,8 @@ high-value action should require both.
 - **The QVI ecosystem is still expanding.** The set of Qualified vLEI Issuers is growing but finite,
   and coverage varies by jurisdiction. This is a live constraint on how fast an institution can move
   past stage 0, and it should be checked before a timeline is committed to.
-- **The demonstration uses a self-configured root of trust.** Real KERI, real ACDC, real verifier,
-  real revocation — but the root is one we control, not GLEIF's. Every claim in the demonstration
+- **The demonstration uses a self-configured root of trust.** Real KERI, real ACDC, real
+  revocation — but the root is one we control, not GLEIF's. Every claim in the demonstration
   holds; the trust anchor in production would be GLEIF's, and the demonstration says so wherever it
   is shown.
 - **Agent delegation conventions are not yet settled.** This project uses a delegated AID created

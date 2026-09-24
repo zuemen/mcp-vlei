@@ -14,16 +14,20 @@ failure layer.
 
 ## Stage 0 — Load credentials and keys
 
-**Input:** configured credential path, key store path, accepted roots, verifier URL.
+**Input:** configured credential path, key store, accepted roots, verifier URL.
 
 **Checks**
 - The ECR credential file exists and parses as a CESR-encoded ACDC.
-- The signing key is present in the key store, and its AID matches either the ECR holder's AID or a
-  delegated AID under that holder's KEL.
+- A signer is available for the AID you will sign with — a keystore you sign *through* (`kli sign`
+  in the reference agent, Signify in production), so the private key is never in your process — and
+  that AID is either the ECR holder's AID or a delegated AID under that holder's KEL. The server
+  checks exactly this, against the key event logs at a witness.
 - `acceptedRoots` is non-empty.
-- The verifier is reachable, or offline fallback verification is configured.
+- The verifier is reachable, or offline verification is configured — knowing that offline
+  verification does not establish revocation (Stage 2).
 
-**Pass condition:** a usable credential, a usable signing key, and at least one accepted root.
+**Pass condition:** all four — a usable credential, a usable signer, at least one accepted root, and
+a verification route for the server's credential.
 
 **On failure:** stop before connecting. Report which of the four is missing. An empty
 `acceptedRoots` is a configuration error, not a default-to-accept-anything condition.
@@ -35,7 +39,9 @@ failure layer.
 **Input:** server URL.
 
 **Checks**
-- Read `serverInfo.extensions["org.gleif.vlei/identity"]`.
+- Read `capabilities.extensions["org.gleif.vlei/identity"]` — the server's `ServerCapabilities`,
+  not `serverInfo`, which has no `extensions` member. It is empty unless protocol 2026-07-28 was
+  negotiated.
 - Obtain the server's LE credential from the result's `_meta["org.gleif.vlei/credential"]`, or, if
   absent, fetch `discovery.wellKnown`.
 - Record which source the credential came from — it appears in the audit record.
@@ -53,18 +59,28 @@ policy permits continuing.
 
 **Input:** the LE credential from Stage 1, `acceptedRoots`.
 
-**Checks**, in this order, because each one makes the next meaningful:
-1. **Recompute the SAID** of the credential and confirm it matches the one presented → otherwise
-   `chain_invalid`. Nothing below means anything until the document is the document it claims to be.
-2. **Verify the issuer's signature** over the credential → otherwise `chain_invalid`.
-3. **Walk the chain** along the `e` edges: ECR → LE → QVI → root, validating each ACDC's schema and
-   each issuer's KEL → otherwise `chain_invalid`.
-4. **Check revocation** for every credential in the chain, in the issuer's TEL → otherwise
-   `revoked`.
-5. **Confirm the terminating root is in `acceptedRoots`** → otherwise `unknown_root`.
-6. If the discover result carried a signature, verify it under the server's AID and check freshness.
+**Checks**, in the order the package runs them, because each one makes the next meaningful:
+1. **Recompute each SAID** and confirm it matches the one presented → otherwise `chain_invalid`.
+   Nothing below means anything until the document is the document it claims to be.
+2. **Walk the chain** along the `e` edges — LE → QVI → root — requiring each link's issuer to be the
+   previous link's issuee, until an issuer in `acceptedRoots` → otherwise `chain_invalid` for a
+   broken link, `unknown_root` for a chain that ends at a root you do not accept. Steps 1 and 2
+   interleave: each link is re-hashed as the walk reaches it.
+3. **Verify each issuance**: every credential was issued by the identifier it names, anchored in
+   that issuer's key event log as carried in the stream → otherwise `chain_invalid`.
+4. **Check the vLEI shape**: each edge points at a credential of the schema it declares, the LE
+   credential sits under a QVI credential, and an LEI is present → otherwise `chain_invalid`.
+5. **Check revocation** for every credential in the chain, in its issuer's live TEL → otherwise
+   `revoked`, or `chain_invalid` when a log cannot be read or records no issuance. **The reference
+   `VleiClient` does not perform this step** — it verifies offline, and its result carries
+   `revocation_checked=False`. Without a route to the live logs the server is verified *except for
+   revocation*: say so, and never report its revocation as checked.
+6. If the discover result carried a signature, verify it under the server AID's current key state
+   and check freshness. The specification does not define this signature yet, and the reference
+   client does not check one.
 
-**Pass condition:** all six.
+**Pass condition:** 1–4; 5 whenever the live logs can be reached (otherwise, record that revocation
+was not established); 6 whenever a signature is present.
 
 **On failure:** **stop.** Report the failure layer by name. Do not call any tool on this server,
 including public ones. An organization that cannot prove it is who it claims is not one to send a
@@ -109,17 +125,26 @@ attempting the call.
 
 ## Stage 5 — Sign and call
 
-**Input:** the tool name, the arguments, the ECR credential, the delegated AID, the signing key.
+**Input:** the tool name, the arguments, the ECR credential, the delegated AID, the signer.
 
 **Actions**
 1. Canonicalize `params` with RFC 8785, **excluding `_meta`**.
 2. `digest = base64url(sha256(canonical))`.
 3. `ts` = now, RFC 3339, UTC.
-4. Sign `method + "\n" + ts + "\n" + digest`.
-5. Attach to `params._meta`: the ECR credential, the delegated AID, and the signature.
+4. Sign `method + "\n" + ts + "\n" + digest` through the signer — the keystore returns a signature;
+   you never hold the key.
+5. Attach to `params._meta` four members: the ECR credential (`org.gleif.vlei/credential`), the
+   signature (`org.gleif.vlei/signature`), the delegated AID (`org.gleif.vlei/delegatedAid`, equal
+   to `signature.aid`), and which credential in the stream is being presented
+   (`org.gleif.vlei/credentialSaid`). The first two are required — without either the server answers
+   `missing_credential`; the last two are optional in the schema, and the reference agent sends both.
 6. Send.
 
-**Pass condition:** the request is sent with all four `_meta` members present.
+**Pass condition:** the request is sent with the credential and the signature present, and with the
+delegated AID and credential SAID wherever you have them — all four, in the reference deployment.
+
+The package also sends `org.gleif.vlei/verkey`. It is informational and never used for verification:
+the server reads the signer's key state from its key event log, never from the request.
 
 **Note:** arguments must not change between step 1 and step 6. Any change produces
 `digest_mismatch` at the counterparty, which is the intended behavior and is not retryable.
@@ -133,10 +158,16 @@ attempting the call.
 **Checks**
 - `isError: false` → the call succeeded. Record the LEI, role, delegated AID, and credential SAID
   that were presented, for the audit trail.
-- `isError: true` → read the named failure layer and apply the response from `SKILL.md` §4:
+- `isError: true` → read the named failure layer and apply the response from the table under
+  *When a call is rejected* in `SKILL.md`:
   - `stale_signature` → return to Stage 5 and retry **once**.
   - `scope_exceeded` → you may offer the user a retry with in-scope arguments; ask first.
-  - every other layer → stop and report.
+  - `missing_credential` → nothing was presented. Return to Stage 4: if your credential covers the
+    tool, present it in Stage 5; if not, explain what is needed. This is a first presentation, not
+    a retry.
+  - every other layer → stop and report. That includes `invalid_signature` and `chain_invalid`,
+    whether the message names a failed check or a key state or revocation that could not be
+    established.
 - JSON-RPC error `-32021` → the extension was not declared at `initialize`. This is a configuration
   problem; reconnect with the capability declared.
 
@@ -170,7 +201,7 @@ that party's verification, not one you performed.
 flowchart TD
     S0["Stage 0<br/>load ECR, delegated AID key,<br/>accepted roots"]
     S1["Stage 1<br/>server/discover<br/>or /.well-known/vlei"]
-    S2{"Stage 2<br/>verify server LE<br/>SAID → signature → chain<br/>→ revocation → root"}
+    S2{"Stage 2<br/>verify server LE<br/>SAID → chain → root<br/>→ issuance → vLEI shape<br/>→ revocation (if reachable)"}
     S3["Stage 3<br/>tools/list<br/>read org.gleif.vlei/requires"]
     S4{"Stage 4<br/>does my role and scope<br/>cover this tool?"}
     S5["Stage 5<br/>digest → sign<br/>method + ts + digest<br/>→ tools/call"]
@@ -189,8 +220,10 @@ flowchart TD
     S5 --> S6
     S6 -->|"no"| S7 --> DONE
     S6 -->|"stale_signature"| S5
+    S6 -->|"missing_credential"| S4
     S6 -->|"any other layer"| STOP
 ```
 
-The single loop back from stage 6 to stage 5 is the only retry in the whole procedure. Every other
+The loop back from stage 6 to stage 5 is the only retry in the whole procedure. The one from
+`missing_credential` to stage 4 is not a retry — nothing was presented the first time. Every other
 failure is a state of the world that a retry cannot change.

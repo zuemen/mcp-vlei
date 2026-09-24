@@ -2,27 +2,28 @@
   "jsonrpc": "2.0",
   "id": 1,
   "result": {
-    "protocolVersion": "2026-07-28",
-    "serverInfo": {
-      "name": "association-server",
-      "title": "Taiwan Blockchain Enthusiasts Association MCP Server",
-      "version": "0.1.0",
+    "supportedVersions": ["2026-07-28"],
+    "capabilities": {
+      "tools": { "listChanged": true },
       "extensions": {
         "org.gleif.vlei/identity": {
           "presents": ["LE"],
           "requires": "ECR",
           "acceptedRoots": ["EHJ2kA8vQZ4Yd3mRr7TcN1sWpLxFbGuV9oKqDzXnA5eM"],
           "signatureAlgs": ["Ed25519"],
+          "ttlMs": 0,
           "discovery": {
             "wellKnown": "https://mcp.blockchain.org.tw/.well-known/vlei"
           }
         }
       }
     },
-    "capabilities": {
-      "tools": { "listChanged": true }
-    },
     "_meta": {
+      "io.modelcontextprotocol/serverInfo": {
+        "name": "association-server",
+        "title": "Taiwan Blockchain Enthusiasts Association MCP Server",
+        "version": "0.1.0"
+      },
       "org.gleif.vlei/credential": "-FABEBcd7TqLmN4pR2wXyZ1vHsJk8QgUeA3nCfDoI6t0PyWr0AAAAAAAAAAAAAAAAAAAAAAAEBcd7TqLmN4pR2wXyZ1vHsJk8QgUeA3nCfDoI6t0PyWr-AABAAD9kZs3vXqLp7NcYbR2TeWuFgHa1MoJi5QxDrS8KlV0mEfB6nCtZyUwPdAg4hXsLr3JkNbQe7VfTcYiMoR5WzXqU...TRUNCATED-CESR-ACDC-LE-CREDENTIAL...",
       "org.gleif.vlei/signature": {
         "aid": "EBcd7TqLmN4pR2wXyZ1vHsJk8QgUeA3nCfDoI6t0PyWr",

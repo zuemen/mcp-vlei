@@ -46,8 +46,12 @@ problem, not a rejected credential. Say so precisely, and reconnect with the cap
 ## Before connecting
 
 Obtain the server's LE credential from `server/discover`'s `_meta`, or from the `/.well-known/vlei`
-URL given in its declared `discovery.wellKnown`. The package validates the SAID, the signature, the
-chain to a root, the revocation status, and whether that root is in your accepted list.
+URL given in its declared `discovery.wellKnown`. The package recomputes every SAID, walks the chain
+to a root in your accepted list, and checks that each credential was issued by the identifier it
+names — anchored in that issuer's key event log, carried in the stream. It does **not** establish
+the server credential's revocation status: `VleiClient.connect` reads no live log, and its result
+says so (`revocation_checked=False`). Describe such a server as verified except for revocation; never
+say its revocation was checked.
 
 - **Verification passes** → continue.
 - **Verification fails** → tell the user the **failure layer by name** and **stop**. Do not call any
@@ -72,21 +76,25 @@ work, and it keeps a foreseeable failure out of their audit log.
 
 ## When a call is rejected
 
-A rejection arrives as a tool result with `isError: true` whose text names the layer. Each layer has
-one correct response.
+A rejection arrives as a tool result with `isError: true` whose text names the layer (the same layer
+is in `_meta["org.gleif.vlei/failure"]`). Each layer has one correct response. They are listed in the
+order the server checks: what the request alone settles, then the signer's key state, then the
+chain, then revocation, then role and scope.
 
 | Layer | What it means | What you do |
 |---|---|---|
+| `missing_credential` | The tool requires a credential and the call carried none, or no signature. Not a verdict on any credential | If the credential you hold covers the tool (see *Before calling a tool*), make the call with it presented — the package presents once it has read the tool's requirement from `tools/list`. Otherwise tell the user the tool needs an ECR you do not hold. Never describe this as your credential being rejected. |
+| `stale_signature` | Timestamp outside the freshness window, or a replay | Re-sign and retry **once**. If it fails again, tell the user to check the system clock, and stop. |
+| `digest_mismatch` | Arguments do not match the signed digest | Stop. The request was altered in transit. Report it as an integrity problem, not a retryable error. |
+| `invalid_signature` | One of three things, all about **who signed**: the signature does not verify under the signing AID's current key state, which the server reads from that AID's key event log at a witness (a key sent along with the request is ignored); the server could not establish that key state at all; or the AID that signed is neither the credential's holder nor delegated by the holder in the holder's key event log | Stop. **Do not retry**, and never re-sign with a different key or present the credential under another AID to get past it — that is exactly what this layer refuses. Report which of the three the message names: a key-state problem (a rotated key, a log the witness could not serve) or an authorization problem (this agent is not the holder's delegate). Both are for the holder or operator to fix. |
+| `chain_invalid` | The presented credential or its chain does not validate — a SAID that does not recompute, a broken link, an issuance not anchored in its issuer's key event log, a chain without the vLEI shape, a credential of a type other than the one the tool requires — **or** revocation could not be established, because an issuer's live transaction event log could not be read or records no issuance | Stop. **Do not retry.** Report a credential-configuration problem. When the message says revocation was not established, say exactly that — neither "revoked" nor "valid". |
+| `unknown_root` | The chain terminates at a root the counterparty does not accept | Stop. Report which root you chain to and that they do not accept it. This is a trust-configuration mismatch between two organizations; only they can resolve it. |
 | `revoked` | A credential in the chain has been revoked | Stop. Tell the user a new credential must be issued by their entity. **Do not retry with a different credential.** |
 | `role_mismatch` | The ECR role does not satisfy the tool's requirement | Stop. Name the required role and the one you hold. |
 | `scope_exceeded` | The request exceeds the tool's declared scope | Stop. State the limit and the requested value. You may offer to retry within the limit — ask first. |
-| `stale_signature` | Timestamp outside the freshness window, or a replay | Re-sign and retry **once**. If it fails again, tell the user to check the system clock, and stop. |
-| `digest_mismatch` | Arguments do not match the signed digest | Stop. The request was altered in transit. Report it as an integrity problem, not a retryable error. |
-| `chain_invalid` | The credential chain does not validate | Stop. Report a credential-configuration problem. |
-| `unknown_root` | The chain terminates at a root the counterparty does not accept | Stop. Report which root you chain to and that they do not accept it. This is a trust-configuration mismatch between two organizations; only they can resolve it. |
-| `invalid_signature` | The signature does not verify under the AID's key state | Stop. Report a key-state or configuration problem. |
 
-Retrying is correct for exactly one layer: `stale_signature`, once.
+Retrying a request is correct for exactly one layer: `stale_signature`, once. Presenting a credential
+after `missing_credential` is not a retry — it is the first presentation.
 
 **Attestations.** A result may carry `org.gleif.vlei/attestation` — a signed statement by one party
 that it verified another. Accept it only after the package has verified the **attesting party's

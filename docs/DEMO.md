@@ -32,7 +32,7 @@ Three formulations to avoid, each of which an expert in the room will catch:
 | 3–5 | Why now | Autonomous execution × actions with legal effect × across organizations |
 | 5–7 | What GLEIF already solved | LE, ECR, revocation, offline verification — and why ECR, not OOR |
 | 7–9 | What we added | One slide for the schema, one for verification |
-| 9–12.5 | Demo recording | Six scenes, 3:35 |
+| 9–12.5 | Demo recording | Six scenes, 4:05 |
 | 12.5–14 | Government | Two verification modes, six stages, what an institution gets |
 | 14–15 | Three requests | Government, GLEIF, AAIF |
 
@@ -51,7 +51,7 @@ specification of what is being shown.
 ---
 ---
 
-# Recording script — 3:35, six scenes
+# Recording script — 4:05, six scenes
 
 Everything happens in one interface: `examples/console/`, the Trust Console. No terminal, no window
 switching. Scenes 0 and 1 use the same layout, so the difference between a call believed on a name
@@ -125,14 +125,16 @@ red. The right column lights eight rows in sequence, each with its elapsed time.
 > credential, the agent's delegated identifier, the signature, and which credential in the chain is
 > being presented.
 >
-> Eight checks, in order. Every credential in the chain is re-hashed against its own identifier, so
-> tampering is detectable before anything is known about who issued what. The links must be
-> continuous. The chain must reach a root this server accepts. The signature must be fresh, must
-> cover these exact arguments, and must verify.
+> Eight checks, in order. First what the request alone can settle: something was presented, the
+> signature is fresh, and it covers these exact arguments. Then the signature must verify under the
+> signer's current key — read from a witness, never from the request — and the signer must be the
+> credential's holder or an agent the holder delegated. Then the chain: every credential re-hashed
+> against its own identifier, each issuance anchored in its issuer's log, ending at a root this
+> server accepts. Then revocation. Last, the role.
 >
-> Watch the timings. Seven of those are decided from the request itself. Only one leaves the
-> machine — the last one, which reads the issuer's log. That ordering is not an optimisation; it is
-> why the next two scenes behave the way they do."
+> Watch the timings. Two rows leave the machine — the signer's key state and the issuers' logs —
+> and nothing that can be decided from the request waits for either. That ordering is not an
+> optimisation; it is why the next two scenes behave the way they do."
 
 **Land on:** eight blue rows and `ALLOWED`, with the LEI and role on the cards.
 
@@ -169,11 +171,16 @@ skipped, not still to come.
 
 **Proves:** the thing MCP cannot do today. This is the high point.
 
-**Do:** press `3`, then click **REVOKE** on the agent card. Wait for the card to turn red. Press `3`
-again.
+**Do:** press `3` — the same call as scene 1, eight rows pass. Then click **REVOKE** on the agent
+card. The console runs `kli vc revoke` and verifies the same call again as soon as the witness
+serves the withdrawal (about seven seconds; nothing is set by the console).
 
 **On screen.** The button reads `revoking…`, then the agent card turns red at 0.6 opacity with a
 timestamp. On the re-run, six rows go blue, the seventh red — `revoked` — and the eighth pale.
+
+**After the take, before scene 4 (cut here):** press `I`. The legal entity issues the holder a fresh
+ECR (about 25 seconds). Without it, scenes 4 and 5 are — correctly — refused `revoked`, and the
+left column says so in red.
 
 **Narration.**
 > "The legal entity withdraws the credential. This is a real revocation, written to the entity's
@@ -184,7 +191,7 @@ timestamp. On the re-run, six rows go blue, the seventh red — `revoked` — an
 > The chain still verifies. The signature still verifies. The arguments still match what was
 > signed. Six checks still pass. The seventh reads the issuer's log and finds the withdrawal.
 >
-> That is what a revocation looks like from the outside: not 'access denied', but five things that
+> That is what a revocation looks like from the outside: not 'access denied', but six things that
 > are still true and one that stopped being true. And the agent knows which — a stale signature it
 > would retry once; this one it must not retry at all, and it can tell the user exactly why."
 
@@ -198,15 +205,16 @@ timestamp. On the re-run, six rows go blue, the seventh red — `revoked` — an
 
 **Do:** press `4`.
 
-**On screen.** The server card is now the regulator's LE. Eight rows pass. Below the banner:
-`git diff examples/my-agent/ — no output`.
+**On screen.** The server card is now the regulator's LE. Eight rows pass — run by `vlei-authz`
+behind agentgateway, not by the console. Below the banner, the output of an actual
+`git diff HEAD -- examples/my-agent/`: none.
 
 **Narration.**
 > "Same agent. One environment variable. It is now filing with a regulator.
 >
 > The diff on the agent is empty — not small, empty. And the regulator's filing server does no
-> verification at all. It reads four headers that a gateway established: the LEI, the role, the
-> credential holder, the agent.
+> verification at all. It reads five headers that a gateway established: four facts — the LEI, the
+> role, the credential holder, the agent — and the report of the checks behind them.
 >
 > That answers the question an institution asks first: do we have to change our systems? Verification
 > goes at the gateway. What is behind it reads headers, as it already does for whatever
@@ -230,12 +238,12 @@ timestamp. On the re-run, six rows go blue, the seventh red — `revoked` — an
 
 **Narration.**
 > "This server was not written by us. We gave a fresh model one document — the implementation
-> skill — and nothing else: no specification, no reference code, no examples. It produced a server
-> that hits all nine failure layers in the right order, on the first attempt.
+> skill — and nothing else: no specification, no reference code, no examples. What you are looking
+> at is that server, running, verifying this call against the same witness.
 >
-> It also found nine gaps in that document, and one outright bug in ours. Both are written up in
-> the repository. A conformance test that passes cleanly teaches you nothing; this one told us
-> where our own specification was silent."
+> It also told us where the document was silent — including one gap our own verifier had: nothing
+> tied the LEI an ECR names to the legal entity that issued it. Both are fixed and written up. A
+> conformance test that passes cleanly teaches you nothing; this one found a hole in ours."
 
 **Land on:** the passing column beside `generated from skill`.
 
@@ -264,11 +272,15 @@ is worth making even without the picture.*
 | Also export | one PNG per scene, full-frame, as the fallback |
 
 ```
-docs/media/
-├── demo-full.mp4          3:35, all six scenes
-├── demo-scene0.mp4        0:45, for the problem section
-└── stills/scene-0.png …   six frames
+demo-full.mp4          4:05, all six scenes
+demo-scene0.mp4        0:45, for the problem section
+stills/scene-0.png …   six frames
 ```
+
+The recordings are **not kept in the repository** — there is no `docs/media/`. They live on the
+presenting machine, beside the deck (see below). No ignore rule covers them yet — `docs/slides/.gitignore`
+excludes only `render/` — so if they sit next to `docs/slides/mcp-vlei.pptx` in a working tree, do
+not `git add` them.
 
 ## Embedding in the deck
 
@@ -281,7 +293,8 @@ docs/media/
   video is a normal event, not a disaster, and the six frames carry the whole argument.
 
 Slide 3 (the problem) uses `demo-scene0.mp4` — 45 seconds, so the problem section has a picture.
-Slide 8 uses the full file. Same interface in both places, so nobody has to learn the layout twice.
+Slide 13 (Demo) uses the full file. Same interface in both places, so nobody has to learn the layout
+twice.
 
 ---
 ---
@@ -400,7 +413,7 @@ entity-defined vocabulary.
 **Slide.**
 
 ```
-Implementation.extensions["org.gleif.vlei/identity"]  →  presents / requires / acceptedRoots / ttlMs
+capabilities.extensions["org.gleif.vlei/identity"]  →  presents / requires / acceptedRoots / ttlMs
 params._meta  →  org.gleif.vlei/credential
                  org.gleif.vlei/credentialSaid
                  org.gleif.vlei/delegatedAid
@@ -424,13 +437,16 @@ Tool._meta    →  org.gleif.vlei/requires { credential, role, scope }
 
 ### 10 — What we added: verification
 
-**Slide.** Eight checks in order, nine failure layers, revocation last.
+**Slide.** Eight checks in order — credential presented · freshness · digest · signature · delegation
+· chain · revocation · authority — and nine failure layers. Two checks read from a witness: the
+signature (the signer's current key state) and revocation. Authority is last.
 
 **Footer:** *Eight checks. The verifier decides; nothing else does.*
 
-> "Eight checks, and the order is the design. Seven are decided from the request itself; one leaves
-> the machine. A verification service that is slow or down then costs you one check instead of all
-> of them.
+> "Eight checks, and the order is the design. The first three are decided from the request itself,
+> before anything is fetched. Two read from a witness: the signer's current key, and the issuers'
+> logs for revocation. A witness that is slow or down then costs you those checks, never the ones
+> before them — a tampered request is refused as tampered, not as a timeout.
 >
 > Nine failure layers, and the correct response differs for each. A stale signature is retried once.
 > `revoked` means stop and tell the user a new credential is needed. `unknown_root` means two
@@ -464,7 +480,7 @@ Tool._meta    →  org.gleif.vlei/requires { credential, role, scope }
 
 ### 12 — Every requirement, traced
 
-**Slide.** `docs/CONFORMANCE.md` — sixteen normative statements, each with its implementation and
+**Slide.** `docs/CONFORMANCE.md` — twenty-two normative statements, each with its implementation and
 its test. Three rows added during the review. A section listing what is **not** claimed.
 
 > "A specification whose requirements cannot be traced to running code is a document. Every MUST and
@@ -490,7 +506,7 @@ be GLEIF's.*
 > One more thing while this slide is up. We did use GLEIF's verifier, and we found a defect in its
 > revocation path that takes the service down. It is written up and ready to file."
 
-*(Play `demo-full.mp4`, 3:35.)*
+*(Play `demo-full.mp4`, 4:05.)*
 
 ---
 
@@ -521,7 +537,8 @@ be GLEIF's.*
 **Slide.** 0 credential and role vocabulary · 1 publish · 2 declare per tool · **3 verify at the
 gateway** · 4 attestations between institutions · 5 audit records.
 
-**Footer:** *The filing service contains no verification code. It reads two headers.*
+**Footer:** *The filing service contains no verification code. It reads five headers the gateway
+sets: LEI, role, holder, agent, and the verification report.*
 
 > "Each stage is independently useful. An institution that stops after stage two has gained
 > something real.
@@ -590,7 +607,7 @@ yet settled.
 
 ```
 spec/      specification v0.2, type definitions, wire examples, error shapes
-packages/  mcp-vlei — extension, client, chain verification, 77 tests
+packages/  mcp-vlei — extension, client, KEL + chain verification, 143 tests
 skills/    implementing-vlei (build time) · vlei-identity (runtime)
 examples/  impersonation · console · association server · agent · regulator
 deploy/    gateway configuration — zero-code-change adoption

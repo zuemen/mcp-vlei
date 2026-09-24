@@ -55,7 +55,7 @@ extension mechanism. The MCP core schema is not modified.
 | 1 — Schema extension | `spec/` |
 | 2 — Skill and workflow | `skills/vlei-identity/` |
 | 3 — Credential environment | `scripts/` — **all six acceptance checks pass** |
-| 4 — Python package | `packages/mcp-vlei/` — 67 tests, against the real SDK types |
+| 4 — Python package | `packages/mcp-vlei/` — 143 tests, against the real SDK types and real KERI event logs |
 | 5 — Reference implementation | runs on SDK 2.2.0 at protocol 2026-07-28; acceptance tests green — see `examples/README.md` |
 | 6A — Government adoption path | `docs/GOVERNMENT.md` |
 | 6B — Government gateway | `examples/regulator/`, `deploy/agentgateway/` |
@@ -71,10 +71,23 @@ counterparty's credential locally, reads revocation from the issuer's transactio
 refuses a protected tool to an unmodified client with a named failure layer.
 
 A defect in `vlei-verifier` 1.0.0 that used to block half the acceptance suite is now off the
-critical path — three selectable revocation sources, local checks before the remote one — and
+critical path — three selectable revocation sources, and every check the request alone can decide
+runs before any witness is asked — and
 written up for upstream in `docs/upstream/`. `examples/README.md` has the detail.
+
+**2026-09-24 — a security defect, fixed.** Request signatures were verified under a key the request
+itself carried, delegation and issuance were never checked, and a request with no key skipped the
+signature check. Anyone who had seen a holder's credential could present it as theirs. A request is
+now verified under the signer's current key state from its key event log at a witness; the signer
+must be the holder or delegated by them; every issuance must be anchored in its issuer's log; the
+chain must have the vLEI shape with a consistent LEI; revocation covers every link. The details, and
+the tests that would have caught it, are in `docs/CONFORMANCE.md`. The console's six scenes now all
+run for real — see `examples/console/README.md`.
+
+Witness host ports are configurable (`scripts/.env`, gitignored) because Windows reserves dynamic
+port ranges at boot and has been seen to take 5550–5649.
 
 ## Honesty statement
 
-Real KERI, real ACDC, real verifier. The root of trust is self-configured; in production it would be
-GLEIF's.
+Real KERI, real ACDC, real revocation. The root of trust is self-configured; in production it would
+be GLEIF's.

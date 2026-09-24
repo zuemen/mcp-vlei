@@ -117,7 +117,8 @@ One line, at most six entries, `HH:MM:SS · event`. **No scroll animation** — 
 
 `Scene N / 6` at the top right. Two ways to drive it:
 
-1. Keyboard: `1`–`6` to jump, space to run the current scene
+1. Keyboard: `0`–`5` to jump, space to replay the current scene, `I` to issue a fresh ECR after
+   scene 3's revocation
 2. HTTP: `POST /scene/{n}`, for `scripts/demo-run.sh`
 
 Use the keyboard when recording: hands on a keyboard look less staged than switching to a terminal.
@@ -131,9 +132,12 @@ Use the keyboard when recording: hands on a keyboard look less staged than switc
 | 0 | Impersonation | both `not presented` | only `clientInfo: Claude Desktop` | no checks run; `GRANTED ON SELF-ASSERTION`, 50 hours approved | 45 |
 | 1 | A verified call | both valid | four keys highlighted | eight pass → `ALLOWED` | 45 |
 | 2 | Client without the extension | server valid, agent `not presented` | only `clientInfo` | check 0 fails → `REFUSED · missing_credential`; the public tool still succeeds | 40 |
-| 3 | Revocation | press `REVOKE`, agent turns red | as scene 1 | six pass, seventh fails → `REFUSED · revoked` | 45 |
-| 4 | Through the gateway | server card becomes the regulator's LE | as scene 1 | eight pass → `ALLOWED`, with an empty `git diff` below | 40 |
-| 5 | A server written from the skill | server card annotated `generated from skill` | as scene 1 | eight pass → `ALLOWED` | 30 |
+| 3 | Revocation | valid; press `REVOKE` (a real `kli vc revoke`), agent turns red | as scene 1 | eight pass; after the revocation six pass, seventh fails → `REFUSED · revoked` | 45 |
+| 4 | Through the gateway | server card becomes the regulator's LE | as scene 1, sent to agentgateway on :3000 | eight pass in `vlei-authz` → `ALLOWED`, with the measured `git diff` below | 40 |
+| 5 | A server written from the skill | server card annotated `generated from skill` | as scene 1, sent to `examples/skill-server` on :8082 | eight pass in that server → `ALLOWED` | 30 |
+
+A scene whose server is not running shows `NOT RUNNING` and names the URL. It never falls back to
+verifying in the console.
 
 **Scenes 0 and 1 are the most important thirty seconds of the recording.** Same interface, same
 layout; the only differences are whether the request carries four keys and whether the right-hand
