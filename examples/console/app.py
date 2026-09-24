@@ -47,7 +47,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from mcp_vlei import Signer, VleiIdentity
 from mcp_vlei.errors import VleiError
-from mcp_vlei.report import CHECK_ORDER, VerificationReport
+from mcp_vlei.report import _LABEL, CHECK_ORDER, VerificationReport
 from mcp_vlei.signing import sign_request
 from mcp_vlei.verifier import OfflineVerifier
 
@@ -386,7 +386,9 @@ def _checks(report: dict[str, Any] | None, scene: dict[str, Any]) -> list[dict[s
         # Scene 0 runs no checks at all: the server it models has nothing to check. A remote
         # scene whose server is down has no report to show.
         status = "skipped" if scene["target"] == "impersonation" else "pending"
-        return [{"id": name, "label": name.replace("_", " "), "status": status,
+        # The same labels scene 1 shows: scenes 0 and 1 are compared side by side, and the only
+        # thing that should differ is whether anything ran.
+        return [{"id": name, "label": _LABEL[name], "status": status,
                  "ms": None, "detail": None} for name in CHECK_ORDER]
     out = []
     for check in report["checks"]:
@@ -468,7 +470,7 @@ def _request_json(scene: dict[str, Any], meta: dict[str, Any] | None) -> str:
              "name": scene["tool"],
              "arguments": {"hours": IMPERSONATION_HOURS}
                           if scene["tool"] == "reserve_gpu_quota" else ARGUMENTS},
-            indent=2,
+            indent=2, ensure_ascii=False,
         )
     meta = meta or {}
     signature = meta.get("org.gleif.vlei/signature", {})
@@ -484,7 +486,9 @@ def _request_json(scene: dict[str, Any], meta: dict[str, Any] | None) -> str:
     }
     if "org.gleif.vlei/delegatedAid" in meta:
         shown["org.gleif.vlei/delegatedAid"] = meta["org.gleif.vlei/delegatedAid"]
-    return json.dumps({"_meta": shown, "name": scene["tool"], "arguments": ARGUMENTS}, indent=2)
+    # ensure_ascii=False: the truncation mark is "…"; escaped, it showed on screen as its escape.
+    return json.dumps({"_meta": shown, "name": scene["tool"], "arguments": ARGUMENTS}, indent=2,
+                      ensure_ascii=False)
 
 
 def _agent_diff() -> str:

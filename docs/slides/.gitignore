@@ -1,2 +1,7 @@
 # Build output of `python scripts/build-deck.py --render` — look at it, do not commit it.
 render/
+
+# Recordings are large and are embedded in the deck by `build-deck.py --video`; keep them beside the
+# .pptx on the machine that presents, not in the repository every clone downloads.
+*.mp4
+*.mov

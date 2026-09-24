@@ -284,16 +284,17 @@ not `git add` them.
 
 ## Embedding in the deck
 
-- PowerPoint → Insert → Video → **This Device**. Not a link: an embedded file survives being moved
-  to another machine, and a linked one does not.
-- Playback: **Start automatically**, **Play Full Screen**.
+- `python scripts/build-deck.py --video docs/slides/demo-full.mp4` embeds it — embedded, not
+  linked, so it survives being moved to another machine — set to play full screen; with PowerPoint
+  installed it also sets **Start automatically** and no rewind, and prints what it read back. Open
+  the file in PowerPoint once anyway and play slide 13 through.
 - Keep `demo-full.mp4` beside the `.pptx`, and keep relative paths, in case the embed has to be
   redone on the conference machine.
 - **Fallback:** six stills and the same narration. Rehearse it once. A projector that will not play
   video is a normal event, not a disaster, and the six frames carry the whole argument.
 
 Slide 3 (the problem) uses `demo-scene0.mp4` — 45 seconds, so the problem section has a picture.
-Slide 13 (Demo) uses the full file. Same interface in both places, so nobody has to learn the layout
+Slide 13 (Demo) uses the full file; until it is embedded, the frame shows the still of scene 3. Same interface in both places, so nobody has to learn the layout
 twice.
 
 ---
@@ -301,13 +302,17 @@ twice.
 
 # Slides
 
-Nineteen slides for thirteen minutes. Notes are what to say, not what is on the slide.
+Twenty slides. Notes are what to say, not what is on the slide.
 
 The deck is **generated from this section** — `scripts/build-deck.py` carries each slide's layout
-and copies these block quotes into its speaker notes verbatim. Edit the talk here, then:
+and reads these block quotes into its speaker notes at build time; a stage direction on its own line
+becomes a bracketed note. The build stops if a heading here does not match the slide at that
+position. Edit the talk here, then:
 
 ```bash
-python scripts/build-deck.py     # -> docs/slides/mcp-vlei.pptx
+python scripts/capture-console.py                              # the console stills the deck uses
+python scripts/build-deck.py --render                          # -> docs/slides/mcp-vlei.pptx
+python scripts/build-deck.py --video docs/slides/demo-full.mp4 # once the recording exists
 ```
 
 Native PowerPoint, real text boxes and tables, editable on the machine that meets the projector.
@@ -338,7 +343,8 @@ each proves, what each does not.
 
 ### 3 — The measurement
 
-**Slide.** The three runs, one variable: honest 1h · `"Claude Desktop"` 50h · omitted 1h.
+**Slide.** The three runs, one variable — the name the server received: honest `zuemen-script` 1h ·
+`Claude Desktop` 50h · omitted (the SDK sends `mcp`) 1h — beside the console's scene 0.
 **Video:** `demo-scene0.mp4`, 45 seconds.
 
 > "We measured it rather than asserting it. One binary, one server, fifty hours requested three
@@ -348,6 +354,8 @@ each proves, what each does not.
 > recommendation. What it establishes is that no layer of the stack can tell the three runs apart.
 >
 > The code is in the repository. Nothing was run against anyone else's service."
+
+*(Play `demo-scene0.mp4`, 45 seconds.)*
 
 ---
 
@@ -437,8 +445,9 @@ Tool._meta    →  org.gleif.vlei/requires { credential, role, scope }
 
 ### 10 — What we added: verification
 
-**Slide.** Eight checks in order — credential presented · freshness · digest · signature · delegation
-· chain · revocation · authority — and nine failure layers. Two checks read from a witness: the
+**Slide.** Eight checks in order, each with where it is decided — credential presented · freshness ·
+digest · signature · delegation · chain · revocation · authority — beside the console's scene 1, and
+nine failure layers. Two checks read from a witness: the
 signature (the signer's current key state) and revocation. Authority is last.
 
 **Footer:** *Eight checks. The verifier decides; nothing else does.*
@@ -486,17 +495,23 @@ its test. Three rows added during the review. A section listing what is **not** 
 > "A specification whose requirements cannot be traced to running code is a document. Every MUST and
 > SHOULD in ours has a row: the function that implements it, the test that holds it.
 >
-> Writing that table found three requirements with nothing behind them. It also has a section on
-> what we deliberately do not claim. A conformance document that lists only successes is not
-> evidence of anything."
+> Writing that table found three requirements with nothing behind them. A review found something
+> worse, and I would rather tell you than have you find it: our verifier checked the request
+> signature under a key the request itself carried. Every test passed, because every test signed
+> with the right key. Anyone who had seen a credential could have presented it as theirs. It now
+> reads the key from the signer's own log; the tests that would have caught it are in the table,
+> each written to fail against the old code first.
+>
+> The table also has a section on what we deliberately do not claim. A conformance document that
+> lists only successes is not evidence of anything."
 
 ---
 
 ### 13 — Demo
 
-**Slide.** The honesty statement, large, alone:
-*Real KERI, real ACDC, real revocation. The root of trust is self-configured; in production it would
-be GLEIF's.*
+**Slide.** The recording, 16:9, about four fifths of the width — the still of scene 3 until it is
+embedded — and under it the honesty statement: *Real KERI, real ACDC, real revocation. The root of
+trust is self-configured; in production it would be GLEIF's.*
 
 > "Everything you are about to see is real KERI and real ACDCs, issued through GLEIF's own schemas,
 > with a revocation read from the issuer's transaction event log. The one thing I control is the
@@ -510,7 +525,59 @@ be GLEIF's.*
 
 ---
 
-### 14 — Two ways to check an identity
+### 14 — Taiwan already runs this model
+
+**Slide.** Two columns — the Taiwan Digital Identity Wallet (數位憑證皮夾, TW DIW) and this proposal:
+who holds (people and, since May 2026, a company's authorized representative · legal entities and
+the agents acting for them), what (driving-licence verification card, degree certificates, MOEA
+business certificate · LE and ECR), what for (parcel pickup at convenience stores, car-rental pilots
+· filing, verification, enquiry between agencies), built on (selective disclosure, OpenID4VC, SD-JWT
+VC, W3C VC · selective disclosure, KERI, ACDC).
+
+**Footer:** *The trust model is already in use here. The holder it does not have yet is the agent
+acting for the entity.*
+
+> "Taiwan already runs this model. The Ministry of Digital Affairs has piloted the Digital Identity
+> Wallet since last December: a person carries a credential and shows only what the counter needs
+> to see. It collects parcels at convenience stores, it rents cars in a pilot, it carries degree
+> certificates — and since May, a company's business certificate, held by the person authorized to
+> act for it.
+>
+> So the idea is not new here. What the wallet does not have is the holder on the right of this
+> table: the agent acting for the entity. The Deputy Minister made the same point this month — if
+> agents take part in transactions, they may need an ID, to establish who the agent is and whom it
+> represents.
+>
+> One thing to be precise about. The wallet is built on OpenID4VC and SD-JWT; this is built on
+> GLEIF's vLEI, on KERI and ACDC. So this is not an extension of the wallet. It is the same way of
+> thinking, applied to the holder that is missing — and to an identity a counterparty in another
+> country can also verify."
+
+*(Say "same idea, different holder" — not "we extend the wallet". The stacks are different, and a
+room that built the wallet will know. The Deputy Minister's words are as reported by the press,
+not a ministry statement; say "made the point", not "said".)*
+
+**Sources** (checked 2026-09-24):
+- Pilot since 17 Dec 2025, the scenarios, selective disclosure: MODA press release 18262,
+  <https://moda.gov.tw/press/press-releases/18262>; policy page <https://moda.gov.tw/major-policies/wallet/1695>
+- 124,000 downloads by end of August 2026 and the live uses: CNA citing MODA, 20 Sep 2026,
+  <https://www.cna.com.tw/news/afe/202609200016.aspx>
+- MOEA business certificate in the wallet from 18 May 2026: MOEA news 122729,
+  <https://www.moea.gov.tw/MNS/populace/news/News.aspx?kind=1&menu_id=40&news_id=122729>
+- Driving-licence verification card — "not a digital driving licence", used for car rental: Highway
+  Bureau Q&A, March 2026 (mvdis.gov.tw)
+- OpenID4VCI / OpenID4VP, SD-JWT VC, W3C VC, DIDs; no KERI or ACDC anywhere in the code: MODA's
+  <https://github.com/moda-gov-tw/TWDIW-official-app> (commit 99e9deb)
+- Deputy Minister Hou Yi-hsiu on agents needing an ID, 9 Sep 2026, as reported:
+  <https://techorange.com/2026/09/09/moda-ai-agent/>, <https://technews.tw/2026/09/09/ai-agent-id/>
+- **Not used:** "已非超前部署，而是不得不正面應對". It was reported (CIO Taiwan, May 2026) from a
+  deputy director-general of MODA's Administration for Digital Industries, about AI security issues
+  in general, as two quoted fragments; the version attributing it to MODA in 2025, about AI agents,
+  joins two sentences and is not what was said.
+
+---
+
+### 15 — Two ways to check an identity
 
 **Slide.** (a) Passive from a public location — publish once, verify anywhere, no per-check cost ·
 (b) Attested confirmation — 來函確認, one institution confirms to another, signed.
@@ -530,9 +597,12 @@ be GLEIF's.*
 > itself have been verified first, and that every decision records whose attestation it rested on.
 > It cannot make that institution careful."
 
+*(來函確認 stays in Chinese on the slide on purpose: it is the name this room uses for the procedure,
+and recognising it is the point of the slide. Say it in English; let the slide say it in Chinese.)*
+
 ---
 
-### 15 — Six stages, one of which touches IT
+### 16 — Six stages, one of which touches IT
 
 **Slide.** 0 credential and role vocabulary · 1 publish · 2 declare per tool · **3 verify at the
 gateway** · 4 attestations between institutions · 5 audit records.
@@ -552,7 +622,7 @@ sets: LEI, role, holder, agent, and the verification report.*
 
 ---
 
-### 16 — What an institution gets
+### 17 — What an institution gets
 
 **Slide.** The before/after table: who filed · authority changed · new system built · integration
 with existing identity · audit record.
@@ -564,21 +634,27 @@ with existing identity · audit record.
 
 ---
 
-### 17 — Limits
+### 18 — Limits
 
 **Slide.** Verifiable ≠ trustworthy · LEIs are not issued to private individuals · There is a cost ·
-QVI coverage still expanding · Our demo root is self-configured · Agent delegation conventions not
-yet settled.
+QVI coverage still expanding · Our demo root is self-configured · One witness is asked — conflicting
+key logs are not yet detected · Revoking one agent's delegation is not implemented; revoking the
+credential is · Agent delegation conventions not yet settled.
 
 > "I would rather state these than be asked. A valid credential proves an organization asserted a
 > role. It does not prove the request is legitimate — authorization policy stays yours, and this
 > makes it enforceable rather than writing it for you.
 >
+> Two are ours to fix. We ask one witness for a key log, so two conflicting logs for the same
+> identifier — what watchers exist to catch — would not be noticed. And the specification describes
+> withdrawing one agent without touching the person's credential; we have not built that switch.
+> Withdrawing the credential works, and stops every agent under it.
+>
 > The last one is a genuine open question, which brings me to what I am asking for."
 
 ---
 
-### 18 — Three requests
+### 19 — Three requests
 
 **Slide.**
 - **Government** — one small pilot: one filing or lookup procedure, stages 0 to 3, no change to the
@@ -601,9 +677,9 @@ yet settled.
 
 ---
 
-### 19 — Artifacts
+### 20 — Artifacts
 
-**Slide.** Five artifacts, the architecture, a QR code, and the honesty statement repeated.
+**Slide.** The repository's six directories, a QR code to it, and the honesty statement repeated.
 
 ```
 spec/      specification v0.2, type definitions, wire examples, error shapes

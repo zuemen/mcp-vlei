@@ -252,7 +252,7 @@ pre.json {
   font-size: 13px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase;
   color: var(--muted);
 }
-.log .entry { white-space: nowrap; }
+.log .entry { white-space: nowrap; margin-right: 28px; }  /* entries were running into each other */
 .log .entry .ts { font-family: var(--mono); color: var(--muted); margin-right: 7px; }
 
 /* A refusal that is not a revocation — a wrong key, a forged chain — and a server whose own
