@@ -162,6 +162,10 @@ function render(state) {
   if (sceneKey !== lastSceneKey) {
     lastSceneKey = sceneKey;
     if (state.scene === 0) {
+      // Stop a reveal still running from the scene before: its timers would otherwise redraw
+      // that scene's passing rows over this scene's empty column.
+      revealTimers.forEach(clearTimeout);
+      revealTimers = [];
       $("checks").innerHTML = checks.map((c, i) => checkRow(c, i, "skipped")).join("");
       showOutcome();
     } else {
