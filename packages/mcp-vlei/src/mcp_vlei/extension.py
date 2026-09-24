@@ -86,6 +86,7 @@ class VleiIdentity(Extension):
         requirements: dict[str, dict[str, Any]] | None = None,
         on_decision: Callable[[dict[str, Any]], None] | None = None,
         witness_client: Any = None,
+        witness_urls: Sequence[str] | None = None,
     ) -> None:
         self.le_credential = Path(le_credential).read_text(encoding="utf-8").strip()
         self.requires = requires
@@ -116,7 +117,9 @@ class VleiIdentity(Extension):
             )
         #: Where each caller's current keys come from. Never from the request: whoever sends a
         #: call would otherwise choose the key it is verified under.
-        self.key_states = WitnessKeyStates(witness_url, client=witness_client)
+        #: Given several witnesses, each caller's log is compared across them and a fork refused
+        #: (see `mcp_vlei.kel.WitnessKeyStates`); given one, there is nothing to compare.
+        self.key_states = WitnessKeyStates(witness_urls or witness_url, client=witness_client)
         self.tel = (
             TelRevocationChecker(witness_url, client=witness_client)
             if revocation_source == "tel"

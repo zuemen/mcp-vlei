@@ -270,6 +270,28 @@ class Controller:
     def kel(self) -> str:
         return "".join(event.cesr() for event in self.events)
 
+    def forked_kel(self, seals: list[dict[str, str]]) -> str:
+        """The log a duplicitous controller would show a second witness.
+
+        Same prefix, and a different last interaction at the same sequence number, signed with the
+        same keys — each copy internally valid, the two irreconcilable. Detecting that takes asking
+        more than one witness. The controller's own log is left as it was.
+        """
+        if len(self.events) < 2 or self.events[-1].body["t"] != "ixn":
+            raise ValueError("fork after an interaction: call interact() first")
+        prior = self.events[:-1]
+        raw = serialize(
+            {"v": "", "t": "ixn", "d": "", "i": self.pre, "s": f"{len(prior):x}",
+             "p": prior[-1].said, "a": seals},
+            ("d",),
+        )
+        kept, self.events = self.events, list(prior)
+        try:
+            fork = self._append(raw)
+        finally:
+            self.events = kept
+        return "".join(event.cesr() for event in prior) + fork.cesr()
+
 
 # ------------------------------------------------------------------------------------------- #
 # Registry: a transaction event log

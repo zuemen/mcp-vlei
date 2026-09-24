@@ -365,6 +365,27 @@ async def test_a_live_log_that_never_saw_the_issuance_is_not_read_as_valid(world
     assert "not established" in text_of(result)
 
 
+async def test_a_signer_whose_log_is_forked_across_witnesses_is_refused(world, tmp_path):
+    """Configured with several witnesses, the server compares the signer's log across them."""
+    import httpx
+
+    world.agent.interact([{"i": "E" + "a" * 43, "s": "0", "d": "E" + "a" * 43}])
+    fork = world.agent.forked_kel([{"i": "E" + "b" * 43, "s": "0", "d": "E" + "b" * 43}])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "wes" and request.url.params.get("pre") == world.agent.pre:
+            return httpx.Response(200, text=fork)
+        return world.witness_handler(request)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    ext = build(world, tmp_path, {"register_member": REQUIRES_REGISTRATION}, client=client,
+                witness_urls=["http://wan", "http://wil", "http://wes"])
+    result = await ext.intercept_tool_call(present(world, "register_member", ARGS), Ctx(), call_next)
+
+    assert layer_of(result) == "invalid_signature"
+    assert "duplicity" in text_of(result)
+
+
 async def test_an_unreachable_witness_refuses_rather_than_allows(world, tmp_path):
     """The failure this project exists to prevent: reporting "could not check" as "fine"."""
 

@@ -68,6 +68,13 @@ def record(decision: dict[str, Any]) -> None:
     del AUDIT[:-200]
 
 
+def _witness_urls() -> list[str] | None:
+    """VLEI_WITNESS_URLS, comma-separated: every caller's key log is compared across them, and a
+    fork refused. Unset, the one VLEI_WITNESS_URL is asked and nothing is compared."""
+    urls = [u.strip() for u in os.environ.get("VLEI_WITNESS_URLS", "").split(",") if u.strip()]
+    return urls or None
+
+
 # ------------------------------------------------------------------------------------------- #
 
 vlei = VleiIdentity(
@@ -80,6 +87,7 @@ vlei = VleiIdentity(
     # (docs/upstream/issue.md). Set revocation_source="verifier" to use the service instead.
     revocation_source="tel",
     witness_url=WITNESS_URL,
+    witness_urls=_witness_urls(),
     well_known=f"{PUBLIC_URL}/.well-known/vlei",
     on_decision=record,
 )

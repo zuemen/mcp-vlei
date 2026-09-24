@@ -12,10 +12,27 @@ the right way and was mutation-tested). What it does **not** give is (a) a bindi
 credential claims and a legal entity, (b) an unambiguous mapping from its own components to its own
 check order, and (c) a dozen interop details that a second implementer will choose differently.
 
-> **Status after this report (2026-09-24).** Gaps 1, 6, 7, 8, 9 and 10 were fixed in the skill, and
-> gap 1 in the reference package as well (`mcp_vlei.chain.verify_vlei_chain`); the skill's check
-> table now has 13 rows (0–12), so the check numbers quoted below are the ones the implementer read.
-> See `skills/implementing-vlei/CONFORMANCE.md`, *Second run*.
+> **What became of each gap** (2026-09-24, after this report). The check numbers below are the
+> ones the implementer read; the skill's table now has 13 rows (0–12).
+>
+> | Gap | Disposition |
+> |---|---|
+> | 1 LEI not bound to an LE | **Fixed** — skill check 9; package `chain.verify_vlei_chain` |
+> | 2 only the leaf's schema constrained | **Fixed** — `verify_vlei_chain` checks every edge's declared schema and the ECR/OOR → LE → QVI shape |
+> | 3 where scope lives | **Open** — the reference reads `a.scope`; the skill does not say so yet |
+> | 4 replay cache is per process | **Known limit** — a replicated deployment needs a shared cache; stated in `docs/CONFORMANCE.md`, *not claimed* |
+> | 5 one witness trusted | **Fixed, within limits** — `witness_urls` compares the signer's log across witnesses and refuses a fork; independence of those witnesses is the operator's, as `docs/CONFORMANCE.md` says |
+> | 6–10 contradictions in the skill | **Fixed** in `SKILL.md` |
+> | 11 which bytes the digest covers | **Open** — needs a test vector in `spec/examples/` |
+> | 12, 13 `delegatedAid`, `credentialSaid` semantics | **Fixed** — the skill's key table states both |
+> | 14 what an `acceptedRoots` entry is | **Open** — the reference treats it as an issuer AID; the text should say so |
+> | 15 whose cache `ttlMs` governs | **Open** — specification text |
+> | 16 `wellKnown` needs an absolute URL | **Not changed** — deployment configuration, as `PUBLIC_URL` / `VLEI_PUBLIC_URL` do |
+> | 17 "witness down" surfaces as two layers | **Not changed** — both are refusals with "not established" in the message; a tenth layer would break the nine-layer contract clients key off |
+> | 18 undeclared client sending a credential | **Not changed** — declaration first is what the specification says |
+> | 19 two identical calls in one second are a replay | **Fixed** — `sign_request` now signs millisecond timestamps |
+> | 20 replay reported on the `freshness` line | **Not changed** — the report's eight rows are fixed; a replay is a freshness failure |
+> | 21 keeping `Tool._meta` and enforcement in sync | **Not applicable to the reference** — `VleiIdentity.bind()` reads requirements from the tools themselves |
 
 ---
 

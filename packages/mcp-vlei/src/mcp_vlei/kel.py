@@ -18,9 +18,10 @@ KERI that `kli` emits for single-key, witnessed, optionally delegated identifier
 anything outside that subset rather than guessing: weighted thresholds, unknown digest codes and
 unknown attachment codes outside a group all raise :class:`~mcp_vlei.errors.ChainInvalid`.
 
-What it does **not** do is detect duplicity — two conflicting logs for one prefix, each internally
-valid. That is what watchers are for, and the relying party here asks one witness. The limit is
-stated in ``docs/CONFORMANCE.md``.
+Duplicity — two conflicting logs for one prefix, each internally valid — is caught across the
+witnesses a relying party is configured with (:class:`WitnessKeyStates`), not beyond them. Witnesses
+run by one operator can be made to agree; independent witnesses, or watchers, are what make the
+check meaningful. The limit is stated in ``docs/CONFORMANCE.md``.
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ from __future__ import annotations
 import base64
 import json
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Sequence
 
 import httpx
 from cryptography.exceptions import InvalidSignature as _CryptoInvalidSignature
@@ -456,22 +457,38 @@ def key_states_in(messages: list[Message]) -> dict[str, KeyState]:
 
 
 class WitnessKeyStates:
-    """Current key states, read from a witness's copy of each log and verified here.
+    """Current key states, read from witnesses' copies of each log and verified here.
 
     The witness is asked, not the presenter: a key rotated away last week must not verify a request
     today, and only a log the presenter did not choose can show that.
+
+    Given several witnesses, it also catches **duplicity** — a controller (or whoever holds its
+    keys) showing different witnesses different logs, each internally valid. The copies are compared
+    event by event, and two different events at one sequence number refuse the identifier. A copy
+    that is merely shorter is a witness still catching up, not a conflict, and the longest copy is
+    the one verified. With one witness there is nothing to compare, and nothing is claimed.
+
+    ``quorum`` is how many witnesses must answer; by default a majority. Fewer is not "no
+    conflict", it is "not established".
     """
 
     def __init__(
         self,
-        witness_url: str,
+        witness_url: str | Sequence[str],
         *,
+        quorum: int | None = None,
         timeout: float = 15.0,
         client: httpx.AsyncClient | None = None,
     ) -> None:
-        if not witness_url:
+        urls = [witness_url] if isinstance(witness_url, str) else list(witness_url)
+        urls = [u.rstrip("/") for u in urls if u]
+        if not urls:
             raise ValueError("witness_url is required to read a key event log")
-        self.witness_url = witness_url.rstrip("/")
+        self.witness_urls = urls
+        self.witness_url = urls[0]
+        self.quorum = quorum or len(urls) // 2 + 1
+        if not 1 <= self.quorum <= len(urls):
+            raise ValueError(f"quorum must be between 1 and {len(urls)}")
         self._timeout = timeout
         self._client = client
 
@@ -485,30 +502,69 @@ class WitnessKeyStates:
             await self._client.aclose()
             self._client = None
 
-    async def messages(self, pre: str) -> list[Message]:
+    async def messages(self, pre: str, witness_url: str | None = None) -> list[Message]:
+        url = witness_url or self.witness_url
         http = await self._http()
         try:
-            response = await http.get(
-                f"{self.witness_url}/query", params={"typ": "kel", "pre": pre}
-            )
+            response = await http.get(f"{url}/query", params={"typ": "kel", "pre": pre})
         except httpx.HTTPError as exc:
             raise ChainInvalid(
-                f"the key event log of {pre} could not be read from {self.witness_url} "
+                f"the key event log of {pre} could not be read from {url} "
                 f"({type(exc).__name__}); its key state was not established",
                 aid=pre,
             ) from exc
         if response.status_code != 200:
             raise ChainInvalid(
-                f"the key event log of {pre} could not be read from {self.witness_url} "
+                f"the key event log of {pre} could not be read from {url} "
                 f"(HTTP {response.status_code}); its key state was not established",
                 aid=pre,
             )
         return parse_messages(response.text)
 
+    async def _copies(self, pre: str) -> list[tuple[str, list[Message]]]:
+        copies: list[tuple[str, list[Message]]] = []
+        failures: list[ChainInvalid] = []
+        for url in self.witness_urls:
+            try:
+                copies.append((url, await self.messages(pre, url)))
+            except ChainInvalid as exc:
+                failures.append(exc)
+        if len(copies) < self.quorum:
+            reason = f": {failures[0].message}" if failures else ""
+            raise ChainInvalid(
+                f"only {len(copies)} of {len(self.witness_urls)} witnesses answered for {pre}, "
+                f"and {self.quorum} are required; its key state was not established{reason}",
+                aid=pre,
+            )
+        return copies
+
     async def resolve(self, pre: str, *, _depth: int = 0) -> KeyState:
         if _depth > MAX_DELEGATION_DEPTH:
             raise ChainInvalid(f"the delegation of {pre} does not terminate", aid=pre)
-        messages = await self.messages(pre)
+        copies = await self._copies(pre)
+
+        seen: dict[int, tuple[str, str]] = {}
+        for url, messages in copies:
+            for message in messages:
+                if message.ilk not in KEL_ILKS or message.body.get("i") != pre:
+                    continue
+                try:
+                    sn = int(str(message.body.get("s")), 16)
+                except ValueError:
+                    continue  # verify_kel refuses it with a reason
+                said = message.body.get("d", "")
+                if sn in seen and seen[sn][0] != said:
+                    raise ChainInvalid(
+                        f"duplicity: witnesses {seen[sn][1]} and {url} hold different events at "
+                        f"sequence number {sn} of {pre}; its key state cannot be trusted",
+                        aid=pre,
+                    )
+                seen.setdefault(sn, (said, url))
+
+        def length(copy: tuple[str, list[Message]]) -> int:
+            return sum(1 for m in copy[1] if m.ilk in KEL_ILKS and m.body.get("i") == pre)
+
+        messages = max(copies, key=length)[1]
         named = delegator_of(messages, pre)
         delegator = await self.resolve(named, _depth=_depth + 1) if named else None
         return verify_kel(messages, pre, delegator=delegator)
