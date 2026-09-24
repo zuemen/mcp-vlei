@@ -254,3 +254,9 @@ pre.json {
 }
 .log .entry { white-space: nowrap; }
 .log .entry .ts { font-family: var(--mono); color: var(--muted); margin-right: 7px; }
+
+/* A refusal that is not a revocation — a wrong key, a forged chain — and a server whose own
+   credential did not verify. Same colour as a failed check: it is one. */
+.card.refused .status, .card.invalid .status { color: var(--fail); }
+.outcome.unavailable { color: var(--muted, #888); }
+.diff { margin-top: 6px; font-family: var(--mono, monospace); opacity: .8; }

@@ -561,7 +561,7 @@ SLIDES = [
 
     {"kind": "mono", "kicker": "One repository, Apache 2.0", "title": "Artifacts",
      "lines": ["spec/       specification v0.2, type definitions, wire examples, error shapes",
-               "packages/   mcp-vlei — extension, client, chain verification, 77 tests",
+               "packages/   mcp-vlei — extension, client, KEL + chain verification, 143 tests",
                "skills/     implementing-vlei (build time) · vlei-identity (runtime)",
                "examples/   impersonation · console · association server · agent · regulator",
                "deploy/     gateway configuration — zero-code-change adoption",

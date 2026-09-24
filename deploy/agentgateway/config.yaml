@@ -1,10 +1,10 @@
-# agentgateway configuration for the regulator scenario.
+# agentgateway configuration for the regulator scenario. Pinned to agentgateway v1.5.0.
 #
 # The agent connects here instead of directly to the filing server. Its source code does not change
 # — only the URL it is given. That is the claim this directory exists to substantiate.
 #
-# Field names and defaults below were taken from agentgateway's published configuration JSON schema
-# (schema/config.json in agentgateway/agentgateway), not from prose examples.
+# Field names below were checked against agentgateway v1.5.0's published configuration schema
+# (schema/config.json at tag v1.5.0), and the file passes `agentgateway --validate-only`.
 
 binds:
   - port: 3000
@@ -18,6 +18,15 @@ binds:
               # ---------------------------------------------------------------------------- #
               extAuthz:
                 host: vlei-authz:9000
+
+                # agentgateway gives an authorizer 2s by default. vlei-authz reads the signer's
+                # key event log and every issuer's TEL from a witness, and bounds each read at
+                # VLEI_WITNESS_TIMEOUT (3s); 10s leaves room for that, so an unreachable witness
+                # comes back as the named layer (`invalid_signature ... not established`) rather
+                # than as this gateway's generic "external authorization failed". Both refuse.
+                policies:
+                  http:
+                    requestTimeout: 10s
 
                 # The credential and signature live in the JSON-RPC body's `_meta`, so the body
                 # must reach the authorizer. The default cap is 8192 bytes, and a chained CESR
@@ -35,29 +44,31 @@ binds:
                 # unreachable, requests are refused rather than waved through.
                 failureMode: deny
 
+                # HTTP, not gRPC (the schema's default). vlei-authz is a plain HTTP service: it
+                # reads the forwarded body, answers 200 to allow, and anything else is the denial
+                # returned to the caller — a 403 whose JSON body names the failure layer.
                 protocol:
                   http:
+                    # A CEL expression, hence the inner quotes.
                     path: '"/auth/mcp"'
-                    # Copied onto the request when the authorizer returns 200. These four headers
-                    # are the entire interface the filing server has with vLEI.
+                    # Copied onto the backend request when the authorizer returns 200. vlei-authz
+                    # sends all five on every 200 (empty when nothing was established), so a value
+                    # a client sent under one of these names never reaches the filing server.
                     includeResponseHeaders:
                       - x-vlei-lei
                       - x-vlei-role
                       - x-vlei-holder-aid
                       - x-vlei-delegate-aid
+                      - x-vlei-report
 
               # ---------------------------------------------------------------------------- #
               # MCP authorization — the tool boundary.
               # ---------------------------------------------------------------------------- #
               mcpAuthorization:
-                # NOTE on what is expressible here. The CEL variables available at request time are
-                # `mcp.tool.*` and `jwt.*`. Headers produced by external authorization are not
-                # addressable, so `role == "regulatory-filing"` cannot be written at this layer —
-                # it is enforced in vlei-authz, which parses the credential and already knows both
-                # the tool and the role, and denies with a named failure layer first.
-                #
-                # What this policy contributes is a closed list of reachable tools, so a tool added
-                # to the backend is not exposed by accident.
+                # The role check is enforced in vlei-authz, which parses the credential, knows the
+                # tool, and denies with a named failure layer first. This policy contributes a
+                # closed list of reachable tools, so a tool added to the backend is not exposed by
+                # accident; vlei-authz's policy.json is closed the same way.
                 rules:
                   - 'mcp.tool.name == "list_forms"'
                   - 'mcp.tool.name == "get_filing_status"'
@@ -65,8 +76,10 @@ binds:
 
             backends:
               - mcp:
+                  # Names are never prefixed, so the tool name a client sends is the name
+                  # vlei-authz checked and the name filing-server executes.
+                  prefixMode: never
                   targets:
                     - name: filing-server
                       mcp:
-                        host: filing-server:8081
-                        path: /mcp
+                        host: http://filing-server:8081/mcp

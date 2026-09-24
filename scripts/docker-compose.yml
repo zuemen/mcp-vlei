@@ -32,10 +32,14 @@ services:
       timeout: 3s
       retries: 20
       start_period: 5s
+    # Host ports are configurable because Windows reserves dynamic port ranges at boot (see
+    # `netsh interface ipv4 show excludedportrange protocol=tcp`), and 5550-5649 is a range it has
+    # been observed to take. Inside the compose network the witnesses stay on 5642-5644, so nothing
+    # else changes; set VLEI_WITNESS_HOST_PORT_* and VLEI_WITNESS_URL in scripts/.env.
     ports:
-      - "5642:5642"
-      - "5643:5643"
-      - "5644:5644"
+      - "${VLEI_WITNESS_HOST_PORT_WAN:-5642}:5642"
+      - "${VLEI_WITNESS_HOST_PORT_WIL:-5643}:5643"
+      - "${VLEI_WITNESS_HOST_PORT_WES:-5644}:5644"
 
   # Serves the published vLEI ACDC schemas by SAID, so `kli vc create --schema <SAID>` can resolve
   # them. This is the WebOfTrust/vLEI schema set, unmodified.

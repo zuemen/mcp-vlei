@@ -91,8 +91,7 @@ def show_report(result: Any) -> None:
     if not report:
         return
     marks = {True: "+", False: "x", None: "-"}
-    print(f"
-  verifying {report['tool']}")
+    print(f"\n  verifying {report['tool']}")
     for check in report["checks"]:
         mark = marks[check["passed"]]
         tail = check["layer"] or f"{check['durationMs']:6.1f} ms"
@@ -186,8 +185,7 @@ async def test_2_register_member_without_credential(env):
             "register_member", {"name": "Nobody", "email": "nobody@example.org"}, present=False
         )
         show_report(result)
-        show_report(result)
-    show("refused", layer=_layer(result), text=_text(result)[:120])
+        show("refused", layer=_layer(result), text=_text(result)[:120])
         assert result.is_error
         assert _layer(result) == "missing_credential"
 
@@ -202,6 +200,39 @@ async def test_2b_public_tool_needs_no_credential(env):
         result = await session.call_tool("list_events", {}, present=False)
         show("public tool", isError=result.is_error)
         assert not result.is_error
+
+
+@requires_stack
+@pytest.mark.anyio
+async def test_2c_someone_elses_credential_with_your_own_key_is_refused(env):
+    """The impersonation this extension exists to stop, against the live stack.
+
+    Present the real ECR — every server the holder ever called has a copy — claim the agent's AID,
+    and sign with a key of your own, sending that key along. The server reads the agent's key state
+    from the witness, not from the request, so the signature does not verify.
+    """
+    import secrets
+
+    from mcp_vlei import Signer
+
+    agent = env.get("agentAid") or env["ecrAid"]
+    mallory = Signer.from_seed(agent, secrets.token_bytes(32))
+    arguments = {"name": "Mallory", "email": "mallory@example.org"}
+    meta = {
+        "org.gleif.vlei/credential": (CREDENTIALS / "ecr.cesr").read_text().strip(),
+        "org.gleif.vlei/delegatedAid": agent,
+        "org.gleif.vlei/signature": sign_request(
+            mallory, "tools/call", {"name": "register_member", "arguments": arguments}
+        ),
+        "org.gleif.vlei/verkey": mallory.verkey,
+        "org.gleif.vlei/credentialSaid": env["ecrSaid"],
+    }
+
+    async with Client(MCP_URL, extensions=[VleiCapability()]) as raw:
+        result = await raw.call_tool("register_member", arguments, meta=meta)
+    show_report(result)
+    show("refused", layer=_layer(result), text=_text(result)[:120])
+    assert _layer(result) == "invalid_signature"
 
 
 # --------------------------------------------------------------------------------------------- #
@@ -223,8 +254,7 @@ async def test_3_revoked_credential_is_refused(env):
             "register_member", {"name": "Chen Wei-Ting", "email": "weiting@example.org.tw"}
         )
         show_report(result)
-        show_report(result)
-    show("refused", layer=_layer(result), text=_text(result)[:120])
+        show("refused", layer=_layer(result), text=_text(result)[:120])
         assert result.is_error
         assert _layer(result) == "revoked"
 

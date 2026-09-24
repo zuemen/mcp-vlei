@@ -11,6 +11,10 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Machine-local overrides (gitignored), e.g. witness host ports when Windows has reserved 5642-5644.
+# `docker compose` reads the same file, so the scripts and the containers agree on the ports.
+[[ -f "${HERE}/.env" ]] && { set -a; . "${HERE}/.env"; set +a; }
+WITNESS_URL="${VLEI_WITNESS_URL:-http://localhost:5642}"
 ROOT="$(cd "${HERE}/.." && pwd)"
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*) NATIVE_HERE="$(cygpath -m "$HERE")" ;;
@@ -55,7 +59,7 @@ else
 
   step "Waiting for services"
   for i in $(seq 1 60); do
-    curl -fsS http://localhost:5642/oobi >/dev/null 2>&1 && break
+    curl -fsS "${WITNESS_URL}/oobi" >/dev/null 2>&1 && break
     sleep 2
     [[ $i -eq 60 ]] && die "the witness network did not come up"
   done

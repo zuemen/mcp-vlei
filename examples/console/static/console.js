@@ -21,9 +21,10 @@ let lastSceneKey = null;
 
 function renderCard(card) {
   if (!card) return "";
-  const status = card.status === "valid" ? "valid"
-    : card.status === "revoked" ? "revoked" : "unverified";
-  const text = { valid: "valid", revoked: "revoked", unverified: "not presented" }[status];
+  const status = ["valid", "revoked", "refused", "invalid"].includes(card.status)
+    ? card.status : "unverified";
+  const text = { valid: "valid", revoked: "revoked", refused: "refused", invalid: "invalid",
+                 unverified: "not presented" }[status];
   return `<div class="card ${status}">
       <div class="kind"><span>${card.role}</span><span>${card.type}</span></div>
       <div class="lei">${card.lei}</div>
@@ -112,6 +113,7 @@ function showOutcome() {
   const { status, layer, note } = pendingOutcome;
   const text = status === "allowed" ? "ALLOWED"
     : status === "refused" ? `REFUSED <span class="layer">· ${layer}</span>`
+    : status === "unavailable" ? "NOT RUNNING"
     : "GRANTED ON SELF-ASSERTION";
   $("outcome").className = `outcome ${status}`;
   $("outcome").innerHTML = `${text}${note ? `<span class="note">${note}</span>` : ""}`;
@@ -132,12 +134,15 @@ function render(state) {
 
   const evidence = state.evidence || {};
   const provenance = evidence.credentials
-    ? `credentials <b>${evidence.credentials}</b> · revocation read from <b>${evidence.revocation}</b>`
+    ? `credentials <b>${evidence.credentials}</b> · signed with <b>${evidence.signing}</b>`
+      + ` · revocation read from <b>${evidence.revocation}</b>`
     : "";
+  const diff = state.verification?.outcome?.agentDiff;
   // A set-up problem shown before the take, not discovered during it.
   const warning = state.readiness
     ? `<div style="color:var(--fail);margin-bottom:8px">⚠ ${state.readiness}</div>` : "";
-  $("evidence").innerHTML = warning + provenance;
+  $("evidence").innerHTML = warning + provenance
+    + (diff ? `<div class="diff">${diff.replace(/</g, "&lt;")}</div>` : "");
 
   const request = state.request || {};
   $("req-name").textContent = request.name || "";
@@ -196,6 +201,9 @@ document.addEventListener("keydown", (event) => {
     fetch("/state").then((r) => r.json()).then(render);
   } else if (event.key === "r" || event.key === "R") {
     fetch("/reset", { method: "POST" });
+  } else if (event.key === "i" || event.key === "I") {
+    // After scene 3: issue the holder a fresh ECR, so scenes 4 and 5 have one to present.
+    fetch("/reissue", { method: "POST" });
   }
 });
 

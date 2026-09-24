@@ -14,6 +14,10 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Machine-local overrides (gitignored), e.g. witness host ports when Windows has reserved 5642-5644.
+# `docker compose` reads the same file, so the scripts and the containers agree on the ports.
+[[ -f "${HERE}/.env" ]] && { set -a; . "${HERE}/.env"; set +a; }
+WITNESS_URL="${VLEI_WITNESS_URL:-http://localhost:5642}"
 ROOT="$(cd "${HERE}/.." && pwd)"
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*) NATIVE_HERE="$(cygpath -m "$HERE")" ;;
@@ -91,8 +95,11 @@ print(json.load(sys.stdin).get('readiness') or '')" 2>/dev/null)"
   fi
 
   # The reveal is driven by SSE; a console that cannot stream shows a frozen column on camera.
-  if curl -fsS --max-time 5 -H 'Accept: text/event-stream' "${CONSOLE}/events" 2>/dev/null \
-       | head -c 200 | grep -q '"scene"'; then
+  # An event stream never ends, so curl always stops on --max-time with a non-zero status; under
+  # `pipefail` that failed the whole pipeline and this check could never pass. Capture, then look.
+  EVENTS="$(curl -sS --max-time 5 -H 'Accept: text/event-stream' "${CONSOLE}/events" 2>/dev/null \
+            | head -c 200 || true)"
+  if grep -q '"scene"' <<<"$EVENTS"; then
     ok "console event stream delivering state"
   else
     bad "console /events did not deliver a state within 5s" \
@@ -101,6 +108,25 @@ print(json.load(sys.stdin).get('readiness') or '')" 2>/dev/null)"
 else
   bad "console is not answering on ${CONSOLE}" \
       "run: python examples/console/app.py"
+fi
+
+# --------------------------------------------------------------------------------------------- #
+# Scenes 4 and 5: real servers. The console will not stand in for them — it shows NOT RUNNING.
+# --------------------------------------------------------------------------------------------- #
+
+GATEWAY="${VLEI_GATEWAY_URL:-http://localhost:3000/mcp}"
+SKILL="${VLEI_SKILL_SERVER_URL:-http://127.0.0.1:8082/mcp}"
+if curl -sS -o /dev/null --max-time 5 "${GATEWAY}" 2>/dev/null; then
+  ok "scene 4: gateway answering on ${GATEWAY}"
+else
+  bad "scene 4: nothing on ${GATEWAY}" \
+      "VLEI_ACCEPTED_ROOTS=<root from credentials/env.json> docker compose -f deploy/agentgateway/docker-compose.yml up -d"
+fi
+if curl -fsS -o /dev/null --max-time 5 "${SKILL%/mcp}/.well-known/vlei" 2>/dev/null; then
+  ok "scene 5: skill-generated server answering on ${SKILL}"
+else
+  bad "scene 5: nothing on ${SKILL}" \
+      "see examples/skill-server/README.md — VLEI_LE_CREDENTIAL, VLEI_ACCEPTED_ROOTS, VLEI_WITNESS_URL"
 fi
 
 # --------------------------------------------------------------------------------------------- #
