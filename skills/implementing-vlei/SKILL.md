@@ -235,8 +235,10 @@ spacing changes the digest, and re-serializing would hide exactly the tampering 
 find.
 
 The ACDC fields you will need: `d` is the SAID, `i` the issuer, `a.i` the issuee, `a.LEI` the LEI,
-`a.engagementContextRole` the role, `ri` the registry, `s` the schema SAID, and `e.<label>.n` the
-SAID an edge points at.
+`a.engagementContextRole` the role, `a.scope` the scope (an object; absent means no scope), `ri` the
+registry, `s` the schema SAID, `e.<label>.n` the SAID an edge points at and `e.<label>.s` the schema
+it declares. An `acceptedRoots` entry is an **issuer AID**: the walk stops at the first credential
+whose `i` is in the set. `spec/examples/digest-vectors.json` has digest and signature test vectors.
 
 **Determine a credential's type from `s`, its schema SAID** — not from a name or a guessed field.
 The published vLEI schema SAIDs are stable; an ECR is

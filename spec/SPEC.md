@@ -61,12 +61,15 @@ carries no `extensions` member; the MCP Python SDK 2.2.0 types agree.
 
 - `presents` — which credential types this party is able to present (`"LE"`, `"ECR"`).
 - `requires` — the credential type this party requires of its counterparty.
-- `acceptedRoots` — AIDs of roots of trust this party will accept. In production this is GLEIF's
-  root; in this project's demo environment it is a self-configured root (see the honesty statement in
-  `docs/DEMO.md`).
+- `acceptedRoots` — AIDs of roots of trust this party will accept: **issuer AIDs**, not credential
+  SAIDs. A chain is accepted when, walking its edges from the presented credential, it reaches a
+  credential whose issuer is in this set. In production this is GLEIF's root; in this project's demo
+  environment it is a self-configured root (see the honesty statement in `docs/DEMO.md`).
 - `signatureAlgs` — currently `["Ed25519"]`.
-- `ttlMs` — how long a counterparty should cache a verification result for this party (see
-  *Security Considerations*, revocation latency).
+- `ttlMs` — the longest a **counterparty** may cache its verification of this party — of this
+  party's credential, and of a result this party returns — before verifying again; `0` means every
+  time (see *Security Considerations*, revocation latency). It says nothing about this party's own
+  caches; a party that caches nothing may advertise `0`.
 - `discovery.wellKnown` — the URL at which this party publishes its credential for **passive
   verification** (mode (a) below).
 
@@ -146,8 +149,10 @@ method + "\n" + ts + "\n" + digest
 
 - `method` — the JSON-RPC method, e.g. `tools/call`.
 - `ts` — RFC 3339 timestamp, UTC, at signing time.
-- `digest` — `base64url(sha256(canonical))`, where `canonical` is the RFC 8785 (JCS) canonical
-  serialization of the request `params` **with `_meta` removed**.
+- `digest` — `base64url(sha256(canonical))`, unpadded, where `canonical` is the RFC 8785 (JCS)
+  canonical serialization of the request `params` **with `_meta` removed** — for `tools/call`, the
+  `name` and, when it is sent, `arguments`. A call with no arguments sends no `arguments` member and
+  signs none. Test vectors, including a deterministic signature: `spec/examples/digest-vectors.json`.
 
 `_meta` is excluded because it carries the signature itself. The resulting `VleiSignature` goes in
 `params._meta["org.gleif.vlei/signature"]`.
@@ -203,7 +208,9 @@ calling whether it is entitled to call — which is the precondition for the ski
 `skills/vlei-identity/`.
 
 Scope semantics are deliberately open: a verifier compares the tool's declared `scope` against the
-scope carried by the caller's ECR credential, using a comparison the deployment defines. The
+scope carried by the caller's ECR credential — the object at `a.scope` in its attribute block; a
+credential without one carries no scope — using a comparison the deployment defines. Whatever the
+comparison, a key the tool requires and the credential does not carry is **not** satisfied. The
 extension specifies *where* scope lives and *that* it must be checked, not a universal scope algebra.
 
 ### `_meta` keys
