@@ -1,0 +1,8 @@
+{
+  "_comment": "Per-tool requirements for filing-server, held by the gateway because it decides before the server is reached. A tool mapped to null is public. A tools/call naming a tool not listed here is refused: the list is closed.",
+  "tools": {
+    "list_forms": null,
+    "get_filing_status": {"credential": "ECR"},
+    "submit_filing": {"credential": "ECR", "role": "regulatory-filing"}
+  }
+}

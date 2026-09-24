@@ -6,12 +6,17 @@ Three deployments, one agent. The agent's source does not change between them.
 |---|---|
 | `association-server/` | The association's own MCP server: presents its LE, requires an ECR for `register_member`, and shows every decision on a live dashboard |
 | `my-agent/` | An agent that presents a vLEI credential — Claude as the model, official MCP client, `VleiClient` for identity, and the skill loaded as its system prompt |
-| `regulator/` | The government scenario: a filing server that does **no** vLEI verification at all, sitting behind a gateway that does |
+| `regulator/` | The government scenario: a filing server that does **no** vLEI verification at all, sitting behind a gateway (`vlei-authz`, `deploy/agentgateway/`) that does. `regulator/tests/` — 32 tests, no containers |
+| `skill-server/` | A server written from `skills/implementing-vlei/SKILL.md` alone, with no stubs — scene 5 of the recording. `skill-server/tests/` — 31 tests |
+| `console/` | The Trust Console the recording is shot on. Every scene makes its real call; `console/tests/` — 18 tests |
+| `impersonation/` | The problem, made executable: a vendor server granting quota on a name the caller chose |
 
 ## Running the whole thing
 
 ```bash
-# 1. Credential environment — real KERI, real ACDC, real verifier, self-configured root
+# 1. Credential environment — real KERI, real ACDC, real verifier, self-configured root.
+#    If Windows has reserved 5642-5644, set the witness host ports in scripts/.env first
+#    (VLEI_WITNESS_HOST_PORT_WAN/WIL/WES and VLEI_WITNESS_URL); everything here reads it.
 bash scripts/bootstrap-credentials.sh
 
 # 2. The association's server (terminal 2)
@@ -34,14 +39,18 @@ The server and the client run against the official MCP Python SDK 2.2.0, negotia
 `Client` reaches it; a bare `ClientSession` handshake does not, and a server that looks like it
 advertises nothing is usually a client that never got past the legacy handshake.
 
+All seven acceptance tests pass against the live stack (2026-09-24), the agent signing through
+`kli sign` with its delegated AID:
+
 | Test | State |
 |---|---|
+| 1 — valid credential succeeds | passes when the credential is live; see below |
 | 2 — no credential → `missing_credential` | passes |
 | 2b — public tool needs nothing | passes |
+| 2c — someone else's credential, your own key → `invalid_signature` | passes |
+| 3 — revoked credential → `revoked` | passes (revocation read from the issuer's log) |
 | 4 — tampered arguments → `digest_mismatch` | passes |
 | 5 — unmodified client is additive | passes |
-| 3 — revoked credential → `revoked` | passes (revocation read from the issuer's log) |
-| 1 — valid credential succeeds | passes when the credential is live; see below |
 
 ### How the verifier was taken off the critical path
 
@@ -49,11 +58,12 @@ advertises nothing is usually a client that never got past the legacy handshake.
 writes a database key of `None` and keripy raises `TypeError: sequence item 0: expected str
 instance, NoneType found`. It takes the HTTP service down with it and comes back with an empty
 database, so a credential presented a moment earlier is answered `unknown AID`. Written up for
-upstream in [`docs/upstream/issue.md`](../docs/upstream/issue.md).
+upstream in [`docs/upstream/issue-final.md`](../docs/upstream/issue-final.md), reproduced live on
+both tags on 2026-09-24.
 
 **Changing the image version does not help.** `0.1.5` (2026-08-20) is newer than `1.0.0`
-(2026-06-29) despite the numbering, and carries the same code at `utils.py:133-143` — verified by
-reading it. The tag is now `VLEI_VERIFIER_TAG` so a fixed release can be adopted without editing
+(2026-06-29) despite the numbering, and carries the same defect — at `utils.py:241` in 1.0.0 and
+`utils.py:143` in 0.1.5. The tag is now `VLEI_VERIFIER_TAG` so a fixed release can be adopted without editing
 the compose file.
 
 **Three revocation sources, selectable, all kept:**
@@ -66,17 +76,17 @@ the compose file.
 
 Two structural changes did as much as the source switch:
 
-- **Local checks before the remote one.** The chain, the SAIDs, the root and the signature are all
-  decided from the request itself; only revocation requires asking anyone. Ordering it last means a
-  verification service that is slow or down degrades one specific check instead of every check —
-  which is why test 4 reports `digest_mismatch` today where it used to report a connection error.
+- **Decide from the request first.** Freshness and the digest need nothing but the request, so a
+  stale or altered call is refused before anything is asked of a witness — which is why test 4
+  reports `digest_mismatch` rather than a connection error. The signature then needs the signer's
+  key state, read from its key event log at a witness (never from the request); the chain and
+  issuance are decided from the presented stream; revocation reads each issuer's live log.
 - **`VleiVerifier.wait_ready()`**, with a bounded exponential backoff, replaces racing the
   container restart policy. Bounded on purpose: an unbounded wait turns a dead service into a hung
   test, which is harder to diagnose than a failure.
 
 Test 1 needs a credential that has not been revoked. The acceptance suite's own test 3 revokes it,
-so re-run `bash scripts/bootstrap-credentials.sh` — it re-issues at the end for exactly this
-reason — before a run where test 1 matters.
+so run `bash scripts/bootstrap-credentials.sh --reissue` before a run where test 1 matters.
 
 **Two flow facts learned along the way**, both now in `spec/SPEC.md`:
 
@@ -88,15 +98,17 @@ reason — before a run where test 1 matters.
   was issued to the person. The extension reads the issuee out of the credential rather than
   trusting the caller to name it.
 
-## What the five acceptance tests establish
+## What the seven acceptance tests establish
 
 | # | Test | Establishes |
 |---|---|---|
-| 1 | Call `register_member` with a credential | The whole path works: chain, revocation, root, signature, role |
-| 2 | Call it without one | Refused as `missing_credential` — and `list_events` still works |
+| 1 | Call `register_member` with a credential | The whole path works: key state, delegation, chain, issuance, revocation, root, role |
+| 2 | Call it without one | Refused as `missing_credential` |
+| 2b | Call `list_events` without one | Public tools are untouched |
+| 2c | Present the real ECR, sign with your own key | Refused as `invalid_signature` — the key comes from the agent's log, not the request |
 | 3 | Revoke from the dashboard, call again | Refused as `revoked`. The revocation is real, in the LE's TEL |
 | 4 | Sign one set of arguments, send another | Refused as `digest_mismatch` — this is what the digest exists for |
-| 5 | Connect an unmodified Claude Desktop | Connects, lists tools, `list_events` works, `register_member` refused |
+| 5 | Connect an unmodified MCP client (the SDK's plain `Client`) | Connects, lists tools, `list_events` works, `register_member` refused |
 
 Test 5 is the backward-compatibility section of the specification made executable. An unmodified
 host is not broken by the extension, is not locked out of the server, and is not silently granted
@@ -133,7 +145,8 @@ point. Claude Desktop has no vLEI support, was not modified, and was neither bro
 ## Running it against the government gateway instead
 
 ```bash
-docker compose -f deploy/agentgateway/docker-compose.yml up -d
+VLEI_ACCEPTED_ROOTS=<root AID from credentials/env.json> \
+  docker compose -f deploy/agentgateway/docker-compose.yml up -d
 MCP_SERVER_URL=http://localhost:3000/mcp python examples/my-agent/agent.py "..."
 ```
 

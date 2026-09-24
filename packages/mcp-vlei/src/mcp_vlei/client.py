@@ -34,7 +34,7 @@ import httpx
 from mcp.client.extension import ClientExtension
 
 from .attest import verify_attestation
-from .errors import ChainInvalid, MissingCredential
+from .errors import ChainInvalid, MissingCredential, VleiError
 from .extension import (
     EXTENSION_ID,
     META_ATTESTATION,
@@ -43,6 +43,7 @@ from .extension import (
     META_REQUIRES,
     META_SIGNATURE,
 )
+from .kel import WitnessKeyStates
 from .signing import Signer, scope_satisfied, sign_request
 from .verifier import OfflineVerifier, VerificationResult, VleiVerifier
 
@@ -116,6 +117,8 @@ class VleiClient:
         scope: dict[str, Any] | None = None,
         verifier: VleiVerifier | None = None,
         mirror_headers: bool = False,
+        witness_url: str | None = None,
+        witness_client: Any = None,
     ) -> None:
         self._session = session
         self.credential = Path(credential).read_text(encoding="utf-8").strip()
@@ -141,6 +144,17 @@ class VleiClient:
         self.role = role
         self.scope = scope or {}
         self.accepted_roots = list(accepted_roots or [])
+        if verify_server and not self.accepted_roots:
+            # Without roots there is nothing to verify the server against, and the old behaviour
+            # was to skip verification without saying so. Choose explicitly instead.
+            raise ValueError(
+                "verify_server=True needs accepted_roots: they are the whole trust decision. "
+                "Pass verify_server=False to connect without verifying the server."
+            )
+        #: Where an attesting party's current keys come from — never from what it declares.
+        self._key_states = (
+            WitnessKeyStates(witness_url, client=witness_client) if witness_url else None
+        )
         self._verifier = verifier
         if self._verifier is None and verifier_url and self.accepted_roots:
             self._verifier = VleiVerifier(verifier_url, accepted_roots=self.accepted_roots)
@@ -301,12 +315,15 @@ class VleiClient:
         meta: dict[str, Any] | None = None
 
         if needs:
-            # Sign exactly what goes on the wire: the params object the SDK will serialize.
-            params = {"name": name, "arguments": arguments or {}}
+            # Sign exactly what goes on the wire: the params object the SDK will serialize. No
+            # arguments are sent as no `arguments` member, so none are signed that way either —
+            # signing `{}` for them made every protected tool without parameters fail its digest.
+            params: dict[str, Any] = {"name": name}
+            if arguments is not None:
+                params["arguments"] = arguments
             meta = {
                 META_CREDENTIAL: self.credential,
                 META_SIGNATURE: sign_request(self.signer, "tools/call", params),
-                "org.gleif.vlei/verkey": self.signer.verkey,
             }
             if self.credential_said:
                 meta["org.gleif.vlei/credentialSaid"] = self.credential_said
@@ -325,7 +342,6 @@ class VleiClient:
             "x-vlei-tool": tool_name,
             "x-vlei-credential": meta[META_CREDENTIAL],
             "x-vlei-signature": _json.dumps(meta[META_SIGNATURE], separators=(",", ":")),
-            "x-vlei-verkey": self.signer.verkey,
         }
         if meta.get(META_DELEGATED_AID):
             headers["x-vlei-delegated-aid"] = meta[META_DELEGATED_AID]
@@ -340,13 +356,36 @@ class VleiClient:
                 "an attestation arrived from a party whose own identity is unverified; "
                 "discarding it. Accepting it would be trusting an unverified party's judgment."
             )
-        verkey = (self.server_capability or {}).get("verkey")
-        if not verkey:
+        # Who signed it must be the server this client verified — its LE's AID, or an AID that LE
+        # delegated to (a gateway, say) — and the key must come from that AID's own log. A key the
+        # server declares about itself is a key the attester chose.
+        attester = attestation.get("verifierAid", "")
+        if self._key_states is None:
             raise ChainInvalid(
-                "no verification key established for the attesting party; discarding the "
-                "attestation rather than accepting the claim unverified"
+                "no witness is configured to establish the attesting party's key state; "
+                "discarding the attestation rather than accepting it unverified"
             )
-        self.attested = verify_attestation(attestation, verifier_verkey=verkey)
+        state = await self._key_states.resolve(attester)
+        server = self.server_identity.holder_aid or self.server_identity.aid
+        if attester != server and state.delegator != server:
+            raise ChainInvalid(
+                f"the attestation is signed by {attester}, which is neither the verified server "
+                f"{server} nor delegated by it"
+            )
+        subject = attestation.get("subjectAid")
+        if subject not in {self.delegated_aid, getattr(self.signer, "aid", None), self._holder()}:
+            raise ChainInvalid(
+                f"the attestation is about {subject}, not about this client"
+            )
+        self.attested = verify_attestation(attestation, verifier_verkey=state.keys)
+
+    def _holder(self) -> str | None:
+        from .extension import _presented
+
+        try:
+            return _presented(self.credential, self.credential_said).issuee
+        except VleiError:
+            return None
 
     def __getattr__(self, item: str) -> Any:
         """Anything not overridden passes through to the wrapped session unchanged."""

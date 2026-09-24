@@ -14,13 +14,19 @@ existing systems.** This server is what "not modified" looks like.
 
 from __future__ import annotations
 
+import base64
+import binascii
+import json
 import os
 from datetime import date
+from pathlib import Path
 from typing import Any
 
-from pathlib import Path
-
-from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.transport_security import TransportSecuritySettings
+from mcp.types import CallToolResult, TextContent
+from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -37,6 +43,12 @@ LE_CREDENTIAL = Path(
 )
 ACCEPTED_ROOTS = [r for r in os.environ.get("VLEI_ACCEPTED_ROOTS", "").split(",") if r]
 
+#: The headers the gateway sets. This tuple is the server's entire vLEI surface.
+IDENTITY_HEADERS = ("x-vlei-lei", "x-vlei-role", "x-vlei-holder-aid", "x-vlei-delegate-aid")
+REPORT_HEADER = "x-vlei-report"
+#: Where the gateway's verification record is handed back to the caller, decoded.
+REPORT_META = "org.gleif.vlei/report"
+
 FORMS = [
     {"id": "A1", "title": "Quarterly capital adequacy return", "periods": ["2026Q1", "2026Q2"]},
     {"id": "B3", "title": "Annual beneficial ownership declaration", "periods": ["2025", "2026"]},
@@ -45,25 +57,46 @@ FORMS = [
 FILINGS: dict[str, list[dict[str, Any]]] = {}
 
 
-def _caller(ctx: Any) -> dict[str, str]:
+class Refused(ToolError):
+    """An anticipated refusal. The SDK shows a `ToolError`'s text to the caller; any other
+    exception reaches them only as "Error executing tool", which would hide why."""
+
+
+def _header(headers: Any, name: str) -> str:
+    """One value, or a refusal. Two values for an identity header means two writers disagreed."""
+    values = headers.getlist(name) if hasattr(headers, "getlist") else [headers.get(name)]
+    values = [v for v in values if v is not None]
+    if len(values) > 1:
+        raise Refused(f"{name} arrived {len(values)} times; refusing an ambiguous identity")
+    return values[0] if values else ""
+
+
+def _caller(ctx: Context) -> dict[str, str]:
     """Read what the gateway established. No verification happens here — that already happened.
 
     If these headers are absent, the request did not come through the gateway. The server refuses
     rather than guessing, because a deployment where this server is reachable directly is a
     misconfiguration, not a fallback.
     """
-    headers = getattr(ctx, "headers", None) or {}
-    lei = headers.get("x-vlei-lei")
-    if not lei:
-        raise PermissionError(
+    headers = ctx.headers or {}
+    received = {name: _header(headers, name) for name in (*IDENTITY_HEADERS, REPORT_HEADER)}
+    if not received["x-vlei-lei"]:
+        raise Refused(
             "no x-vlei-lei header: this server must be reached through the authorization gateway"
         )
-    return {
-        "lei": lei,
-        "role": headers.get("x-vlei-role", ""),
-        "holder": headers.get("x-vlei-holder-aid", ""),
-        "agent": headers.get("x-vlei-delegate-aid", ""),
-    }
+    return received
+
+
+def _report(encoded: str) -> dict[str, Any] | None:
+    """The gateway's record, decoded for the caller. Decoding is all that happens to it here."""
+    if not encoded:
+        return None
+    try:
+        raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+        report = json.loads(raw)
+    except (binascii.Error, ValueError):
+        return None
+    return report if isinstance(report, dict) else None
 
 
 @mcp.custom_route("/.well-known/vlei", methods=["GET"])
@@ -88,7 +121,7 @@ def list_forms() -> list[dict[str, Any]]:
 
 
 @mcp.tool()
-def get_filing_status(lei: str, ctx: Any = None) -> dict[str, Any]:
+def get_filing_status(lei: str, ctx: Context) -> dict[str, Any]:
     """Return the filing status for a legal entity.
 
     The `lei` argument is a request, not an authorization. It is honoured only when it matches the
@@ -97,20 +130,23 @@ def get_filing_status(lei: str, ctx: Any = None) -> dict[str, Any]:
     tool would be an enumeration endpoint for every filing the regulator holds.
     """
     caller = _caller(ctx)
-    if lei != caller["lei"]:
-        raise PermissionError(
-            f"caller is {caller['lei']}; filings for {lei} are not theirs to read"
+    if lei != caller["x-vlei-lei"]:
+        raise Refused(
+            f"caller is {caller['x-vlei-lei']}; filings for {lei} are not theirs to read"
         )
     return {"lei": lei, "filings": FILINGS.get(lei, [])}
 
 
 @mcp.tool()
-def submit_filing(form: str, period: str, payload: dict[str, Any], ctx: Any = None) -> dict[str, Any]:
+def submit_filing(form: str, period: str, payload: dict[str, Any], ctx: Context) -> CallToolResult:
     """Submit a periodic regulatory filing on behalf of the legal entity in the caller's credential.
 
     Note what is *not* a parameter: which entity is filing. It is not the caller's to assert — it
     comes from the verified credential, via the gateway. That removes a whole class of impersonation
     without this file containing a line of identity code.
+
+    The receipt lists the identity headers exactly as they arrived, so a caller can see what the
+    server was told — and the gateway's verification report comes back in `_meta`.
     """
     caller = _caller(ctx)
     record = {
@@ -118,21 +154,59 @@ def submit_filing(form: str, period: str, payload: dict[str, Any], ctx: Any = No
         "period": period,
         "submittedAt": date.today().isoformat(),
         "submittedBy": {
-            "lei": caller["lei"],
-            "role": caller["role"],
-            "holderAid": caller["holder"],
-            "agentAid": caller["agent"],
+            "lei": caller["x-vlei-lei"],
+            "role": caller["x-vlei-role"],
+            "holderAid": caller["x-vlei-holder-aid"],
+            "agentAid": caller["x-vlei-delegate-aid"],
         },
         "fields": len(payload),
         "status": "ACCEPTED",
     }
-    FILINGS.setdefault(caller["lei"], []).append(record)
-    return record
+    FILINGS.setdefault(caller["x-vlei-lei"], []).append(record)
+
+    receipt = {
+        **record,
+        "receivedHeaders": {name: caller[name] for name in IDENTITY_HEADERS if caller[name]},
+        "reportReceived": bool(caller[REPORT_HEADER]),
+    }
+    report = _report(caller[REPORT_HEADER])
+    return CallToolResult(
+        content=[TextContent(type="text", text=json.dumps(receipt, indent=2))],
+        structured_content=receipt,
+        meta={REPORT_META: report} if report is not None else None,
+    )
+
+
+def create_app(*, host: str | None = None) -> Starlette:
+    """The streamable-HTTP app.
+
+    The SDK's DNS-rebinding protection is kept on, with the gateway's view of this server added to
+    the allowed hosts: agentgateway reaches it as ``filing-server:8081``, and a default that only
+    admits ``localhost`` would answer the gateway with 421.
+    """
+    allowed = [
+        h.strip()
+        for h in os.environ.get(
+            "FILING_ALLOWED_HOSTS",
+            "filing-server,filing-server:*,localhost,localhost:*,127.0.0.1,127.0.0.1:*",
+        ).split(",")
+        if h.strip()
+    ]
+    return mcp.streamable_http_app(
+        host=host or os.environ.get("HOST", "0.0.0.0"),
+        transport_security=TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=allowed,
+            allowed_origins=[f"http://{h}" for h in allowed],
+        ),
+    )
 
 
 if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(
-        mcp.streamable_http_app(), host="0.0.0.0", port=int(os.environ.get("PORT", "8081"))
+        create_app(),
+        host=os.environ.get("HOST", "0.0.0.0"),
+        port=int(os.environ.get("PORT", "8081")),
     )

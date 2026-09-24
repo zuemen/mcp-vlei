@@ -24,16 +24,17 @@ from pathlib import Path
 from typing import Any
 
 from anthropic import AsyncAnthropic
-from mcp.client.http import http_client
-from mcp.client.session import ClientSession
+from mcp.client.client import Client
 
-from mcp_vlei import VleiClient
+from mcp_vlei import VleiCapability, VleiClient
 from mcp_vlei.errors import VleiError
+
+sys.path.insert(0, str(Path(__file__).parent))
+from kli_signer import agent_signer  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 SKILLS = ROOT / "skills" / "vlei-identity"
 CREDENTIALS = ROOT / "credentials"
-KEYS = Path(__file__).parent / "keys"
 
 SERVER_URL = os.environ.get("MCP_SERVER_URL", "http://localhost:8080/mcp")
 MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-opus-5")
@@ -75,10 +76,13 @@ def to_anthropic_tools(tools: Any) -> list[dict[str, Any]]:
     """
     out = []
     for tool in getattr(tools, "tools", tools):
-        name = getattr(tool, "name", None) or tool["name"]
-        description = getattr(tool, "description", "") or tool.get("description", "")
-        schema = getattr(tool, "inputSchema", None) or tool.get("inputSchema", {})
-        meta = (getattr(tool, "_meta", None) or tool.get("_meta") or {})
+        if isinstance(tool, dict):
+            name, description = tool["name"], tool.get("description", "")
+            schema, meta = tool.get("inputSchema", {}), tool.get("_meta") or {}
+        else:
+            # SDK 2.2.0 types use pydantic field names: `input_schema`, `meta`.
+            name, description = tool.name, tool.description or ""
+            schema, meta = tool.input_schema, tool.meta or {}
         requires = meta.get("org.gleif.vlei/requires")
         if requires:
             description += (
@@ -91,84 +95,88 @@ def to_anthropic_tools(tools: Any) -> list[dict[str, Any]]:
     return out
 
 
-async def run(task: str) -> None:
+async def run(task: str, claude: Any = None) -> None:
     cfg = env()
-    claude = AsyncAnthropic()
+    claude = claude or AsyncAnthropic()
 
-    async with http_client(SERVER_URL) as (read, write):
-        async with ClientSession(read, write) as raw:
-            session = VleiClient(
-                raw,
-                credential=CREDENTIALS / "ecr.cesr",
-                key_store=KEYS,
-                delegated_aid=cfg.get("agentAid") or cfg["ecrAid"],
-                accepted_roots=cfg["acceptedRoots"],
-                verifier_url=cfg["verifierUrl"],
-                verify_server=True,
-                on_unverified_server="stop",
-                role=cfg.get("role"),
-                scope=cfg.get("scope", {}),
+    # `Client`, not a bare `ClientSession`: extensions exist only at protocol 2026-07-28, which the
+    # high-level client negotiates and the bare handshake does not.
+    async with Client(SERVER_URL, extensions=[VleiCapability()]) as raw:
+        session = VleiClient(
+            raw,
+            credential=CREDENTIALS / "ecr.cesr",
+            credential_said=cfg["ecrSaid"],
+            # The key stays in the KERI keystore; this signer asks it for signatures.
+            signer=agent_signer(),
+            witness_url=os.environ.get("VLEI_WITNESS_URL"),
+            delegated_aid=cfg.get("agentAid") or cfg["ecrAid"],
+            accepted_roots=cfg["acceptedRoots"],
+            verifier_url=cfg["verifierUrl"],
+            verify_server=True,
+            on_unverified_server="stop",
+            role=cfg.get("role"),
+            scope=cfg.get("scope", {}),
+        )
+
+        # Stages 1-2: verify the server before anything is called.
+        identity = await session.connect()
+        if identity:
+            print(f"server verified: LEI {identity.lei} (credential via {identity.source})")
+        else:
+            print("server presented no organizational identity — unverified")
+
+        # Stage 3: read the requirements.
+        tools = await session.list_tools()
+
+        messages: list[dict[str, Any]] = [{"role": "user", "content": task}]
+        for _ in range(8):
+            response = await claude.messages.create(
+                model=MODEL,
+                max_tokens=2048,
+                system=[{"type": "text", "text": system_prompt(), "cache_control": {"type": "ephemeral"}}],
+                tools=to_anthropic_tools(tools),
+                messages=messages,
             )
 
-            # Stages 1-2: verify the server before anything is called.
-            identity = await session.connect()
-            if identity:
-                print(f"server verified: LEI {identity.lei} (credential via {identity.source})")
-            else:
-                print("server presented no organizational identity — unverified")
+            for block in response.content:
+                if block.type == "text" and block.text.strip():
+                    print(f"\n{block.text.strip()}")
 
-            # Stage 3: read the requirements.
-            tools = await session.list_tools()
+            if response.stop_reason != "tool_use":
+                return
 
-            messages: list[dict[str, Any]] = [{"role": "user", "content": task}]
-            for _ in range(8):
-                response = await claude.messages.create(
-                    model=MODEL,
-                    max_tokens=2048,
-                    system=[{"type": "text", "text": system_prompt(), "cache_control": {"type": "ephemeral"}}],
-                    tools=to_anthropic_tools(tools),
-                    messages=messages,
-                )
+            messages.append({"role": "assistant", "content": response.content})
+            results = []
+            for block in response.content:
+                if block.type != "tool_use":
+                    continue
 
-                for block in response.content:
-                    if block.type == "text" and block.text.strip():
-                        print(f"\n{block.text.strip()}")
-
-                if response.stop_reason != "tool_use":
-                    return
-
-                messages.append({"role": "assistant", "content": response.content})
-                results = []
-                for block in response.content:
-                    if block.type != "tool_use":
-                        continue
-
-                    # Stage 4: entitlement, decided here rather than by attempting the call.
-                    entitlement = session.entitlement_for(block.name)
-                    if not entitlement:
-                        print(f"  [stage 4] not calling {block.name}: {entitlement.reason}")
-                        results.append({
-                            "type": "tool_result", "tool_use_id": block.id, "is_error": True,
-                            "content": f"not entitled: {entitlement.reason}",
-                        })
-                        continue
-
-                    # Stages 5-6.
-                    print(f"  [stage 5] calling {block.name}")
-                    try:
-                        result = await session.call_tool(block.name, block.input)
-                        content = _render(result)
-                        is_error = bool(getattr(result, "isError", False) or (isinstance(result, dict) and result.get("isError")))
-                        print(f"  [stage 6] {'refused' if is_error else 'ok'}: {content.splitlines()[0][:100]}")
-                    except VleiError as exc:
-                        content, is_error = exc.to_text(), True
-                        print(f"  [stage 6] {exc.layer.value}")
+                # Stage 4: entitlement, decided here rather than by attempting the call.
+                entitlement = session.entitlement_for(block.name)
+                if not entitlement:
+                    print(f"  [stage 4] not calling {block.name}: {entitlement.reason}")
                     results.append({
-                        "type": "tool_result", "tool_use_id": block.id,
-                        "is_error": is_error, "content": content,
+                        "type": "tool_result", "tool_use_id": block.id, "is_error": True,
+                        "content": f"not entitled: {entitlement.reason}",
                     })
+                    continue
 
-                messages.append({"role": "user", "content": results})
+                # Stages 5-6.
+                print(f"  [stage 5] calling {block.name}")
+                try:
+                    result = await session.call_tool(block.name, block.input)
+                    content = _render(result)
+                    is_error = bool(getattr(result, "is_error", False))
+                    print(f"  [stage 6] {'refused' if is_error else 'ok'}: {content.splitlines()[0][:100]}")
+                except VleiError as exc:
+                    content, is_error = exc.to_text(), True
+                    print(f"  [stage 6] {exc.layer.value}")
+                results.append({
+                    "type": "tool_result", "tool_use_id": block.id,
+                    "is_error": is_error, "content": content,
+                })
+
+            messages.append({"role": "user", "content": results})
 
 
 def _render(result: Any) -> str:

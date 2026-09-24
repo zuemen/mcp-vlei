@@ -8,8 +8,8 @@
 This extension adds verifiable **organizational** identity and **role-scoped** authorization to MCP
 using GLEIF's vLEI ecosystem (KERI AIDs, ACDC credentials, LE and ECR credential types). It does not
 modify `modelcontextprotocol/modelcontextprotocol`'s `schema.ts`. It defines new types that travel in
-the fields the core specification already reserves for this purpose: `Implementation.extensions`,
-`RequestMetaObject`, `ResultMetaObject`, and `Tool._meta`.
+the fields the core specification already reserves for this purpose: `ClientCapabilities.extensions`
+and `ServerCapabilities.extensions`, `RequestMetaObject`, `ResultMetaObject`, and `Tool._meta`.
 
 The extension identifier follows the core naming rules: a reverse-DNS prefix whose second label is
 `gleif`, which is outside the reserved `modelcontextprotocol` / `mcp` range.
@@ -53,8 +53,11 @@ is the correct credential type.
 
 ### Capability declaration
 
-A party declares participation in `Implementation.extensions` under the key
-`org.gleif.vlei/identity`, with a `VleiIdentityCapability` value (see `schema.ts`):
+A party declares participation in the `extensions` member of its capabilities — a client in
+`ClientCapabilities.extensions` at `initialize`, a server in `ServerCapabilities.extensions` of its
+`initialize` or `server/discover` result — under the key `org.gleif.vlei/identity`, with a
+`VleiIdentityCapability` value (see `schema.ts`). `Implementation` (`clientInfo` / `serverInfo`)
+carries no `extensions` member; the MCP Python SDK 2.2.0 types agree.
 
 - `presents` — which credential types this party is able to present (`"LE"`, `"ECR"`).
 - `requires` — the credential type this party requires of its counterparty.
@@ -62,6 +65,8 @@ A party declares participation in `Implementation.extensions` under the key
   root; in this project's demo environment it is a self-configured root (see the honesty statement in
   `docs/DEMO.md`).
 - `signatureAlgs` — currently `["Ed25519"]`.
+- `ttlMs` — how long a counterparty should cache a verification result for this party (see
+  *Security Considerations*, revocation latency).
 - `discovery.wellKnown` — the URL at which this party publishes its credential for **passive
   verification** (mode (a) below).
 
@@ -75,7 +80,7 @@ a `server/discover` result, or a `/.well-known/vlei` document at `discovery.well
 fetches it, walks the chain to an accepted root, checks revocation, and decides on its own. The
 presenter performs no per-verification work. This is the default for server → client identity.
 
-**(b) Attested confirmation ("来函確認" / letter of confirmation).** The verifier asks a party that
+**(b) Attested confirmation ("來函確認" / letter of confirmation).** The verifier asks a party that
 already holds a verification record — a gateway that has already verified the subject, or a peer
 institution — to confirm an identity. That party replies with a `VleiAttestation`: who verified, who
 was verified, the LEI, the role, the time of verification, and a signature by the attesting party's
@@ -123,6 +128,9 @@ record by that person. An implementation MUST read the issuee out of the present
 MUST NOT accept a caller's assertion of whose record to consult — otherwise a caller could point the
 question at an identifier whose record happens to be favourable. The delegated AID identifies who
 acted; the issuee identifies whose authority they acted under, and the two are recorded separately.
+The presented credential is the one `org.gleif.vlei/credentialSaid` names or, when that key is
+absent, the leaf of the presented chain: `credentialSaid` selects *which* credential in the stream is
+being presented — a `--full` export carries the whole chain — never *whose* it is.
 
 `delegatedAid` is nonetheless **optional** in the schema. A deployment that cannot support delegated
 inception may sign directly with the ECR holder's AID; it keeps every other property and loses only
@@ -151,7 +159,39 @@ without a challenge/response round trip. There is no nonce exchange. Replay is b
 - **Freshness** — a verifier MUST reject a signature whose `ts` is outside its freshness window
   (default 60 seconds, configurable).
 - **Replay cache** — a verifier MUST cache `(aid, digest, ts)` for at least the freshness window and
-  reject repeats.
+  reject repeats. It MUST record an entry only **after** the signature has verified; recording
+  earlier lets anyone who can guess an imminent call's `(aid, digest, ts)` burn it with a signature
+  that does not verify.
+
+### Whose key, and who may sign
+
+A credential is not a secret. It is sent with every call, so every server a holder has ever called
+holds a copy. What makes a presentation the holder's is **who signed the request** — so the key a
+signature is checked against is the whole of the extension's security, and this section is
+normative in every word.
+
+- **The key comes from the signer's key event log, never from the request.** A verifier MUST verify
+  the request signature under the **current key state** of the AID named in `signature.aid`,
+  established by verifying that AID's key event log as served by a witness (on a keripy witness,
+  `GET /query?typ=kel&pre=<aid>`): the inception's SAID is the self-addressing prefix; every event's
+  SAID recomputes; each names the previous event; each is signed by the keys current at that point to
+  its threshold; each carries witness receipts to its witness threshold; and every rotation reveals
+  keys the previous establishment event committed to. A verifier MUST NOT verify under a key carried
+  in the request, and MUST refuse a request whose signature it cannot check — `invalid_signature`,
+  never "skipped".
+- **The signer must be the holder, or delegated by the holder.** The AID that signed MUST be either
+  the issuee of the presented credential, or an AID whose inception is a delegated inception (`dip`)
+  naming that issuee as delegator **and** whose inception the issuee's own key event log anchors
+  (`{"i": <delegate>, "s": "0", "d": <dip SAID>}`). Otherwise `invalid_signature`. When
+  `delegatedAid` is present it MUST equal `signature.aid`.
+- **The credential must have been issued by the identifier it names.** A SAID proves a credential was
+  not altered; it does not prove who made it. For every credential in the chain, a verifier MUST
+  establish that the registry named by its `ri` was incepted (`vcp`) by the credential's issuer, that
+  an `iss` event for it exists in that registry, and that the issuer's key event log anchors both.
+  A `kli vc export --full` stream carries everything this needs. Otherwise `chain_invalid`.
+- **Revocation covers every link.** A verifier MUST establish, from each issuer's live transaction
+  event log, that every credential in the chain was issued and has not been revoked. A log that
+  records no issuance is *not established* (`chain_invalid`), never *not revoked*.
 
 ### Tool-level requirements
 
@@ -166,6 +206,22 @@ Scope semantics are deliberately open: a verifier compares the tool's declared `
 scope carried by the caller's ECR credential, using a comparison the deployment defines. The
 extension specifies *where* scope lives and *that* it must be checked, not a universal scope algebra.
 
+### `_meta` keys
+
+Every key is namespaced `org.gleif.vlei/`; `schema.ts` has the types.
+
+| Key | Where | Carries |
+|---|---|---|
+| `credential` | request `params._meta`; a server's `server/discover` result `_meta` | CESR stream: an ECR and its chain from an agent, the LE from a server |
+| `credentialSaid` | request | which credential in the stream is presented (see *Delegation*); optional — without it, the leaf |
+| `delegatedAid` | request | the agent's delegated AID; optional, and when present it must equal `signature.aid` |
+| `signature` | request | the `VleiSignature` (see *Request signing*) |
+| `requires` | `Tool._meta` | the tool's requirement (see *Tool-level requirements*) |
+| `attestation` | result `_meta` | a `VleiAttestation`, mode (b) |
+| `failure` | result `_meta` of a refusal | `{layer, message, aid?, credentialSaid?}` — the layer again, for anything that parses rather than reads |
+| `report` | result `_meta` | the ordered record of every check, what it established and what it cost (see *Errors*) — attached to a refusal by the reference `VleiIdentity`, and to every protected call by `examples/skill-server/` |
+| `verkey` | request | **informational, never used for verification.** The reference `VleiClient` still sends the signer's current public key here; a verifier ignores it and reads the key state from the signer's key event log (see *Whose key, and who may sign*) |
+
 ### Errors
 
 **Protocol-level.** If a server requires the extension and the client did not declare it, the server
@@ -175,22 +231,48 @@ shape the client sends at `initialize`, so the answer reads as "declare this and
 than needing translation. This lets a client distinguish "I am missing a capability" from "my
 credential was rejected".
 
-**Tool-level.** A verification failure that occurs after the capability is present is returned as a
-tool result with `isError: true`, and the text MUST name the failure layer using one of:
+**Tool-level.** A refusal that occurs after the capability is present is returned as a tool result
+with `isError: true`, and the text MUST name the failure layer using one of:
 
 | Code | Meaning |
 |---|---|
-| `invalid_signature` | Signature does not verify under the presented AID's current key state |
+| `missing_credential` | The tool declares a requirement and the caller presented no credential, or no signature. Not a failure to verify but a failure to present: the caller's fix is to attach a credential, not to repair one |
 | `stale_signature` | `ts` outside the freshness window, or a replay |
 | `digest_mismatch` | `params` do not match the signed digest — arguments were altered after signing |
-| `chain_invalid` | Credential chain does not validate (LE → ECR linkage, schema, or KEL) |
+| `invalid_signature` | Signature does not verify under the signing AID's current key state from its key event log, the key state could not be established, or the signer is neither the holder nor delegated by them |
+| `chain_invalid` | The presented credential or its chain does not validate: an unreadable stream, a SAID that does not recompute, a broken link, an issuance not anchored in its issuer's key event log, a chain without the vLEI shape, a credential of a type other than the one the tool requires — or a live transaction event log that could not be read or records no issuance, which is revocation *not established* |
+| `unknown_root` | Chain terminates at a root not in `acceptedRoots` |
 | `revoked` | A credential in the chain is revoked |
 | `role_mismatch` | Presented ECR role does not satisfy the tool's declared `role` |
 | `scope_exceeded` | Request exceeds the tool's declared `scope` |
-| `unknown_root` | Chain terminates at a root not in `acceptedRoots` |
 
 Naming the layer is a requirement, not a convenience: the skill's recovery behavior differs per
-layer (retry, request a new credential, stop), and the demo depends on the layer being visible.
+layer (retry, request a new credential, stop), and the demo depends on the layer being visible. The
+reference implementation also puts the layer in `_meta["org.gleif.vlei/failure"]` for anything that
+parses rather than reads, and the full check record in `_meta["org.gleif.vlei/report"]`.
+
+**Order.** The reference implementation runs its checks in a fixed order and stops at the first
+failure (`packages/mcp-vlei/src/mcp_vlei/report.py::CHECK_ORDER`, executed by
+`extension.py::VleiIdentity._verify`). The report lists all eight, marking the ones after a failure
+as not reached:
+
+1. `credential_present` — a credential and a signature were presented → `missing_credential`; a
+   stream that cannot be read, or a `credentialSaid` that is not in it → `chain_invalid`
+2. `freshness` — `ts` inside the window → `stale_signature`
+3. `digest` — the arguments match what was signed → `digest_mismatch`
+4. `signature` — under the signer's current key state, read from a witness → `invalid_signature`;
+   the replay check follows it, and a replay is reported under `freshness` as `stale_signature`
+5. `delegation` — the signer is the holder, or delegated by them → `invalid_signature`
+6. `chain` — SAIDs, continuity, an accepted root, issuance, the vLEI shape, and the credential type
+   the tool requires → `chain_invalid` / `unknown_root`
+7. `revocation` — every link, from each issuer's live transaction event log (the default
+   `revocation_source="tel"`) → `revoked` (`chain_invalid` when not established)
+8. `authority` — role and scope → `role_mismatch` / `scope_exceeded`
+
+Checks 1–3 need nothing but the request, so a stale or altered call is refused before any witness is
+asked. Two checks read from a witness: `signature` (the signer's key event log) and `revocation`
+(each issuer's transaction event log). Revocation is therefore neither the only remote check nor the
+last one — `authority` follows it.
 
 ## Design Rationale
 
@@ -235,9 +317,12 @@ modern revision, and `ClientSession.initialize()` alone, which does not. A serve
 advertise nothing is, in our experience, usually a client that never got past the legacy handshake —
 check the negotiated revision before concluding the server is misconfigured.
 
-This is demonstrated, not merely asserted: `examples/` includes a test in which Claude Desktop — an
-unmodified host — connects to the reference server, lists tools, successfully calls the public tool,
-and is refused on the protected one.
+This is tested, not merely asserted, though not with a real host:
+`examples/association-server/tests/test_acceptance.py::test_5_unmodified_client_is_additive` stands
+in for an unmodified host with the MCP Python SDK's own `Client`, declaring no extensions. Against
+the live reference server it connects, lists tools, successfully calls the public tool, and is
+refused `missing_credential` on the protected one. Doing the same from Claude Desktop is a manual
+procedure in `examples/README.md`, not part of any test.
 
 ## Reference Implementation
 
@@ -265,9 +350,13 @@ and is refused on the protected one.
 4. **Revocation latency.** Verification results are cached per `ttlMs`. A revocation takes effect no
    later than cache expiry. Deployments handling high-value actions SHOULD set `ttlMs` to zero for
    the tools concerned.
-5. **Key custody.** The reference agent holds a delegated AID's private key on disk for
-   demonstrability. A production deployment SHOULD use Signify so that private keys remain on the
-   holder's device and the agent receives signatures rather than keys.
+5. **Key custody.** A production deployment SHOULD use Signify so that private keys remain on the
+   holder's device and the agent receives signatures rather than keys. The reference agent already
+   works this way: it never holds a private key, and signs through `kli sign` against the KERI
+   keystore (`examples/my-agent/kli_signer.py`, a `mcp_vlei.signing.CommandSigner`) — the Signify
+   arrangement, reached through a local command instead of a KERIA agent. The package can also load
+   a raw seed from a file (`Signer.from_key_store`), which puts the key in the agent's process; that
+   path is not what the reference agent uses.
 6. **Root of trust.** `acceptedRoots` is the whole of the trust decision. A verifier that accepts an
    arbitrary root accepts arbitrary identities. In production the root is GLEIF's; in this project's
    demo it is self-configured, and every artifact says so.

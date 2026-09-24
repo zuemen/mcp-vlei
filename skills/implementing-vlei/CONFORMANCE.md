@@ -21,7 +21,7 @@ sufficient to produce the right *structure*; the implementation's cryptography w
 stubbed, so it does not measure whether the skill is sufficient to produce a *secure* one. A skill
 that produced conforming structure and subtly wrong cryptography would pass this test.
 
-## Result: conforming on the first attempt, with nine specification gaps
+## Result: conforming on the first attempt, with ten specification gaps
 
 The server ran. It negotiated protocol 2026-07-28, advertised the capability with the right shape,
 served `/.well-known/vlei` without a session, declared the per-tool requirement in `Tool._meta`,
@@ -35,9 +35,10 @@ same sig again  -> stale_signature  (replay)
 
 So the headline is that the skill works. That is also the least interesting part of the result.
 
-## What the test actually bought: nine gaps, and one bug in our own code
+## What the test actually bought: ten gaps, and one bug in our own code
 
-The report named nine places where the skill was insufficient and the implementer had to guess.
+The report named ten places where the skill was insufficient and the implementer had to guess —
+eight in the table below, two of a different kind after it.
 Every one has been fixed in `SKILL.md`. They are recorded here because the list is the evidence, not
 the fix.
 
@@ -111,13 +112,37 @@ implementer said each of these changed what they would otherwise have written:
 
 ## Conclusion
 
-**One attempt, conforming structure, nine gaps found.** The skill was sufficient to produce a
-server that hits every failure layer in the right order — and insufficient in nine specific ways
+**One attempt, conforming structure, ten gaps found.** The skill was sufficient to produce a
+server that hits every failure layer in the right order — and insufficient in ten specific ways
 that only surfaced because someone had to build from it without the answer key.
 
 A skill that had passed cleanly would have told us less. What this establishes is not that the
-document is finished, but that it is now nine questions better than the version a reader would
+document is finished, but that it is now ten questions better than the version a reader would
 have received, and that the process which found them can be run again.
+
+## Second run, 2026-09-24: this time the cryptography was not stubbed
+
+The first run's limit was stated above: cryptography could be stubbed, so it measured structure, not
+security. After the repository's own verifier was found to check request signatures under a key the
+request carried (`docs/CONFORMANCE.md`, *The defect that every green test missed*), the skill was
+rewritten around key state, delegation and issuance — and the experiment was run again, with no
+stubs. The result is `examples/skill-server/`, and it is the server scene 5 of the recording calls.
+
+- **Written from the skill alone** (plus the `mcp` SDK and the public API of the `mcp_vlei`
+  components the skill names; `extension.py` and `client.py` were off limits). 31 tests, including
+  the one the skill now insists on — someone else's credential signed with your own key — and
+  mutation tests of the checks the skill calls the security of the whole extension.
+- **It found a hole in the reference implementation.** Nothing tied the LEI an ECR names to a legal
+  entity: a QVI could issue an ECR straight off its own QVI credential, and an LE could issue one for
+  another entity's LEI, with every issuance anchored and every SAID recomputing. The implementer
+  added a rule for it; the package now has the same rule (`chain.verify_vlei_chain`), and the skill
+  states it as check 9.
+- **It found contradictions in the rewritten skill**: component-to-check mappings that did not match
+  the check order, a component that raised a different layer than the table said, two references to
+  "check 1" that meant the SAID check, a key table that was incomplete, and scope described two ways.
+  All are fixed in `SKILL.md`.
+- **It runs live.** Against the rebuilt witness network and a real `kli` chain, it verifies the
+  agent's `kli sign`-signed call and allows it — all eight report rows passing, in its own process.
 
 ### Reproducing it
 

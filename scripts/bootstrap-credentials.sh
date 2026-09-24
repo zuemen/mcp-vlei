@@ -18,6 +18,10 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Machine-local overrides (gitignored), e.g. witness host ports when Windows has reserved 5642-5644.
+# `docker compose` reads the same file, so the scripts and the containers agree on the ports.
+[[ -f "${HERE}/.env" ]] && { set -a; . "${HERE}/.env"; set +a; }
+WITNESS_URL="${VLEI_WITNESS_URL:-http://localhost:5642}"
 ROOT_DIR="$(cd "${HERE}/.." && pwd)"
 
 # Git Bash on Windows rewrites anything that looks like a POSIX path before handing it to a native
@@ -57,7 +61,9 @@ PARTIES=(root qvi le ecr)
 c_reset=$'\033[0m'; c_ok=$'\033[32m'; c_bad=$'\033[31m'; c_hi=$'\033[36m'; c_dim=$'\033[90m'
 step()  { printf '\n%s==> %s%s\n' "$c_hi" "$*" "$c_reset"; }
 ok()    { printf '%s  ok%s  %s\n' "$c_ok" "$c_reset" "$*"; }
-fail()  { printf '%s fail%s %s\n' "$c_bad" "$c_reset" "$*"; exit 1; }
+# To stderr: `fail` runs inside `$(issue …)`, where stdout is the captured value. On stdout the
+# message was swallowed and the script stopped with no explanation.
+fail()  { printf '%s fail%s %s\n' "$c_bad" "$c_reset" "$*" >&2; exit 1; }
 note()  { printf '%s      %s%s\n' "$c_dim" "$*" "$c_reset"; }
 
 kli() { MSYS_NO_PATHCONV=1 $COMPOSE exec -T keri-cli kli "$@"; }
@@ -82,11 +88,11 @@ bring_up() {
   $COMPOSE up -d
 
   local tries=0
-  until curl -fsS "http://localhost:5642/oobi" >/dev/null 2>&1; do
-    tries=$((tries+1)); [[ $tries -gt 40 ]] && fail "witness network did not come up on :5642"
+  until curl -fsS "${WITNESS_URL}/oobi" >/dev/null 2>&1; do
+    tries=$((tries+1)); [[ $tries -gt 40 ]] && fail "witness network did not come up on ${WITNESS_URL}"
     sleep 2
   done
-  ok "witnesses wan/wil/wes up on 5642-5644"
+  ok "witnesses wan/wil/wes up (${WITNESS_URL})"
 
   tries=0
   until curl -fsS "http://localhost:7723/oobi/${SCHEMA_QVI}" >/dev/null 2>&1; do
@@ -357,12 +363,18 @@ issue() {
   # `kli vc create` keeps its plain invocation: redirecting its output to a file, or capturing
   # it with `$( )`, makes the run hang — it leaves a background doer holding the stream open.
   #
-  # The SAID is therefore read back from the issuer's list, which is correct here because each
-  # issuer issues exactly one credential. An issuer that issued two would need the list diffed
-  # around the call.
-  local said
+  # The SAID is therefore read back from the issuer's list — as the one entry that was not there
+  # before the call. `tail -1` was not enough: the list is ordered by SAID, not by issuance, so a
+  # re-issue (the LE's second and third ECR) returned whichever SAID sorted last — once, the
+  # credential that had just been revoked — and granted that one to the holder again.
+  local said before after
+  before="$(kli vc list --name "$issuer" --alias "$issuer" --issued --said | tr -d '\r')"
   kli "${args[@]}" >/dev/null
-  said="$(kli vc list --name "$issuer" --alias "$issuer" --issued --said | tail -1 | tr -d '\r\n')"
+  after="$(kli vc list --name "$issuer" --alias "$issuer" --issued --said | tr -d '\r')"
+  said="$(printf '%s\n' "$after" | grep -vxF -f <(printf '%s\n' "$before" | grep .) | grep . || true)"
+  if [[ "$(printf '%s' "$said" | grep -c .)" -gt 1 ]]; then
+    fail "issuing from ${issuer} added more than one credential: ${said//$'\n'/ }"
+  fi
   # An empty SAID means `vc create` failed. Stopping here is the whole point: the next steps would
   # otherwise run against an empty identifier and report success on nothing.
   [[ -n "$said" ]] || fail "issuing from ${issuer} produced no credential.
@@ -614,6 +626,13 @@ reissue_ecr() {
 
 # ---------------------------------------------------------------------------------------------
 main() {
+  if [[ "${1:-}" == "--reissue" ]]; then
+    # After a revocation — scene 3 of the recording, or acceptance check 5 — issue the holder a
+    # fresh ECR and export it, without re-running anything else.
+    reissue_ecr
+    step "Done"
+    return
+  fi
   if [[ "${1:-}" == "--verify" ]]; then
     verify_all
   else

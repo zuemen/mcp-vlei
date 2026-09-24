@@ -34,6 +34,14 @@ CREDENTIALS = ROOT / "credentials"
 DASHBOARD = Path(__file__).parent / "dashboard"
 ENV = json.loads((CREDENTIALS / "env.json").read_text()) if (CREDENTIALS / "env.json").exists() else {}
 
+# Machine-local ports (gitignored) — the same file the scripts and docker compose read.
+_LOCAL = ROOT / "scripts" / ".env"
+if _LOCAL.is_file():
+    for _line in _LOCAL.read_text(encoding="utf-8").splitlines():
+        if _line.strip() and not _line.lstrip().startswith("#") and "=" in _line:
+            _key, _value = _line.split("=", 1)
+            os.environ.setdefault(_key.strip(), _value.strip())
+
 VERIFIER_URL = os.environ.get("VLEI_VERIFIER_URL", ENV.get("verifierUrl", "http://localhost:7676"))
 ACCEPTED_ROOTS = ENV.get("acceptedRoots") or [os.environ["VLEI_ROOT_AID"]]
 PUBLIC_URL = os.environ.get("PUBLIC_URL", "http://localhost:8080")
@@ -173,4 +181,10 @@ if __name__ == "__main__":
     print(f"  revocation via: {WITNESS_URL} (transaction event log)")
     print(f"  accepted roots: {ACCEPTED_ROOTS}")
     print(f"  dashboard:      {PUBLIC_URL}/dashboard/")
-    uvicorn.run(mcp.streamable_http_app(), host="0.0.0.0", port=int(os.environ.get("PORT", "8080")))
+    # Loopback by default: `/api/revoke` withdraws a credential and has no authentication of its own —
+    # it is a demo control, and on 0.0.0.0 it was reachable from the network the laptop was on.
+    uvicorn.run(
+        mcp.streamable_http_app(),
+        host=os.environ.get("HOST", "127.0.0.1"),
+        port=int(os.environ.get("PORT", "8080")),
+    )

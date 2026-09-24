@@ -4,7 +4,9 @@
     "a missing capability is a configuration problem reported as a JSON-RPC error, while a",
     "rejected credential is a tool result. Collapsing them tells the caller to fix the wrong thing.",
     "Every rejection names its layer, because the correct recovery differs per layer and an agent",
-    "that receives only 'access denied' cannot choose one."
+    "that receives only 'access denied' cannot choose one. 'layers' lists all nine in the order of the",
+    "check that raises each: credential_present, freshness, digest, signature, delegation, chain,",
+    "revocation, authority."
   ],
 
   "missing_capability": {
@@ -38,7 +40,9 @@
     "$comment": [
       "The extension was declared, a credential was presented, and a named check stopped the call.",
       "The layer appears first and unadorned in the text so a model can key off it without",
-      "heuristics, and again in _meta for anything that parses rather than reads."
+      "heuristics, and again in _meta['org.gleif.vlei/failure'] for anything that parses rather than",
+      "reads. _meta['org.gleif.vlei/report'] carries every check in the order it runs: six passed,",
+      "revocation stopped the call, and authority — which comes after revocation — was not reached."
     ],
     "jsonrpc": "2.0",
     "id": 8,
@@ -51,12 +55,35 @@
       ],
       "isError": true,
       "_meta": {
-        "org.gleif.vlei/failureLayer": "revoked",
         "org.gleif.vlei/failure": {
           "layer": "revoked",
           "message": "the credential has been revoked in the issuer's transaction event log",
           "aid": "EHLragWzyPdQ_JFPHAQXn3IqdeQaVRRqy_iDvMXYwqz4",
           "credentialSaid": "EM3weUShBeSCTj7iyoWibnx5OTNq2QhEVsySsjA63qbJ"
+        },
+        "org.gleif.vlei/report": {
+          "tool": "register_member",
+          "allowed": false,
+          "layer": "revoked",
+          "totalMs": 41.6,
+          "identity": {
+            "lei": "984500ABCDEF12345678",
+            "role": "member-registration",
+            "credentialSaid": "EM3weUShBeSCTj7iyoWibnx5OTNq2QhEVsySsjA63qbJ",
+            "holderAid": "EHLragWzyPdQ_JFPHAQXn3IqdeQaVRRqy_iDvMXYwqz4",
+            "delegateAid": "EFn3RtYqXmLdW5oJbP2TvNcUiSpRyEg7ZhKa4QsMxVwB"
+          },
+          "caveats": [],
+          "checks": [
+            {"name": "credential_present", "label": "credential presented", "passed": true, "skipped": false, "durationMs": 0.4, "layer": null, "detail": ""},
+            {"name": "freshness", "label": "signature is fresh", "passed": true, "skipped": false, "durationMs": 9.8, "layer": null, "detail": ""},
+            {"name": "digest", "label": "arguments match the signed digest", "passed": true, "skipped": false, "durationMs": 9.8, "layer": null, "detail": ""},
+            {"name": "signature", "label": "signature verifies", "passed": true, "skipped": false, "durationMs": 9.8, "layer": null, "detail": "under the current key state of EFn3RtYqXmLdW5oJbP2TvNcUiSpRyEg7ZhKa4QsMxVwB (key event log at sn 0)"},
+            {"name": "delegation", "label": "acting identifier is authorized", "passed": true, "skipped": false, "durationMs": 0.1, "layer": null, "detail": "delegated AID EFn3RtYqXmLdW5oJbP2TvNcUiSpRyEg7ZhKa4QsMxVwB, anchored in the holder's key event log"},
+            {"name": "chain", "label": "credential chain reaches an accepted root", "passed": true, "skipped": false, "durationMs": 4.2, "layer": null, "detail": "root EHJ2kA8vQZ4Yd3mRr7TcN1sWpLxFbGuV9oKqDzXnA5eM; each issuance anchored in its issuer's key event log"},
+            {"name": "revocation", "label": "credential is not revoked", "passed": false, "skipped": false, "durationMs": 7.5, "layer": "revoked", "detail": "the credential has been revoked in the issuer's transaction event log"},
+            {"name": "authority", "label": "role and scope cover this tool", "passed": null, "skipped": false, "durationMs": 0.0, "layer": null, "detail": ""}
+          ]
         }
       }
     }
@@ -83,27 +110,27 @@
     },
     {
       "layer": "invalid_signature",
-      "when": "The signature does not verify under the presented AID's current key state.",
-      "retry": "No. Either the wrong key signed, or the key state has moved on. Both are configuration.",
-      "text": "invalid_signature: signature does not verify under the presented key state"
+      "when": "The signature does not verify under the signing AID's current key state, read from its key event log at a witness (never from the request); or that key state could not be established; or the AID that signed is neither the credential's holder nor delegated by the holder in the holder's key event log. A key sent along in the request (org.gleif.vlei/verkey) is ignored.",
+      "retry": "No. A key rotated away, a signer who is not the holder or their delegate, or a key state that could not be read from the witness does not change on retry — and signing again with a different key is exactly what this layer exists to refuse. Report which of the three the message names.",
+      "text": "invalid_signature: signature does not verify under the signer's current key state"
     },
     {
       "layer": "chain_invalid",
-      "when": "A SAID does not recompute, an edge points at a credential that was not presented, a link's issuer is not the previous link's issuee, or a revocation source could not be read at all.",
-      "retry": "No. Report it as a credential-configuration problem. Note the last case: an unreadable log is a failure to establish revocation, never an absence of it.",
-      "text": "chain_invalid: credential EM3weU… does not hash to its own SAID; its contents were altered"
+      "when": "The presented stream cannot be read; a SAID does not recompute; an edge points at a credential that was not presented; a link's issuer is not the previous link's issuee; an issuance is not anchored in its issuer's key event log; the chain lacks the vLEI shape (an ECR under an LE naming the same LEI, the LE under a QVI); the credential is not the type the tool requires; or an issuer's transaction event log could not be read or records no issuance.",
+      "retry": "No. Report it as a credential-configuration problem. Note the last case: an unreadable or silent log is a failure to establish revocation, never an absence of it.",
+      "text": "chain_invalid: credential EM3weU… does not hash to its own SAID (recomputed EK9x…) — its contents were altered"
+    },
+    {
+      "layer": "unknown_root",
+      "when": "The chain is internally sound but terminates at a root the relying party does not accept.",
+      "retry": "No. Nothing is wrong with the credential and nothing is wrong with the server: two organizations disagree about whom they trust, and only they can resolve it. Report which root you chain to.",
+      "text": "unknown_root: the chain ends at EQvi…, issued by EOther…, which is not an accepted root"
     },
     {
       "layer": "revoked",
       "when": "A credential in the chain has been withdrawn in its issuer's transaction event log.",
       "retry": "No, and not with a different credential either. The entity withdrew this authority; a new credential must be issued.",
       "text": "revoked: the credential has been revoked in the issuer's transaction event log"
-    },
-    {
-      "layer": "unknown_root",
-      "when": "The chain is internally sound but terminates at a root the relying party does not accept.",
-      "retry": "No. Nothing is wrong with the credential and nothing is wrong with the server: two organizations disagree about whom they trust, and only they can resolve it. Report which root you chain to.",
-      "text": "unknown_root: chain terminates at EOther…, which is not an accepted root"
     },
     {
       "layer": "role_mismatch",

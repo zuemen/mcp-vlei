@@ -27,3 +27,24 @@ jobs:
         run: pytest packages/mcp-vlei/tests -q
       - name: The package ships its type marker
         run: python -c "import importlib.resources as r, mcp_vlei; assert (r.files(mcp_vlei) / 'py.typed').is_file()"
+
+  examples:
+    # Everything in examples/ that runs without containers. The acceptance suite was once
+    # unimportable for eleven commits because nothing here ever parsed it.
+    name: examples (no containers)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -e "packages/mcp-vlei[dev]" fastapi anyio
+      - name: Every example and script parses
+        run: python -m compileall -q examples scripts packages
+      - name: Console
+        run: pytest examples/console/tests -q
+      - name: Gateway (vlei-authz, filing server)
+        run: pytest examples/regulator/tests -q
+      - name: Server written from the skill
+        run: pytest examples/skill-server/tests -q

@@ -24,14 +24,15 @@ follow. Put the security properties here.
 
 MCP verifies domains (TLS, OAuth `iss`, `client_id`) and users (OAuth `sub`). It
 does not express a legal entity, and `clientInfo` is self-asserted — the
-specification says not to rely on it. This extension adds four namespaced keys to
+specification says not to rely on it. This extension adds namespaced keys to
 fields MCP already provides. **The core schema is not modified.**
 
 | Where | Key | Carries |
 |---|---|---|
 | `extensions` | `org.gleif.vlei/identity` | capability declaration |
 | request / result `_meta` | `org.gleif.vlei/credential` | CESR-encoded ACDC — LE for servers, ECR for agents |
-| request `_meta` | `org.gleif.vlei/delegatedAid` | the agent's delegated AID |
+| request `_meta` | `org.gleif.vlei/delegatedAid` | the agent's delegated AID; optional, and when present it must equal `signature.aid` |
+| request `_meta` | `org.gleif.vlei/credentialSaid` | which credential in the presented stream is the one being presented; optional — without it, the leaf |
 | request `_meta` | `org.gleif.vlei/signature` | single-pass signature over the request |
 | request / result `_meta` | `org.gleif.vlei/attestation` | a third party's signed verification result |
 | `Tool._meta` | `org.gleif.vlei/requires` | credential, role and scope this tool requires |
@@ -160,22 +161,70 @@ Stop at the first failure and report its layer.
 | # | Check | Failure layer |
 |---|---|---|
 | 0 | A credential and a signature were presented at all | `missing_credential` |
-| 1 | Every credential in the chain hashes to its own SAID | `chain_invalid` |
-| 2 | Each link's issuer is the previous link's issuee | `chain_invalid` |
-| 3 | The chain terminates at a root you accept | `unknown_root` |
-| 4 | `ts` within the freshness window, signature not seen before | `stale_signature` |
-| 5 | `digest` matches the received parameters | `digest_mismatch` |
-| 6 | Signature verifies against the signing AID's key | `invalid_signature` |
-| 7 | No credential in the chain is revoked | `revoked` |
-| 8 | Role satisfies the tool's requirement; request satisfies its scope | `role_mismatch` / `scope_exceeded` |
+| 1 | `ts` within the freshness window | `stale_signature` |
+| 2 | `digest` matches the received parameters | `digest_mismatch` |
+| 3 | Signature verifies under the **signing AID's current key state, read from its key event log at a witness** — never under a key the request carries | `invalid_signature` |
+| 4 | Signature not seen before — recorded **only after** check 3 passed | `stale_signature` |
+| 5 | The signing AID **is** the credential's issuee, or is **delegated by** the issuee in the issuee's own key event log | `invalid_signature` |
+| 6 | Every credential hashes to its own SAID, and each link's issuer is the previous link's issuee | `chain_invalid` |
+| 7 | The chain terminates at a root you accept | `unknown_root` |
+| 8 | Every credential's issuance is **anchored in its issuer's key event log** | `chain_invalid` |
+| 9 | The chain has the vLEI shape: each edge points at a credential of the schema it declares; an ECR or OOR is issued under an LE credential **naming the same LEI**; an LE credential is issued under a QVI credential | `chain_invalid` |
+| 10 | The leaf's schema is the type the tool requires | `chain_invalid` |
+| 11 | For **every** credential in the chain, the issuer's live transaction event log records its issuance and no revocation | `revoked` (`chain_invalid` if the log has no issuance) |
+| 12 | The credential's role is the tool's `role`; the credential's `scope` covers the tool's declared `scope` | `role_mismatch` / `scope_exceeded` |
 
-**Everything local before the one remote check.** Checks 1–6 are decided from the request itself;
-only revocation requires asking anyone. Ordering it last means a verification service that is slow
-or down degrades one specific check instead of every check — which is not a theoretical benefit: it
-is the difference between a tampered-arguments test that reports `digest_mismatch` and one that
-reports a connection error.
+**Decide from the request first, then ask.** Checks 1 and 2 need nothing but the request, so a
+stale or altered call is refused without a round trip; check 3 onwards needs the signer's key
+event log. Ordering matters for the report as much as for cost: a tampered-arguments test must
+report `digest_mismatch`, not a connection error to a witness.
 
-**How to recompute a SAID** (check 1), because the whole check rests on getting this exact:
+**Checks 3, 5, 8 and 9 are the security of the whole extension. Get them exactly right.**
+
+- **Where the key comes from (check 3).** Fetch the signing AID's key event log from a witness —
+  `GET <witness>/query?typ=kel&pre=<aid>` on a keripy witness — and verify it: the inception's SAID
+  is the prefix, every event's SAID recomputes, each event names the previous one, each is signed
+  by the keys current at that point, each carries witness receipts up to its threshold, and every
+  rotation reveals keys the previous establishment event committed to. The current keys are the
+  last establishment event's `k`. **Never verify under a key the request carries** — whoever sends
+  a call would then choose the key it is checked against, and any credential anyone has ever been
+  shown could be presented as theirs. A request whose signature cannot be checked is refused;
+  there is no "skipped".
+- **Who may sign (check 5).** A credential is sent with every call, so every server a holder has
+  ever called has a copy. What makes a presentation the holder's is that the signer is the holder
+  — or an AID whose inception is a `dip` naming the holder in `di`, **and** whose inception the
+  holder's own key event log anchors with a seal `{"i": <agent AID>, "s": "0", "d": <dip SAID>}`.
+  Claiming a delegator is not being delegated.
+- **Who issued it (check 8).** A SAID proves a credential was not altered; it does not prove who
+  made it. Anyone can write an ECR naming a real LE as issuer and themselves as issuee, and every
+  SAID recomputes. The credential's `ri` names a registry; that registry's `vcp` must name the
+  credential's issuer in `ii`; the `iss` event for the credential must be in that registry; and the
+  issuer's key event log must anchor both (`{"i": <registry>, "s": "0", "d": <vcp SAID>}` and
+  `{"i": <credential SAID>, "s": "0", "d": <iss SAID>}`). A `kli vc export --full` stream carries
+  the issuers' logs, the registry events and the credentials together, so this is decidable from the
+  presented stream.
+- **Whose LEI (check 9).** Issuance proves each credential was made by the identifier it names; it
+  does not prove the chain means what the leaf claims. A QVI can issue an ECR straight off its own
+  QVI credential — no legal entity anywhere, any LEI it cares to write — and an LE can issue an ECR
+  naming another entity's LEI. Every issuance anchors, every SAID recomputes. So an ECR or OOR must
+  be issued under an LE credential (`s` = `ENPXp1vQzRF6JwIuS-mp2U8Uf1MoADoP_GqQ62VsDZWY`) whose
+  `a.LEI` equals the ECR's, that LE credential under a QVI credential
+  (`EBfdlu8R27Fbx-ehrqwImnK-8Cm79sqbAQ4MmvEAYqao`), and every edge's `s` must equal the schema of
+  the credential it points at.
+- **Revocation covers the chain (check 11).** An ECR under a withdrawn LE is withdrawn authority. Ask
+  the live log about every link, and read "this log has no issuance" as *not established*, never as
+  *not revoked*.
+
+In Python, `mcp_vlei` has each of these as a function you can call rather than rewrite:
+`mcp_vlei.kel.WitnessKeyStates` (check 3, and the delegation in check 5 — it raises `ChainInvalid`
+when a log cannot be read or does not verify; a server reports that as `invalid_signature`, because
+the signature was not checked), `mcp_vlei.signing.precheck_request` / `verify_request` (checks 1–4),
+`mcp_vlei.verifier.OfflineVerifier` (checks 6–9, in that order; check 10 is yours),
+`mcp_vlei.revocation.TelRevocationChecker` (check 11). In another language, use a KERI library
+(keripy, Signify, keriox) for the key event log rather than writing one; the rules above are what
+it must enforce.
+
+**How to recompute a SAID** (check 6), because the whole check rests on getting this exact:
 
 > Take the credential's bytes **as they arrived**. Replace the 44-character value of its `d` field
 > with 44 `#` characters — same length, so the `v` field's encoded size stays true. Blake3-256 over
@@ -193,7 +242,7 @@ SAID an edge points at.
 The published vLEI schema SAIDs are stable; an ECR is
 `EEy9PkikFcANV1l7EHukCeXqrzT1hNZjGlUk7wuMO5jw`.
 
-Note what check 1 buys you without any key at all. The SAID is a digest over the credential's
+Note what check 6 buys you without any key at all. The SAID is a digest over the credential's
 content, so altering any field breaks it. A relying party can detect tampering before it has
 established anything about who issued what.
 
@@ -306,6 +355,15 @@ AID the credential was issued to**. A relying party cannot present someone
 else's credential on their behalf. It reads back what the holder established, via
 `GET /authorizations/{aid}`. GLEIF's regulatory filing pilot works the same way.
 
+### Never verify a signature under a key the request supplied
+
+The most damaging mistake this repository made, and it shipped with every test green. The request
+carried the signer's public key, the server verified under it, and a request with no key skipped
+the check. The credential in a request is not a secret — it is sent to every server the holder
+calls — so anyone who had seen one could sign with their own key and be accepted as its holder.
+The tests passed because they only ever signed with the right key. Write the test that signs
+someone else's credential with a key of your own, and watch it fail before you believe the check.
+
 ### Ask about the issuee, not the signer
 
 The agent signs with its **delegated AID**; the credential was issued to the
@@ -390,8 +448,14 @@ A server is conformant when all of these hold:
 - [ ] Declares `org.gleif.vlei/identity` in `capabilities.extensions`
 - [ ] Publishes its LE credential at `discovery.wellKnown`, reachable without a session
 - [ ] Declares `org.gleif.vlei/requires` on every protected tool
-- [ ] Runs checks 0–8 in order, stopping at the first failure, local checks before the remote one
-- [ ] Establishes revocation from the issuer's log, and refuses when it cannot
+- [ ] Runs checks 0–12 in order, stopping at the first failure
+- [ ] Verifies request signatures under the signer's key state **from its key event log**, never
+      under a key the request carries, and refuses a request whose signature cannot be checked
+- [ ] Accepts a signer only if it is the issuee or delegated by the issuee in the issuee's log
+- [ ] Establishes that every credential was issued by the identifier it names (issuer's log anchors it)
+- [ ] Refuses an ECR or OOR that is not issued under an LE credential naming the same LEI
+- [ ] Establishes revocation for **every** credential in the chain from the issuers' live logs, and
+      refuses when it cannot
 - [ ] Returns `-32021` when the extension is required but was not declared
 - [ ] Returns `isError: true` with the failing layer named otherwise
 - [ ] **Serves unprotected tools normally to clients that do not support the extension**

@@ -24,7 +24,7 @@ import math
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Sequence
 
 from cryptography.exceptions import InvalidSignature as _CryptoInvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
@@ -39,6 +39,7 @@ __all__ = [
     "digest_params",
     "sign_request",
     "verify_request",
+    "precheck_request",
     "ReplayCache",
     "Signer",
     "CommandSigner",
@@ -301,47 +302,36 @@ def sign_request(
 
 def _parse_ts(ts: str) -> datetime:
     try:
-        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
-    except ValueError as exc:
+        parsed = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except (ValueError, AttributeError, TypeError) as exc:
         raise StaleSignature(f"timestamp is not RFC 3339: {ts!r}") from exc
+    if parsed.tzinfo is None:
+        # RFC 3339 requires an offset. Without one, "how old is this" has no answer — and comparing
+        # it would raise instead of naming a layer.
+        raise StaleSignature(f"timestamp carries no time zone: {ts!r}")
+    return parsed
 
 
-def verify_request(
-    signature: dict[str, Any],
-    method: str,
-    params: dict[str, Any] | None,
-    verkey: str,
-    *,
-    freshness_seconds: int = DEFAULT_FRESHNESS_SECONDS,
-    replay_cache: ReplayCache | None = None,
-    now: datetime | None = None,
-) -> None:
-    """Verify a request signature, raising the exception for the layer that failed.
-
-    Checked in this order, because each check makes the next one meaningful:
-
-    1. freshness  -> ``stale_signature``
-    2. replay     -> ``stale_signature``
-    3. digest     -> ``digest_mismatch``
-    4. signature  -> ``invalid_signature``
-
-    The digest is compared before the signature so that an altered-argument attack is reported as
-    ``digest_mismatch`` rather than as a generic signature failure. The two are operationally
-    different: one is tampering in transit, the other is a key-state problem.
-    """
-    aid = signature.get("aid", "")
-    ts = signature.get("ts", "")
-    claimed_digest = signature.get("digest", "")
-    sig = signature.get("sig", "")
-
-    if not (aid and ts and claimed_digest and sig):
-        raise InvalidSignature("signature object is missing aid, ts, digest or sig", aid=aid or None)
-
+def _fields(signature: Any) -> tuple[str, str, str, str]:
+    if not isinstance(signature, dict):
+        raise InvalidSignature("the signature is not an object")
+    aid, ts = signature.get("aid", ""), signature.get("ts", "")
+    claimed_digest, sig = signature.get("digest", ""), signature.get("sig", "")
+    if not all(isinstance(v, str) and v for v in (aid, ts, claimed_digest, sig)):
+        raise InvalidSignature(
+            "signature object is missing aid, ts, digest or sig",
+            aid=aid if isinstance(aid, str) and aid else None,
+        )
     alg = signature.get("alg", "Ed25519")
     if alg != "Ed25519":
         raise InvalidSignature(f"unsupported signature algorithm {alg!r}", aid=aid)
+    return aid, ts, claimed_digest, sig
 
-    # 1. freshness
+
+def _check_fresh_and_digest(
+    aid: str, ts: str, claimed_digest: str, params: dict[str, Any] | None,
+    freshness_seconds: int, now: datetime | None,
+) -> None:
     now = now or datetime.now(timezone.utc)
     skew = abs(now - _parse_ts(ts))
     if skew > timedelta(seconds=freshness_seconds):
@@ -350,30 +340,84 @@ def verify_request(
             f"outside the {freshness_seconds}s freshness window",
             aid=aid,
         )
-
-    # 2. replay
-    if replay_cache is not None:
-        replay_cache.check_and_record(aid, claimed_digest, ts)
-
-    # 3. digest — arguments must match what was signed
-    actual_digest = digest_params(params)
-    if actual_digest != claimed_digest:
+    if digest_params(params) != claimed_digest:
         raise DigestMismatch(
             "request arguments do not match the signed digest; "
             "they were altered after signing",
             aid=aid,
         )
 
-    # 4. signature
+
+def precheck_request(
+    signature: Any,
+    params: dict[str, Any] | None,
+    *,
+    freshness_seconds: int = DEFAULT_FRESHNESS_SECONDS,
+    now: datetime | None = None,
+) -> None:
+    """The checks that need nothing but the request: shape, freshness and digest.
+
+    A verifier runs these before it fetches the signer's key state, so a stale or altered call is
+    refused without a round trip to a witness. :func:`verify_request` repeats them; they are cheap.
+    """
+    aid, ts, claimed_digest, _ = _fields(signature)
+    _check_fresh_and_digest(aid, ts, claimed_digest, params, freshness_seconds, now)
+
+
+def verify_request(
+    signature: Any,
+    method: str,
+    params: dict[str, Any] | None,
+    verkey: str | Sequence[str],
+    *,
+    freshness_seconds: int = DEFAULT_FRESHNESS_SECONDS,
+    replay_cache: ReplayCache | None = None,
+    now: datetime | None = None,
+) -> None:
+    """Verify a request signature, raising the exception for the layer that failed.
+
+    ``verkey`` is the signer's **current key state** — one key or the list a key event log
+    establishes. It must never come from the request being verified: whoever sends a call would
+    then choose the key it is checked against. :class:`mcp_vlei.kel.WitnessKeyStates` is where a
+    relying party gets it.
+
+    Checked in this order, because each check makes the next one meaningful:
+
+    1. freshness  -> ``stale_signature``
+    2. digest     -> ``digest_mismatch``
+    3. signature  -> ``invalid_signature``
+    4. replay     -> ``stale_signature``
+
+    The digest is compared before the signature so that an altered-argument attack is reported as
+    ``digest_mismatch`` rather than as a generic signature failure. The two are operationally
+    different: one is tampering in transit, the other is a key-state problem.
+
+    Replay is recorded **last**, once the signature has verified. Recording it earlier would let
+    anyone who can guess the (AID, digest, timestamp) of a call about to be made burn it first with
+    a signature that does not verify — and let unauthenticated traffic grow the cache.
+    """
+    aid, ts, claimed_digest, sig = _fields(signature)
+    _check_fresh_and_digest(aid, ts, claimed_digest, params, freshness_seconds, now)
+
+    keys = [verkey] if isinstance(verkey, str) else list(verkey)
     try:
-        Ed25519PublicKey.from_public_bytes(cesr_decode_verkey(verkey)).verify(
-            cesr_decode_signature(sig),
-            signed_payload(method, ts, claimed_digest),
-        )
-    except _CryptoInvalidSignature as exc:
+        raw_signature = cesr_decode_signature(sig)
+    except (ValueError, TypeError) as exc:  # binascii.Error is a ValueError
+        raise InvalidSignature(f"signature is not valid CESR: {exc}", aid=aid) from exc
+    payload = signed_payload(method, ts, claimed_digest)
+    for key in keys:
+        try:
+            Ed25519PublicKey.from_public_bytes(cesr_decode_verkey(key)).verify(raw_signature, payload)
+            break
+        except _CryptoInvalidSignature:
+            continue
+    else:
         raise InvalidSignature(
-            "signature does not verify under the presented key state", aid=aid
-        ) from exc
+            "signature does not verify under the signer's current key state", aid=aid
+        )
+
+    if replay_cache is not None:
+        replay_cache.check_and_record(aid, claimed_digest, ts)
 
 
 def scope_satisfied(required: dict[str, Any] | None, held: dict[str, Any] | None) -> tuple[bool, str]:
@@ -398,11 +442,19 @@ def scope_satisfied(required: dict[str, Any] | None, held: dict[str, Any] | None
             return False, f"credential carries no {key!r}"
         have = held[key]
         if isinstance(want, (int, float)) and not isinstance(want, bool):
-            if not isinstance(have, (int, float)) or have < want:
-                return False, f"{key}: requires at least {want}, credential carries {have}"
+            if isinstance(have, bool) or not isinstance(have, (int, float)) or have < want:
+                return False, f"{key}: requires at least {want}, credential carries {have!r}"
         elif isinstance(want, (list, tuple, set)):
-            if not set(want).issubset(set(have if isinstance(have, Iterable) else [have])):
-                return False, f"{key}: credential does not cover {sorted(set(want) - set(have))}"
+            # Only a list covers a list. A string is iterable, and reading "TW" as {"T", "W"} once
+            # let a held string satisfy any requirement made of its letters.
+            if not isinstance(have, (list, tuple, set)):
+                return False, f"{key}: requires a list, credential carries {have!r}"
+            try:
+                missing = set(want) - set(have)
+            except TypeError:
+                return False, f"{key}: cannot compare {have!r} with {want!r}"
+            if missing:
+                return False, f"{key}: credential does not cover {sorted(map(str, missing))}"
         elif have != want:
             return False, f"{key}: requires {want!r}, credential carries {have!r}"
     return True, ""

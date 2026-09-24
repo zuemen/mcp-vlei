@@ -26,16 +26,26 @@ from mcp.server.extension import CallNext, Extension, HandlerResult, ToolBinding
 from mcp.server.context import ServerRequestContext
 from mcp.types import CallToolRequestParams, CallToolResult, TextContent
 
+from .chain import VLEI_SCHEMAS, Acdc, parse_stream
 from .errors import (
+    ChainInvalid,
+    InvalidSignature,
     MissingCredential,
     RoleMismatch,
     ScopeExceeded,
     VleiError,
 )
-from .signing import DEFAULT_FRESHNESS_SECONDS, ReplayCache, scope_satisfied, verify_request
+from .kel import KeyState, WitnessKeyStates
+from .signing import (
+    DEFAULT_FRESHNESS_SECONDS,
+    ReplayCache,
+    precheck_request,
+    scope_satisfied,
+    verify_request,
+)
 from .report import VerificationReport
 from .revocation import TelRevocationChecker
-from .verifier import OfflineVerifier, VerificationResult, VleiVerifier
+from .verifier import OfflineVerifier, VerificationResult, VleiVerifier, _last_in_chain
 
 EXTENSION_ID = "org.gleif.vlei/identity"
 META_CREDENTIAL = "org.gleif.vlei/credential"
@@ -45,6 +55,12 @@ META_ATTESTATION = "org.gleif.vlei/attestation"
 META_REQUIRES = "org.gleif.vlei/requires"
 META_FAILURE = "org.gleif.vlei/failure"
 META_REPORT = "org.gleif.vlei/report"
+META_CREDENTIAL_SAID = "org.gleif.vlei/credentialSaid"
+
+#: Credential type -> the WebOfTrust/vLEI schema SAID it must carry. A tool's `requires.credential`
+#: is checked against the presented credential's `s`, because anything else — the role attribute,
+#: the position in the stream — is a claim the credential's author chose.
+CREDENTIAL_SCHEMAS = VLEI_SCHEMAS
 
 __all__ = ["VleiIdentity", "EXTENSION_ID"]
 
@@ -69,6 +85,7 @@ class VleiIdentity(Extension):
         witness_url: str = "",
         requirements: dict[str, dict[str, Any]] | None = None,
         on_decision: Callable[[dict[str, Any]], None] | None = None,
+        witness_client: Any = None,
     ) -> None:
         self.le_credential = Path(le_credential).read_text(encoding="utf-8").strip()
         self.requires = requires
@@ -87,13 +104,24 @@ class VleiIdentity(Extension):
         if revocation_source not in ("tel", "verifier", "none"):
             raise ValueError("revocation_source must be 'tel', 'verifier' or 'none'")
         self.revocation_source = revocation_source
+        if not witness_url:
+            raise ValueError(
+                "witness_url is required: a caller's current key state is read from a witness's "
+                "copy of its key event log, and without it no request signature can be verified"
+            )
+        if revocation_source == "verifier" and self.verifier is None:
+            raise ValueError(
+                "revocation_source='verifier' needs a verifier or a verifier_url; without one, "
+                "revocation would silently not be established"
+            )
+        #: Where each caller's current keys come from. Never from the request: whoever sends a
+        #: call would otherwise choose the key it is verified under.
+        self.key_states = WitnessKeyStates(witness_url, client=witness_client)
         self.tel = (
-            TelRevocationChecker(witness_url)
-            if revocation_source == "tel" and witness_url
+            TelRevocationChecker(witness_url, client=witness_client)
+            if revocation_source == "tel"
             else None
         )
-        if revocation_source == "tel" and self.tel is None:
-            raise ValueError("revocation_source='tel' needs a witness_url to read the log from")
         self._replay = ReplayCache(window_seconds=freshness_seconds)
         #: Tool name -> requirement. Populated from the bound server's tool list, or supplied
         #: directly for a deployment that keeps its policy elsewhere (a gateway, for instance).
@@ -208,6 +236,16 @@ class VleiIdentity(Extension):
             result = await self._try_verify(params, meta)
             return _text_result(_whoami_text(result))
 
+        if self._server is None and not self._requirements:
+            # An extension that cannot read its server's tools cannot tell a protected tool from a
+            # public one. Treating every tool as public was the old behaviour; refuse instead.
+            self._audit(name, None, allowed=False, note="unbound")
+            return _text_result(
+                "chain_invalid: this server's vLEI extension was never given its tools — call "
+                "vlei.bind(server) after creating the server, or pass requirements=",
+                is_error=True,
+            )
+
         requirement = await self.requirement_for(name)
         report = VerificationReport(tool=name)
         if not requirement:
@@ -223,6 +261,22 @@ class VleiIdentity(Extension):
         self._audit(name, result, allowed=True, report=report)
         self.last_report = report
         return await call_next(ctx)
+
+    async def verify_call(
+        self,
+        params: CallToolRequestParams,
+        requirement: dict[str, Any] | None = None,
+        *,
+        report: VerificationReport | None = None,
+    ) -> VerificationResult:
+        """Verify a ``tools/call`` without executing anything — for a gateway or a console.
+
+        The same checks, in the same order, as a call through :meth:`intercept_tool_call`. Raises
+        the :class:`~mcp_vlei.errors.VleiError` for the layer that failed; ``report``, when given,
+        is filled in either way, so a caller can show what passed before the failure.
+        """
+        report = report or VerificationReport(tool=params.name)
+        return await self._verify(params, dict(params.meta or {}), requirement, report)
 
     async def _try_verify(
         self, params: CallToolRequestParams, meta: dict[str, Any]
@@ -241,9 +295,11 @@ class VleiIdentity(Extension):
     ) -> VerificationResult:
         """Run the checks in order, recording each, and stop at the first failure.
 
-        The order is the one in `mcp_vlei.report`: everything decidable from the request itself
-        before the one check that has to ask someone. A verification service that is slow or down
-        then costs one line of the report instead of all of it.
+        Who is calling is established before what they presented: the request must verify under the
+        **current key state of the AID that signed it**, read from a witness, and that AID must be
+        the credential's holder or delegated by them in the holder's own key event log. A key the
+        caller sends along is never used — whoever sends a call would otherwise choose the key it
+        is verified under, and any credential anyone had seen could be presented as theirs.
         """
         credential = meta.get(META_CREDENTIAL)
         signature = meta.get(META_SIGNATURE)
@@ -260,82 +316,90 @@ class VleiIdentity(Extension):
                 "this tool requires an ECR credential and a signed request; the caller presented "
                 + missing
             )
-        report.passed("credential_present")
-
-        aid = signature.get("aid", "")
-        said = meta.get("org.gleif.vlei/credentialSaid") or _said_of(credential)
-
-        # Ask about the credential's **issuee**, not the signing AID. The agent signs with its
-        # delegated AID, but the credential was issued to — and presented by — the person, and a
-        # verification service keys its record by that holder. Read from the credential itself, so
-        # a caller cannot point the question at someone else's record.
-        holder = _issuee_of(credential, said) or aid
+        # The credential being presented: the one named, or the leaf of the chain. Its issuee is the
+        # holder — read from the credential, never from the caller (spec/SPEC.md §Delegation).
+        try:
+            presented = _presented(credential, meta.get(META_CREDENTIAL_SAID))
+        except VleiError as exc:
+            report.failed("credential_present", exc.layer.value, exc.message)
+            raise
+        said, holder = presented.said, presented.issuee
         report.holder_aid = holder
         report.credential_said = said
-        if delegated and delegated != holder:
-            report.delegate_aid = delegated
+        report.passed("credential_present")
 
-        verkey = meta.get("org.gleif.vlei/verkey")
+        signer = signature.get("aid", "") if isinstance(signature, dict) else ""
+        if signer and signer != holder:
+            report.delegate_aid = signer
+
         serialized = params.model_dump(by_alias=True, exclude_none=True)
-
-        # Freshness, digest and signature are one call in `verify_request`, which raises the layer
-        # that failed. Splitting the report by layer keeps each line meaningful without duplicating
-        # the checks themselves.
         for name in ("freshness", "digest", "signature"):
             report.start(name)
-        if verkey:
-            try:
-                verify_request(
-                    signature, "tools/call", serialized, verkey,
-                    freshness_seconds=self.freshness_seconds,
-                    replay_cache=self._replay,
-                )
-            except VleiError as exc:
-                stage = {
-                    "stale_signature": "freshness",
-                    "digest_mismatch": "digest",
-                    "invalid_signature": "signature",
-                }.get(exc.layer.value, "signature")
-                report.failed(stage, exc.layer.value, exc.message)
-                raise
-            for name in ("freshness", "digest", "signature"):
-                report.passed(name)
-        else:
-            for name in ("freshness", "digest", "signature"):
-                report.skipped(name, "no verification key was presented with the request")
+        try:
+            # Everything decidable from the request alone first, so a stale or altered call costs
+            # no round trip to a witness.
+            precheck_request(signature, serialized, freshness_seconds=self.freshness_seconds)
+            state = await self._key_state(signer)
+            verify_request(
+                signature, "tools/call", serialized, state.keys,
+                freshness_seconds=self.freshness_seconds,
+                replay_cache=self._replay,
+            )
+        except VleiError as exc:
+            stage = {
+                "stale_signature": "freshness",
+                "digest_mismatch": "digest",
+            }.get(exc.layer.value, "signature")
+            for earlier in ("freshness", "digest")[: ("freshness", "digest", "signature").index(stage)]:
+                report.passed(earlier)
+            report.failed(stage, exc.layer.value, exc.message)
+            raise
+        report.passed("freshness")
+        report.passed("digest")
+        report.passed(
+            "signature",
+            f"under the current key state of {signer} (key event log at sn {state.sn})",
+        )
 
         report.start("delegation")
-        report.passed(
-            "delegation",
-            f"delegated AID {delegated}" if report.delegate_aid else "signed by the holder",
-        )
+        try:
+            detail = _authorized(signer, delegated, holder, state)
+        except VleiError as exc:
+            report.failed("delegation", exc.layer.value, exc.message)
+            raise
+        report.passed("delegation", detail)
 
         report.start("chain")
         try:
             result = await self.offline.verify(
                 credential, said=said, aid=holder, source="presented"
             )
+            if requirement:
+                _check_type(requirement, presented)
         except VleiError as exc:
             report.failed("chain", exc.layer.value, exc.message)
             raise
-        if delegated and delegated != holder:
-            result.aid = delegated
+        result.aid = signer
         report.lei, report.role = result.lei, result.role
-        report.passed("chain", f"root {result.root_aid}")
-        if not result.signatures_checked:
-            report.caveats.append(
-                "issuer signatures were not verified: that needs each issuer's key event log"
-            )
+        report.passed(
+            "chain",
+            f"root {result.root_aid}; each issuance anchored in its issuer's key event log",
+        )
 
-        # Revocation is the one thing that cannot be established from the request alone: it lives
-        # in the issuer's transaction event log, and a holder presenting a withdrawn credential
-        # would simply omit the withdrawal.
+        # Revocation is the one thing the presented stream cannot settle: it lives in each issuer's
+        # transaction event log as it is now, and a holder presenting a withdrawn credential would
+        # simply omit the withdrawal. Every link is checked — an ECR under a withdrawn LE stands on
+        # nothing, whatever its own log says.
         report.start("revocation")
         try:
             if self.revocation_source == "tel" and self.tel is not None:
-                await self.tel.check(result.credential_said or said, aid=holder)
+                links = result.chain_saids or [result.credential_said or said]
+                for link in links:
+                    await self.tel.check(link, aid=holder)
                 result.revocation_checked = True
-                report.passed("revocation", "issuer's transaction event log")
+                report.passed(
+                    "revocation", f"issuers' transaction event logs, all {len(links)} credentials"
+                )
             elif self.revocation_source == "verifier" and self.verifier is not None:
                 live = await self.verifier.verify(
                     credential, said=said, aid=holder, source="presented"
@@ -372,8 +436,24 @@ class VleiIdentity(Extension):
             report.passed("authority", f"role {result.role!r}")
         else:
             report.skipped("authority", "this tool declares no requirement")
-
         return result
+
+    async def _key_state(self, aid: str) -> KeyState:
+        """The signer's current key state, from a witness — or the reason it could not be had."""
+        if not aid:
+            raise InvalidSignature("the signature names no signing AID")
+        try:
+            state = await self.key_states.resolve(aid)
+        except ChainInvalid as exc:
+            raise InvalidSignature(
+                f"the key state of {aid} was not established: {exc.message}", aid=aid
+            ) from exc
+        if state.threshold != 1:
+            raise InvalidSignature(
+                f"{aid} requires {state.threshold} signatures; a single-pass request carries one",
+                aid=aid,
+            )
+        return state
 
     def _audit(
         self,
@@ -405,36 +485,67 @@ class VleiIdentity(Extension):
 
 # ------------------------------------------------------------------------------------------- #
 
+def _presented(cesr: Any, said: str | None) -> Acdc:
+    """The credential being presented: the one named, or else the leaf of the chain."""
+    if not isinstance(cesr, str):
+        raise ChainInvalid("the presented credential is not a CESR stream")
+    credentials = parse_stream(cesr)
+    if not credentials:
+        raise ChainInvalid("no credential was found in the presented stream")
+    target = said or _last_in_chain(credentials)
+    if target not in credentials:
+        raise ChainInvalid(
+            f"credential {target} is not present in the stream it was presented with",
+            credential_said=target,
+        )
+    presented = credentials[target]
+    if not presented.issuee:
+        raise ChainInvalid(
+            f"credential {target} names no issuee, so it has no holder", credential_said=target
+        )
+    return presented
+
+
+def _authorized(signer: str, delegated: Any, holder: str, state: KeyState) -> str:
+    """Is the AID that signed allowed to act on the holder's credential? Returns the reason."""
+    if delegated and delegated != signer:
+        raise InvalidSignature(
+            f"delegatedAid names {delegated}, but the request was signed by {signer}", aid=signer
+        )
+    if signer == holder:
+        return "signed by the holder"
+    if state.delegator == holder:
+        return f"delegated AID {signer}, anchored in the holder's key event log"
+    raise InvalidSignature(
+        f"the request was signed by {signer}, which is neither the credential's holder {holder} "
+        "nor delegated by them in the holder's key event log",
+        aid=signer,
+    )
+
+
+def _check_type(requirement: dict[str, Any], presented: Acdc) -> None:
+    """The tool's `requires.credential`, against the schema the presented credential carries."""
+    wanted = requirement.get("credential")
+    if not wanted:
+        return
+    schema = CREDENTIAL_SCHEMAS.get(wanted)
+    if schema is None:
+        raise ChainInvalid(f"this tool requires an unknown credential type {wanted!r}")
+    if presented.schema != schema:
+        actual = next((k for k, v in CREDENTIAL_SCHEMAS.items() if v == presented.schema), None)
+        raise ChainInvalid(
+            f"this tool requires an {wanted} credential; the presented credential "
+            f"{presented.said} is {'an ' + actual if actual else 'of schema ' + presented.schema}",
+            credential_said=presented.said,
+        )
+
+
 def _said_of(cesr: str) -> str:
-    """Best-effort SAID extraction from a CESR stream, for the presentation URL."""
-    import re
-
-    match = re.search(r'"d"\s*:\s*"([A-Za-z0-9_-]{44})"', cesr)
-    if match:
-        return match.group(1)
-    match = re.search(r"[EF][A-Za-z0-9_-]{43}", cesr)
-    return match.group(0) if match else ""
-
-
-def _issuee_of(cesr: str, said: str = "") -> str:
-    """The AID a credential was issued to — the `i` inside its attribute block.
-
-    A `--full` CESR export carries the whole chain, so the first attribute block belongs to the
-    QVI credential, not the one being presented. Anchor on the credential whose `d` is the SAID in
-    question and read the attribute block that follows it.
-    """
-    import re
-
-    text = cesr
-    if said:
-        anchor = text.find(f'"d":"{said}"')
-        if anchor < 0:
-            anchor = text.find(f'"d": "{said}"')
-        if anchor >= 0:
-            text = text[anchor:]
-
-    match = re.search(r'"a"\s*:\s*\{[^{}]*?"i"\s*:\s*"([A-Za-z0-9_-]{44})"', text)
-    return match.group(1) if match else ""
+    """The SAID of the credential a stream presents: its leaf. Empty when there is none."""
+    try:
+        return _presented(cesr, None).said
+    except VleiError:
+        return ""
 
 
 def _text_result(

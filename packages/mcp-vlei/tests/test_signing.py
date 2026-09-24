@@ -154,3 +154,16 @@ def test_scope_failure_explains_itself():
     ok, reason = scope_satisfied({"maxAmount": 1_000_000}, {"maxAmount": 500_000})
     assert not ok
     assert "1000000" in reason and "500000" in reason
+
+
+def test_a_string_is_not_a_list_of_its_characters():
+    """`"TW"` used to cover a requirement of `["T"]`: the held string was read as a set of letters."""
+    ok, _ = scope_satisfied({"regions": ["T"]}, {"regions": "TW"})
+    assert ok is False
+
+
+def test_a_scope_of_the_wrong_type_is_unsatisfied_not_an_exception():
+    ok, reason = scope_satisfied({"regions": ["TW"]}, {"regions": 5})
+    assert ok is False and "regions" in reason
+    ok, _ = scope_satisfied({"maxAmount": 10}, {"maxAmount": True})
+    assert ok is False

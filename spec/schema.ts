@@ -8,9 +8,13 @@
  * modified, redefined, or re-exported here. Every type below travels inside a field the core
  * specification already reserves for extensions:
  *
- *   VleiIdentityCapability  -> Implementation.extensions["org.gleif.vlei/identity"]
+ *   VleiIdentityCapability  -> ClientCapabilities.extensions["org.gleif.vlei/identity"]  (client, at initialize)
+ *                              ServerCapabilities.extensions["org.gleif.vlei/identity"]  (server: initialize or server/discover result)
  *   VleiIdentityMeta        -> RequestMetaObject / ResultMetaObject  (i.e. params._meta, result._meta)
  *   VleiToolRequirement     -> Tool._meta
+ *
+ * Not `Implementation.extensions`: `Implementation` (clientInfo / serverInfo) has no such member,
+ * and the MCP Python SDK 2.2.0 types agree.
  *
  * An implementation that does not understand these keys ignores them, per core MCP.
  */
@@ -21,10 +25,13 @@ export const VLEI_EXTENSION_ID = "org.gleif.vlei/identity" as const;
 /** _meta keys defined by this extension. */
 export const VLEI_META_KEYS = {
   credential: "org.gleif.vlei/credential",
+  credentialSaid: "org.gleif.vlei/credentialSaid",
   delegatedAid: "org.gleif.vlei/delegatedAid",
   signature: "org.gleif.vlei/signature",
   attestation: "org.gleif.vlei/attestation",
   requires: "org.gleif.vlei/requires",
+  failure: "org.gleif.vlei/failure",
+  report: "org.gleif.vlei/report",
 } as const;
 
 /** vLEI credential types used by this extension. LE = Legal Entity, ECR = Engagement Context Role. */
@@ -43,13 +50,15 @@ export type Aid = string;
 export type Said = string;
 
 /* -------------------------------------------------------------------------------------------- *
- * Capability — declared in Implementation.extensions
+ * Capability — declared in ClientCapabilities.extensions / ServerCapabilities.extensions
  * -------------------------------------------------------------------------------------------- */
 
 /**
- * Declared by either party in `Implementation.extensions["org.gleif.vlei/identity"]` during
- * `initialize`. Declaring the capability is what makes a party extension-aware; a party that omits
- * it behaves exactly as core MCP specifies.
+ * Declared by either party in the `extensions` member of its capabilities: a client in
+ * `ClientCapabilities.extensions["org.gleif.vlei/identity"]` at `initialize`, a server in
+ * `ServerCapabilities.extensions["org.gleif.vlei/identity"]` of its `initialize` or
+ * `server/discover` result. Declaring the capability is what makes a party extension-aware; a party
+ * that omits it behaves exactly as core MCP specifies.
  */
 export interface VleiIdentityCapability {
   /** Credential types this party is able to present. A server typically presents ["LE"]. */
@@ -95,7 +104,11 @@ export interface VleiIdentityCapability {
  * trip. Replay is bounded by freshness window plus replay cache, not by a nonce.
  */
 export interface VleiSignature {
-  /** AID whose current key state signed this. The delegated agent AID when one is in use. */
+  /**
+   * AID whose current key state signed this. The delegated agent AID when one is in use. A verifier
+   * reads that key state from the AID's key event log at a witness — never from the request — and
+   * requires the AID to be the credential's holder, or delegated by the holder.
+   */
   aid: Aid;
 
   /** RFC 3339 timestamp, UTC, at signing time. Verifiers enforce a freshness window (default 60s). */
@@ -163,8 +176,15 @@ export interface VleiIdentityMeta {
   "org.gleif.vlei/credential"?: string;
 
   /**
+   * Which credential in the presented stream is the one being presented; its issuee is the holder.
+   * A `--full` export carries the whole chain, so this selects the credential — never whose it is.
+   * When omitted, the leaf of the chain is presented.
+   */
+  "org.gleif.vlei/credentialSaid"?: Said;
+
+  /**
    * The agent's delegated AID, created under the ECR holder's KEL. Omitted when the deployment
-   * signs directly with the ECR holder's AID.
+   * signs directly with the ECR holder's AID. When present it MUST equal `signature.aid`.
    */
   "org.gleif.vlei/delegatedAid"?: Aid;
 
@@ -173,6 +193,20 @@ export interface VleiIdentityMeta {
 
   /** Mode (b) reply: a signed confirmation of a verification performed by another party. */
   "org.gleif.vlei/attestation"?: VleiAttestation;
+
+  /** On a refusal's result: the failure layer again, structured, for anything that parses. */
+  "org.gleif.vlei/failure"?: VleiFailureDetail;
+
+  /** On a result: the ordered record of every check — see VleiVerificationReport. */
+  "org.gleif.vlei/report"?: VleiVerificationReport;
+
+  /**
+   * Informational, never used for verification. The reference `VleiClient` still sends the
+   * signer's current public key here; a verifier ignores it and reads the signer's key state from
+   * its key event log. Verifying under a key the request carries is exactly what SPEC.md
+   * "Whose key, and who may sign" rules out.
+   */
+  "org.gleif.vlei/verkey"?: string;
 }
 
 /* -------------------------------------------------------------------------------------------- *
@@ -209,25 +243,43 @@ export const VLEI_ERROR_EXTENSION_REQUIRED = -32021 as const;
 
 /** `error.data` accompanying VLEI_ERROR_EXTENSION_REQUIRED. */
 export interface VleiExtensionRequiredData {
-  /** Contains "org.gleif.vlei/identity". */
-  requiredCapabilities: string[];
+  /**
+   * A core `ClientCapabilities` object — not a list of identifiers: the same shape the client sends
+   * at `initialize`, so it reads as "declare this and try again". The MCP Python SDK types it as
+   * `MissingRequiredClientCapabilityErrorData`. The reference implementation
+   * (`mcp_vlei.errors.ExtensionRequired.to_error`) sends
+   * `{"extensions": {"org.gleif.vlei/identity": {}}}`.
+   */
+  requiredCapabilities: {
+    extensions: {
+      "org.gleif.vlei/identity": Record<string, unknown>;
+    };
+  };
 }
 
 /**
  * Failure layer, named in the text of a tool result with `isError: true`.
  * Naming the layer is normative: the skill's recovery behavior differs per layer.
+ *
+ * Eight are verification failures. `missing_credential` is not: the caller presented no credential
+ * or no signature, and the fix is to attach one rather than to repair one. Only `stale_signature`
+ * is worth retrying, and only once. Listed in the order of the check that raises each.
  */
 export type VleiFailureLayer =
-  | "invalid_signature"
+  | "missing_credential"
   | "stale_signature"
   | "digest_mismatch"
+  | "invalid_signature"
   | "chain_invalid"
+  | "unknown_root"
   | "revoked"
   | "role_mismatch"
-  | "scope_exceeded"
-  | "unknown_root";
+  | "scope_exceeded";
 
-/** Structured detail a server MAY include alongside the human-readable failure text. */
+/**
+ * Structured detail a server MAY include alongside the human-readable failure text, in
+ * `result._meta["org.gleif.vlei/failure"]`.
+ */
 export interface VleiFailureDetail {
   layer: VleiFailureLayer;
   message: string;
@@ -235,4 +287,59 @@ export interface VleiFailureDetail {
   aid?: Aid;
   /** Which credential the failure concerned, when applicable. */
   credentialSaid?: Said;
+}
+
+/* -------------------------------------------------------------------------------------------- *
+ * Verification report — result._meta["org.gleif.vlei/report"]
+ * -------------------------------------------------------------------------------------------- */
+
+/**
+ * The checks, in the order they run (reference: `mcp_vlei/report.py::CHECK_ORDER`). Everything
+ * decidable from the request comes first; `signature` and `revocation` read from a witness; and
+ * `authority` comes after `revocation`, so revocation is not the last check. Verification stops at
+ * the first failure, and the report still lists all eight.
+ */
+export type VleiCheckName =
+  | "credential_present"
+  | "freshness"
+  | "digest"
+  | "signature"
+  | "delegation"
+  | "chain"
+  | "revocation"
+  | "authority";
+
+export interface VleiCheck {
+  name: VleiCheckName;
+  label: string;
+  /** `true` passed (or was skipped by choice — see `skipped`), `false` failed, `null` not reached. */
+  passed: boolean | null;
+  /** Did not run by choice — a public tool, a source the deployment turned off. */
+  skipped: boolean;
+  durationMs: number;
+  /** The failure layer, when this check failed. */
+  layer: VleiFailureLayer | null;
+  detail: string;
+}
+
+/**
+ * What was checked, in order, and what each check cost. Identifiers only, never the credential
+ * itself: an ECR names a natural person.
+ */
+export interface VleiVerificationReport {
+  tool: string;
+  allowed: boolean;
+  /** The failure layer, when a check failed. */
+  layer: VleiFailureLayer | null;
+  totalMs: number;
+  identity: {
+    lei: string | null;
+    role: string | null;
+    credentialSaid: Said | null;
+    holderAid: Aid | null;
+    delegateAid: Aid | null;
+  };
+  /** What was checked but not established, or skipped by choice. */
+  caveats: string[];
+  checks: VleiCheck[];
 }

@@ -1,12 +1,15 @@
 """The console's scene logic.
 
-This is the thing that will be on a screen in front of GLEIF, AAIF and a room of officials, and it
-was the only deliverable without tests. What is checked here is what a viewer sees: that each scene
-produces the state the script says it does, that a failure stops the sequence rather than failing
-eight times, and that nothing on screen is a credential.
+This is the thing that will be on a screen in front of GLEIF, AAIF and a room of officials. What is
+checked here is what a viewer sees: that each scene produces the state the script says it does, that
+a failure stops the sequence rather than failing eight times, that nothing on screen is a
+credential — and that nothing on screen is decided by the console. A revocation is a revocation in
+a transaction event log; a gateway scene is a call through a gateway, or it says the gateway is not
+running.
 
-No containers required. The module falls back to a locally minted chain when no environment has
-been issued, and verifies it by the same code path.
+No containers required: the tests run the console on an in-process KERI deployment
+(`mcp_vlei.testing.World`) — real key event logs, registries and issuances behind an in-process
+witness — by the same code path as a live one.
 
     pytest examples/console/tests -q
 """
@@ -15,6 +18,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -24,9 +28,11 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "packages" / "mcp-vlei" / "src"))
 
 
-@pytest.fixture(scope="module")
-def console():
-    """The console backend, imported once."""
+def _load():
+    os.environ["VLEI_CONSOLE_MINTED"] = "1"
+    # Point the remote scenes at ports nothing listens on, so "not running" is what is tested.
+    os.environ["VLEI_GATEWAY_URL"] = "http://127.0.0.1:9/mcp"
+    os.environ["VLEI_SKILL_SERVER_URL"] = "http://127.0.0.1:9/mcp"
     sys.argv = ["console"]
     spec = importlib.util.spec_from_file_location(
         "console_app", ROOT / "examples" / "console" / "app.py"
@@ -34,6 +40,18 @@ def console():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.fixture(scope="module")
+def console():
+    """The console backend, imported once, for scenes that do not change the world."""
+    return _load()
+
+
+@pytest.fixture
+def fresh():
+    """A console of its own, for a test that revokes or re-issues."""
+    return _load()
 
 
 async def scene(console, n: int) -> dict:
@@ -53,7 +71,7 @@ async def test_every_scene_produces_the_full_state(console):
         assert state["request"]["mode"] in ("vlei", "plain")
         assert len(state["verification"]["checks"]) == 8
         assert state["verification"]["outcome"]["status"] in (
-            "allowed", "refused", "self-asserted"
+            "allowed", "refused", "self-asserted", "unavailable"
         )
 
 
@@ -88,11 +106,7 @@ async def test_scene_0_runs_no_checks_and_says_what_it_granted(console):
 
 
 async def test_scene_0_measures_rather_than_asserts(console):
-    """The number comes from the impersonation server, not from a constant in the console.
-
-    A hardcoded "50 hours" would be the one thing on screen that was written by hand — precisely
-    what someone should ask about in questions.
-    """
+    """The number comes from the impersonation server, not from a constant in the console."""
     await scene(console, 0)
     measured = console._impersonation_result
 
@@ -103,7 +117,30 @@ async def test_scene_0_measures_rather_than_asserts(console):
     assert measured["received"] == console.IMPERSONATION_CLAIM["name"]
 
 
-async def test_scene_1_carries_the_four_keys(console):
+async def test_scene_1_is_allowed_and_every_check_passed(console):
+    state = await scene(console, 1)
+
+    assert state["verification"]["outcome"]["status"] == "allowed"
+    assert all(c["status"] == "pass" for c in state["verification"]["checks"])
+    assert state["identities"]["agent"]["status"] == "valid"
+    assert state["identities"]["server"]["status"] == "valid"
+
+
+async def test_scene_1_signs_as_the_agent_under_its_own_key_state(console):
+    """The console signs with the agent's key, and the check says the key came from its log.
+
+    It used to sign with a random key, which only verified because the server took the key from
+    the request. That the scene now passes is itself the evidence that it no longer does.
+    """
+    state = await scene(console, 1)
+    body = json.loads(state["request"]["json"])
+
+    assert body["_meta"]["org.gleif.vlei/signature"]["aid"] == console.ENV.delegate
+    assert body["_meta"]["org.gleif.vlei/delegatedAid"] == console.ENV.delegate
+    assert "org.gleif.vlei/verkey" not in body["_meta"]
+
+
+async def test_scene_1_carries_the_extension_keys(console):
     state = await scene(console, 1)
     body = state["request"]["json"]
 
@@ -130,9 +167,23 @@ async def test_scene_2_shows_the_agent_as_not_presented(console):
     assert state["identities"]["server"]["status"] == "valid"
 
 
-async def test_scene_3_keeps_the_earlier_checks(console):
-    """Six things still true, one that stopped being true. That is the narration."""
-    state = await scene(console, 3)
+# --------------------------------------------------------------------------------------------- #
+# Scene 3: a revocation that happens, not one that is drawn
+# --------------------------------------------------------------------------------------------- #
+
+async def test_scene_3_before_revocation_is_a_valid_call(fresh):
+    """Loading scene 3 does not revoke anything. The presenter does, on camera."""
+    state = await scene(fresh, 3)
+
+    assert state["verification"]["outcome"]["status"] == "allowed"
+    assert state["identities"]["agent"]["status"] == "valid"
+
+
+async def test_revoking_is_read_back_from_the_log(fresh):
+    """Six things still true, one that stopped being true — established from the issuer's log."""
+    await scene(fresh, 3)
+    await fresh.revoke()
+    state = json.loads(json.dumps(fresh.STATE))
     checks = state["verification"]["checks"]
 
     failed = next(i for i, c in enumerate(checks) if c["status"] == "fail")
@@ -143,32 +194,48 @@ async def test_scene_3_keeps_the_earlier_checks(console):
     assert state["identities"]["agent"]["status"] == "revoked"
     assert state["identities"]["agent"].get("revokedAt")
 
+    # The log is the authority, not the console: the withdrawal is a `rev` event there.
+    tel = fresh.ENV.world.le_registry.tels[fresh.ENV.said]
+    assert [e.body["t"] for e in tel] == ["iss", "rev"]
 
-async def test_scene_4_changes_the_server_card(console):
+
+async def test_a_revocation_stays_revoked_until_a_new_credential_is_issued(fresh):
+    """Leaving scene 3 does not undo anything. The next scene is refused, and says what to do."""
+    await scene(fresh, 3)
+    await fresh.revoke()
+
+    state = await scene(fresh, 1)
+    assert state["verification"]["outcome"]["layer"] == "revoked"
+    assert "press I" in state["readiness"]
+
+    await fresh.reissue()
+    state = await scene(fresh, 1)
+    assert state["verification"]["outcome"]["status"] == "allowed"
+    assert state["readiness"] is None
+
+
+# --------------------------------------------------------------------------------------------- #
+# Scenes 4 and 5: real servers, or an honest "not running"
+# --------------------------------------------------------------------------------------------- #
+
+async def test_scene_4_goes_to_the_gateway_or_says_it_is_not_running(console):
     state = await scene(console, 4)
-    assert state["identities"]["server"]["label"] != "association-server"
-    assert state["verification"]["outcome"].get("note")
+    outcome = state["verification"]["outcome"]
+
+    assert state["identities"]["server"]["label"] == "regulator-gateway"
+    assert state["request"]["target"] == "gateway"
+    assert outcome["status"] == "unavailable"
+    assert "127.0.0.1:9" in outcome["note"]
+    assert not any(c["status"] == "pass" for c in state["verification"]["checks"])
 
 
-async def test_scene_5_annotates_the_server_card(console):
+async def test_scene_5_goes_to_the_skill_server_or_says_it_is_not_running(console):
     state = await scene(console, 5)
+
     assert state["identities"]["server"].get("note") == "generated from skill"
-
-
-async def test_leaving_scene_3_clears_the_session_revocation(console):
-    """A presenter who jumps back to scene 1 must not carry scene 3's revocation with them.
-
-    What is cleared is the *session's* revocation. If the issuer's log independently says the
-    credential is withdrawn, the console keeps reporting that — it reads the log, it does not
-    decide. The flag mattering separately is the bug this test found: left set, the readiness
-    warning goes quiet for the rest of the session.
-    """
-    await scene(console, 3)
-    assert console.TEL.revoked is True
-    assert console._revoked_in_this_session is True
-
-    await scene(console, 1)
-    assert console._revoked_in_this_session is False
+    assert state["request"]["target"] == "skill-server"
+    assert state["verification"]["outcome"]["status"] == "unavailable"
+    assert not any(c["status"] == "pass" for c in state["verification"]["checks"])
 
 
 # --------------------------------------------------------------------------------------------- #
@@ -187,8 +254,7 @@ async def test_no_credential_content_reaches_the_screen(console):
 async def test_credential_and_signature_are_truncated_in_the_request(console):
     """The middle column is meant to be readable, not a wall of base64."""
     state = await scene(console, 1)
-    body = json.loads(state["request"]["json"])
-    meta = body["_meta"]
+    meta = json.loads(state["request"]["json"])["_meta"]
 
     assert len(meta["org.gleif.vlei/credential"]) < 40
     assert meta["org.gleif.vlei/credential"].endswith("…")
@@ -196,20 +262,9 @@ async def test_credential_and_signature_are_truncated_in_the_request(console):
 
 
 async def test_state_reports_what_it_is_running_on(console):
-    """Issued or minted, witness or session state. A viewer is entitled to know which."""
-    state = await scene(console, 1)
-    evidence = state["evidence"]
+    """Issued or minted, where the key is, where revocation is read. A viewer is entitled to know."""
+    evidence = (await scene(console, 1))["evidence"]
 
-    assert evidence["credentials"] in ("issued", "minted")
-    assert evidence["revocation"] in ("witness", "console")
-
-
-async def test_a_stale_credential_is_reported_not_hidden(console):
-    """If the credential was withdrawn before the session, say so — before a take, not during one."""
-    state = await scene(console, 1)
-
-    if state["verification"]["outcome"]["status"] == "refused":
-        assert state["readiness"], "a scene that should allow but refuses must explain itself"
-        assert "bootstrap-credentials" in state["readiness"]
-    else:
-        assert state["readiness"] is None
+    assert evidence["credentials"] == "minted"
+    assert evidence["revocation"] == "in-process witness"
+    assert evidence["signing"] == "in-process key"

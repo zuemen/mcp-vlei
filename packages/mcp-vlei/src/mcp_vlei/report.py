@@ -85,6 +85,9 @@ class CheckResult:
     duration_ms: float = 0.0
     layer: str | None = None
     detail: str = ""
+    #: Did not run by choice — a public tool, a source the deployment turned off. Distinct from
+    #: passing, which is why it is recorded rather than folded into `passed`.
+    skipped: bool = False
 
     @property
     def reached(self) -> bool:
@@ -137,6 +140,7 @@ class VerificationReport:
         """
         check = self.checks[name]
         check.passed = True
+        check.skipped = True
         check.detail = detail
         check.duration_ms = 0.0
         self.caveats.append(f"{_LABEL[name]}: {detail}")
@@ -179,6 +183,7 @@ class VerificationReport:
                     "name": name,
                     "label": _LABEL[name],
                     "passed": self.checks[name].passed,
+                    "skipped": self.checks[name].skipped,
                     "durationMs": round(self.checks[name].duration_ms, 1),
                     "layer": self.checks[name].layer,
                     "detail": self.checks[name].detail,
