@@ -27,6 +27,7 @@ Reviewed against the repository at v0.2. Where a row says **gap**, it says so.
 | 18 | Whose key | The signer **MUST** be the holder, or delegated by the holder in the holder's key event log | `extension.py::_authorized`; the delegation anchor is checked in `kel.py::verify_kel` | `test_extension.py::test_a_delegate_of_someone_else_is_refused`, `::test_a_delegation_the_holder_never_approved_is_refused`; `test_kel.py::test_a_delegation_the_delegator_never_approved_is_refused` |
 | 19 | Whose key | Every credential **MUST** be shown to have been issued by the identifier it names | `chain.py::verify_issuance`, called by `OfflineVerifier` for every link | `test_issuance.py` (10, one against a real `kli` export); `test_extension.py::test_a_credential_written_by_the_caller_is_refused` |
 | 20 | Whose key | Revocation **MUST** be established for every credential in the chain, and a log without the issuance is *not established* | `extension.py::_verify` checks each of `result.chain_saids`; `revocation.py` requires an `iss` | `test_extension.py::test_a_revoked_link_above_the_ecr_refuses_the_call`, `::test_a_live_log_that_never_saw_the_issuance_is_not_read_as_valid` |
+| 23 | Whose key | Given several witnesses, a signer's key event log that differs between them (duplicity) **MUST** be refused, and fewer answers than the quorum is *not established* | `kel.py::WitnessKeyStates.resolve` compares copies event by event; `VleiIdentity(witness_urls=…)` | `test_kel.py::test_a_controller_showing_two_witnesses_two_logs_is_refused`, `::test_a_witness_that_is_behind_is_not_duplicity`, `::test_too_few_witnesses_answering_is_refused`; `test_extension.py::test_a_signer_whose_log_is_forked_across_witnesses_is_refused`; live: all five AIDs agree across wan/wil/wes |
 | 22 | Whose key | An ECR or OOR **MUST** be issued under an LE credential naming the same LEI, an LE credential under a QVI credential, and every edge **MUST** point at the schema it declares | `chain.py::verify_vlei_chain`, called by `OfflineVerifier` | `test_issuance.py::test_an_ecr_a_qvi_issued_without_any_le_is_refused`, `::test_an_ecr_naming_another_entitys_lei_is_refused`, `::test_an_edge_must_point_at_the_type_it_declares` |
 | 21 | Request signing | A replay entry **MUST** be recorded only after the signature verified | `signing.py::verify_request` records last | `test_extension.py::test_a_forged_request_cannot_lock_out_the_real_one` |
 | 16 | Security | A verifier **SHOULD** record which attesting party a decision rested on | `VerificationResult.attested_by`, set by `verify_attestation` | `test_attest.py::test_roundtrip` asserts `source == "attestation"`; `attested_by` carries the AID |
@@ -70,10 +71,13 @@ attestation is trusting a party that says it checked, not checking.
 
 The table would be dishonest without these.
 
-- **Duplicity is not detected.** `kel.py` verifies a key event log completely — self-addressing
-  prefix, SAIDs, prior digests, signatures to threshold, witness receipts to threshold, pre-rotation
-  commitments, delegation anchors — but it asks one witness. Two conflicting logs for one prefix,
-  each internally valid, are what watchers exist to catch; this implementation has none.
+- **Duplicity is detected only across the witnesses you configure.** `kel.py` verifies a key event
+  log completely — self-addressing prefix, SAIDs, prior digests, signatures to threshold, witness
+  receipts to threshold, pre-rotation commitments, delegation anchors — and, given several
+  witnesses (`witness_urls`, `VLEI_WITNESS_URLS`), compares their copies and refuses a prefix they
+  disagree about. Given one, nothing is compared. Witnesses run by one operator — the demo's three
+  are one container — can be made to agree; independent witnesses or watchers are what make the
+  check mean something, and this implementation runs no watcher.
 - **The subset of KERI is `kli`'s.** Single-sig and numeric thresholds, Ed25519, Blake3-256. Weighted
   thresholds, other key or digest codes, and multi-sig signers of a single-pass request are refused,
   not guessed at.
@@ -90,6 +94,9 @@ The table would be dishonest without these.
   of identifiers, where the 2026-07-28 revision defines a `ClientCapabilities` object. Untested and
   incorrect turned out to be the same path. See
   [`skills/implementing-vlei/CONFORMANCE.md`](../skills/implementing-vlei/CONFORMANCE.md).
+- **The replay cache lives in one process.** It is lost on restart and not shared between
+  replicas, so a deployment running several must share it; within one process it holds for twice
+  the freshness window.
 - **Scope comparison is a default, not a standard.** `signing.scope_satisfied` implements one
   reasonable algebra. The specification fixes where scope lives and that it must be checked, not how
   — a deployment with different semantics replaces the function.
@@ -97,6 +104,6 @@ The table would be dishonest without these.
 ## Running the checks behind this table
 
 ```bash
-pytest packages/mcp-vlei/tests          # 143 tests, no containers required
+pytest packages/mcp-vlei/tests          # 150 tests, no containers required
 pytest examples/association-server/tests -s   # end to end; needs the credential environment
 ```
