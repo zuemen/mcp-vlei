@@ -5,3 +5,6 @@ render/
 # .pptx on the machine that presents, not in the repository every clone downloads.
 *.mp4
 *.mov
+
+# Decks with a draft recording embedded (scripts/record-demo.py): local only, like the recordings.
+drafts/

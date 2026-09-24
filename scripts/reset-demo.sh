@@ -5,7 +5,9 @@
 #   bash scripts/reset-demo.sh                    # full: containers, credentials, services
 #   bash scripts/reset-demo.sh --keep-credentials # faster: only the verifier and console state
 #
-# Ends with READY, or with the reason it did not. Between takes the fast path is usually enough;
+# Everything the six scenes need comes up: the witness network and verifier, the credential chain,
+# the gateway (scene 4, pointed at the chain's root), the server written from the skill (scene 5)
+# and the console. Ends with READY, or with the reason it did not. Between takes the fast path is usually enough;
 # the full path is for the start of a session, or after anything has been changed.
 
 set -uo pipefail
@@ -33,14 +35,20 @@ die()  { printf '\n%s  NOT READY%s  %s\n\n' "$c_bad" "$c_reset" "$*"; exit 1; }
 
 # --------------------------------------------------------------------------------------------- #
 
-step "Stopping the console"
-PID="$(netstat -ano 2>/dev/null | grep ':8800' | grep LISTENING | awk '{print $5}' | head -1)"
-if [[ -n "${PID:-}" ]]; then
-  taskkill //PID "$PID" //F >/dev/null 2>&1 || kill "$PID" 2>/dev/null
-  ok "console stopped"
-else
-  ok "console was not running"
-fi
+stop_port() {  # stop whatever listens on a local port: $1 port, $2 what it is
+  local pid
+  pid="$(netstat -ano 2>/dev/null | grep ":$1 " | grep LISTENING | awk '{print $5}' | head -1)"
+  if [[ -n "${pid:-}" ]]; then
+    taskkill //PID "$pid" //F >/dev/null 2>&1 || kill "$pid" 2>/dev/null
+    ok "$2 stopped"
+  else
+    ok "$2 was not running"
+  fi
+}
+
+step "Stopping the console and the skill-generated server"
+stop_port 8800 "console"
+stop_port 8082 "skill-generated server"
 
 if (( KEEP_CREDENTIALS )); then
   step "Resetting the verifier only (--keep-credentials)"
@@ -49,6 +57,15 @@ if (( KEEP_CREDENTIALS )); then
   $COMPOSE up -d --force-recreate vlei-verifier >/dev/null 2>&1 \
     || die "could not recreate the verifier"
   ok "verifier recreated with an empty database"
+  for i in $(seq 1 60); do
+    curl -fsS http://localhost:7676/health >/dev/null 2>&1 && break
+    sleep 2
+    [[ $i -eq 60 ]] && die "the verifier did not come up"
+  done
+  # An empty database trusts no root, so the first presentation after this (the re-issue between
+  # takes) would be rejected. Install the root the credentials were issued under.
+  bash "${HERE}/bootstrap-credentials.sh" --install-root > "${ROOT}/reset.log" 2>&1     || die "could not install the root of trust; see reset.log"
+  ok "root of trust installed in the new verifier"
 else
   step "Recreating every container"
   # `docker compose down -v` has been observed to leave containers behind on this setup, which
@@ -78,9 +95,40 @@ else
   ok "chain issued, six acceptance checks passed, credential re-issued at the end"
 fi
 
+# Relative, from the repository: on Windows, Python cannot open a Git Bash path like /c/Users/….
+ROOT_AID="$(cd "$ROOT" && python -c "import json;print(json.load(open('credentials/env.json'))['acceptedRoots'][0])" 2>/dev/null)"
+[[ -n "$ROOT_AID" ]] || die "credentials/env.json has no accepted root; run without --keep-credentials"
+
+# Background services are started with the subshell's own output detached as well: on Git Bash a
+# stub process stays alive beside each native one, and if it held this script's stdout, anything
+# reading it (`| tee reset.log`) would wait for the console to exit.
+
+step "Starting the gateway (scene 4)"
+# Recreated, because the root it trusts is the one the chain was just issued under.
+( cd "$ROOT" && VLEI_ACCEPTED_ROOTS="$ROOT_AID" \
+  docker compose -f deploy/agentgateway/docker-compose.yml up -d --build --force-recreate \
+  > "${ROOT}/gateway.log" 2>&1 ) || die "the gateway did not start; see gateway.log"
+for i in $(seq 1 60); do
+  [[ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://localhost:3000/mcp)" != "000" ]] && break
+  sleep 2
+  [[ $i -eq 60 ]] && die "the gateway did not answer on :3000; see gateway.log"
+done
+ok "gateway on http://localhost:3000/mcp, trusting ${ROOT_AID}"
+
+step "Starting the server written from the skill (scene 5)"
+( cd "$ROOT" && PYTHONPATH="packages/mcp-vlei/src" VLEI_LE_CREDENTIAL=credentials/le.cesr \
+  VLEI_ACCEPTED_ROOTS="$ROOT_AID" VLEI_WITNESS_URL="$WITNESS_URL" PORT=8082 \
+  python examples/skill-server/server.py > "${ROOT}/skill-server.log" 2>&1 & ) </dev/null >/dev/null 2>&1
+for i in $(seq 1 30); do
+  curl -fsS http://127.0.0.1:8082/.well-known/vlei >/dev/null 2>&1 && break
+  sleep 1
+  [[ $i -eq 30 ]] && die "the skill-generated server did not start; see skill-server.log"
+done
+ok "skill-generated server on http://127.0.0.1:8082/mcp"
+
 step "Starting the console"
 ( cd "$ROOT" && PYTHONPATH="packages/mcp-vlei/src" \
-  python examples/console/app.py > "${ROOT}/console.log" 2>&1 & )
+  python examples/console/app.py > "${ROOT}/console.log" 2>&1 & ) </dev/null >/dev/null 2>&1
 for i in $(seq 1 30); do
   curl -fsS "${CONSOLE}/state" >/dev/null 2>&1 && break
   sleep 1

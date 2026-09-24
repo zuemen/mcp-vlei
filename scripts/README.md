@@ -69,7 +69,19 @@ bash scripts/reset-demo.sh --keep-credentials   # between takes: verifier and co
 bash scripts/record-check.sh                    # preconditions; non-zero if any fail
 bash scripts/demo-run.sh                        # drive the six scenes, pausing between
 bash scripts/demo-run.sh --scene 3              # one scene
+python scripts/rehearse.py                      # every scene, unattended; READY TO RECORD or not
+python scripts/record-demo.py                   # a draft recording of the script, from the console
 ```
+
+`rehearse.py` presses what the presenter presses — keys 0-5, REVOKE, `I` — in a 1920x1080 browser
+and checks each scene's outcome, failure layer and evidence line against the script. It ends by
+re-issuing, so the environment is left ready for a take.
+
+`record-demo.py` records a **draft**, not the take: each scene from Chrome's own screencast, scene
+3's revocation real, the credential re-issued off camera before scene 4, then H.264 at 30 fps and
+joined. It cannot pace itself to a narration; it exists so the deck can be rehearsed against a real
+recording and the scene lengths judged before anyone records. `--scenes 0:45,1:30,…` sets the
+scenes and their lengths.
 
 `record-check.sh` gates on the thing that actually ruins takes: **the agent's credential must not
 already be revoked.** The acceptance suite revokes it, so a console started after a test run shows
@@ -85,12 +97,16 @@ whichever suits the take. Hands on a keyboard look less staged than a terminal.
 ## Other commands
 
 ```bash
-bash scripts/bootstrap-credentials.sh --verify   # re-run checks 3-6 only
-bash scripts/bootstrap-credentials.sh --down     # remove containers and volumes
+bash scripts/bootstrap-credentials.sh --verify        # re-run checks 3-6, then re-issue
+bash scripts/bootstrap-credentials.sh --reissue       # a fresh ECR after a revocation (~30 s)
+bash scripts/bootstrap-credentials.sh --install-root  # the root of trust into a recreated verifier
+bash scripts/bootstrap-credentials.sh --down          # remove containers and volumes
 ```
 
-`--verify` is how you re-arm the demo: after a recording take that ends in revocation, re-issue and
-confirm the chain is live again before the next take.
+`--reissue` is how you re-arm the demo after a take that ends in revocation; the console's `I` key
+runs it and reloads. `--install-root` exists because a recreated verifier starts with an empty
+database and trusts no root: `reset-demo.sh --keep-credentials` calls it, and before it did, the
+first presentation after that reset — the re-issue between takes — was rejected.
 
 ## Configuration
 

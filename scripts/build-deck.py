@@ -720,18 +720,39 @@ SLIDES = [
 ]
 
 
-def build(path: Path = OUT, *, video: Path | None = None) -> Path:
-    notes = load_notes()
+def apply_overrides(slides: list[dict], overrides: dict) -> list[dict]:
+    """A variant of the deck without touching this file: ``{heading: {key: value}}`` replaces those
+    keys of that slide, and ``"_drop": [heading, …]`` removes slides. Used for proposals, which live
+    beside the talk rather than in it (docs/proposals/)."""
+    drop = set(overrides.get("_drop", []))
+    out = []
+    for spec in slides:
+        heading = spec.get("heading") or spec["title"]
+        if heading in drop:
+            continue
+        changes = dict(overrides.get(heading, {}))
+        if "rows" in changes:
+            changes["rows"] = tuple(changes["rows"])
+        if "bullets" in changes:  # JSON has no tuples; a [lead, rest] pair is a bullet with a lead
+            changes["bullets"] = [tuple(b) if isinstance(b, list) else b for b in changes["bullets"]]
+        out.append(dict(spec, **changes))
+    return out
+
+
+def build(path: Path = OUT, *, video: Path | None = None, script: Path = SCRIPT,
+          overrides: dict | None = None) -> Path:
+    notes = load_notes(script)
     deck = Presentation()
     deck.slide_width, deck.slide_height = W, H
 
-    total = len(SLIDES)
-    for n, spec in enumerate(SLIDES, start=1):
+    slides = apply_overrides(SLIDES, overrides) if overrides else SLIDES
+    total = len(slides)
+    for n, spec in enumerate(slides, start=1):
         heading = spec.get("heading") or spec["title"]
         if n not in notes or notes[n][0] != heading:
             found = notes.get(n, ("(nothing)",))[0]
             raise SystemExit(
-                f"slide {n} is {heading!r}, but docs/DEMO.md has {found!r} as ### {n}. "
+                f"slide {n} is {heading!r}, but {script.name} has {found!r} as ### {n}. "
                 "The script and the deck must be numbered the same way."
             )
         spec = dict(spec, notes=notes[n][1])
@@ -742,11 +763,15 @@ def build(path: Path = OUT, *, video: Path | None = None) -> Path:
             _page(deck.slides[-1], n, total)
     extra = sorted(set(notes) - set(range(1, total + 1)))
     if extra:
-        raise SystemExit(f"docs/DEMO.md has notes for slides {extra}, which the deck does not have")
+        raise SystemExit(f"{script.name} has notes for slides {extra}, which the deck does not have")
 
     path.parent.mkdir(parents=True, exist_ok=True)
     deck.save(path)
     return path
+
+
+#: PowerPoint's msoAnimEffectMediaPlay and msoAnimTriggerWithPrevious.
+MEDIA_PLAY, WITH_PREVIOUS = 83, 2
 
 
 def set_playback(path: Path) -> dict[str, object]:
@@ -767,6 +792,14 @@ def set_playback(path: Path) -> dict[str, object]:
                     play.HideWhileNotPlaying = False
                     found = {"slide": slide.SlideIndex, "playOnEntry": bool(play.PlayOnEntry),
                              "rewind": bool(play.RewindMovie)}
+            # PlayOnEntry alone leaves the play effect in the main sequence as a click effect: the
+            # movie waited for a click, while the setting read back True. Make the effect start with
+            # the slide (it is the slide's first effect, so "with previous" is "on entry").
+            sequence = slide.TimeLine.MainSequence
+            for index in range(1, sequence.Count + 1):
+                effect = sequence.Item(index)
+                if effect.Shape.Name == "demo-full" and effect.EffectType == MEDIA_PLAY:
+                    effect.Timing.TriggerType = WITH_PREVIOUS
         presentation.Save()
     finally:
         presentation.Close()
@@ -779,7 +812,12 @@ def set_playback(path: Path) -> dict[str, object]:
     deck.save(str(path))
     xml = "".join(s.element.xml for s in Presentation(str(path)).slides)
     found["fullScreen"] = 'fullScrn="1"' in xml
-    found["startsOnEntry"] = "playFrom" in xml and "mainSeq" in xml
+    # On entry means the play command's node is not a click effect; "playFrom" alone is also
+    # present when the movie waits for a click.
+    play_nodes = re.findall(r'<p:cTn [^>]*presetClass="mediacall"[^>]*nodeType="(\w+)"[^>]*>'
+                            r'(?:(?!</p:cTn>).)*?playFrom', xml, re.S)
+    found["startsOnEntry"] = bool(play_nodes) and all(n in ("withEffect", "afterEffect")
+                                                      for n in play_nodes)
     return found
 
 
@@ -816,9 +854,10 @@ def render(deck_path: Path, out_dir: Path) -> list[Path]:
     return sheets
 
 
-def speaking_time(words_per_minute: int = 130) -> tuple[int, float]:
-    """Words in the notes, and minutes to say them at ``words_per_minute``."""
-    words = sum(len(re.findall(r"[A-Za-z0-9'’-]+", text)) for _, text in load_notes().values())
+def speaking_time(script: Path = SCRIPT, words_per_minute: int = 130) -> tuple[int, float]:
+    """Words spoken from the notes — stage directions excluded — and minutes at that pace."""
+    words = sum(len(re.findall(r"[A-Za-z0-9'’-]+", re.sub(r"\[[^\]]*\]", "", text)))
+                for _, text in load_notes(script).values())
     return words, words / words_per_minute
 
 
@@ -829,16 +868,23 @@ if __name__ == "__main__":
     parser.add_argument("out", nargs="?", type=Path, default=OUT)
     parser.add_argument("--render", action="store_true", help="also write PNG contact sheets")
     parser.add_argument("--video", type=Path, help="embed this recording on the Demo slide")
+    parser.add_argument("--script", type=Path, default=SCRIPT,
+                        help="read the notes from this script instead of docs/DEMO.md")
+    parser.add_argument("--overrides", type=Path,
+                        help="JSON of per-slide changes, for a variant of the deck (docs/proposals/)")
     args = parser.parse_args()
 
-    out = build(args.out, video=args.video)
-    print(f"{len(SLIDES)} slides -> {out}")
+    import json
+
+    overrides = json.loads(args.overrides.read_text(encoding="utf-8")) if args.overrides else None
+    out = build(args.out, video=args.video, script=args.script, overrides=overrides)
+    print(f"{len(apply_overrides(SLIDES, overrides) if overrides else SLIDES)} slides -> {out}")
     if args.video:
         try:
             print(f"  playback: {set_playback(out)}")
         except ImportError:
             print("  playback: set Start automatically / Play full screen in PowerPoint by hand")
-    words, minutes = speaking_time()
+    words, minutes = speaking_time(args.script)
     print(f"  notes: {words} words, {minutes:.1f} min at 130 wpm")
     if args.render:
         for sheet in render(out, out.parent / "render"):

@@ -19,14 +19,14 @@ check order, and (c) a dozen interop details that a second implementer will choo
 > |---|---|
 > | 1 LEI not bound to an LE | **Fixed** — skill check 9; package `chain.verify_vlei_chain` |
 > | 2 only the leaf's schema constrained | **Fixed** — `verify_vlei_chain` checks every edge's declared schema and the ECR/OOR → LE → QVI shape |
-> | 3 where scope lives | **Open** — the reference reads `a.scope`; the skill does not say so yet |
+> | 3 where scope lives | **Fixed** — `a.scope`, stated in the skill's field list and the specification |
 > | 4 replay cache is per process | **Known limit** — a replicated deployment needs a shared cache; stated in `docs/CONFORMANCE.md`, *not claimed* |
 > | 5 one witness trusted | **Fixed, within limits** — `witness_urls` compares the signer's log across witnesses and refuses a fork; independence of those witnesses is the operator's, as `docs/CONFORMANCE.md` says |
 > | 6–10 contradictions in the skill | **Fixed** in `SKILL.md` |
-> | 11 which bytes the digest covers | **Open** — needs a test vector in `spec/examples/` |
+> | 11 which bytes the digest covers | **Fixed** — `spec/examples/digest-vectors.json`, held against the package by `tests/test_vectors.py` |
 > | 12, 13 `delegatedAid`, `credentialSaid` semantics | **Fixed** — the skill's key table states both |
-> | 14 what an `acceptedRoots` entry is | **Open** — the reference treats it as an issuer AID; the text should say so |
-> | 15 whose cache `ttlMs` governs | **Open** — specification text |
+> | 14 what an `acceptedRoots` entry is | **Fixed** — an issuer AID, stated in the specification and the skill |
+> | 15 whose cache `ttlMs` governs | **Fixed** — the counterparty's, stated in the specification |
 > | 16 `wellKnown` needs an absolute URL | **Not changed** — deployment configuration, as `PUBLIC_URL` / `VLEI_PUBLIC_URL` do |
 > | 17 "witness down" surfaces as two layers | **Not changed** — both are refusals with "not established" in the message; a tenth layer would break the nine-layer contract clients key off |
 > | 18 undeclared client sending a credential | **Not changed** — declaration first is what the specification says |
