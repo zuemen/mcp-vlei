@@ -11,7 +11,12 @@
 # service name, http://witness-demo:5642. That is the port *inside* the network, which stays 5642
 # even when the host port is remapped (VLEI_WITNESS_HOST_PORT_WAN, needed on Windows hosts that
 # reserve 5550-5649) — host.docker.internal would have to track that remapping, the network does
-# not. Override with VLEI_WITNESS_URL.
+# not. Override with VLEI_GATEWAY_WITNESS_URL / VLEI_GATEWAY_WITNESS_URLS — deliberately not
+# VLEI_WITNESS_URL, which scripts/.env sets to the *host* address (localhost:15642) for everything
+# running outside Docker; exported into this file it would point the container at itself.
+#
+# Several witnesses: vlei-authz compares each caller's key log across all three demo witnesses and
+# refuses a fork (duplicity). They are one container here, so the check is exercised, not earned.
 
 name: mcp-vlei-regulator
 
@@ -54,7 +59,8 @@ services:
       - PORT=9000
       - VLEI_LE_CREDENTIAL=/run/vlei/le.cesr
       - VLEI_ACCEPTED_ROOTS=${VLEI_ACCEPTED_ROOTS:-}
-      - VLEI_WITNESS_URL=${VLEI_WITNESS_URL:-http://witness-demo:5642}
+      - VLEI_WITNESS_URL=${VLEI_GATEWAY_WITNESS_URL:-http://witness-demo:5642}
+      - VLEI_WITNESS_URLS=${VLEI_GATEWAY_WITNESS_URLS:-http://witness-demo:5642,http://witness-demo:5643,http://witness-demo:5644}
       # Per witness request; must stay well under extAuthz's requestTimeout (10s in config.yaml).
       - VLEI_WITNESS_TIMEOUT=${VLEI_WITNESS_TIMEOUT:-3}
       - VLEI_REVOCATION_SOURCE=${VLEI_REVOCATION_SOURCE:-tel}

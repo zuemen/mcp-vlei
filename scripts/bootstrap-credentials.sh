@@ -5,6 +5,8 @@
 #   bash scripts/bootstrap-credentials.sh            # full run
 #   bash scripts/bootstrap-credentials.sh --down     # tear everything down
 #   bash scripts/bootstrap-credentials.sh --verify   # re-run acceptance checks only
+#   bash scripts/bootstrap-credentials.sh --reissue  # fresh ECR after a revocation
+#   bash scripts/bootstrap-credentials.sh --install-root  # root of trust into a recreated verifier
 #
 # What is real and what is not:
 #   REAL  — KERI inception and key events, witness receipts, ACDC issuance, chained edges,
@@ -630,6 +632,14 @@ main() {
     # After a revocation — scene 3 of the recording, or acceptance check 5 — issue the holder a
     # fresh ECR and export it, without re-running anything else.
     reissue_ecr
+    step "Done"
+    return
+  fi
+  if [[ "${1:-}" == "--install-root" ]]; then
+    # A recreated verifier starts with an empty database: it knows no root of trust, so every
+    # presentation is rejected until the root is installed again. `reset-demo.sh --keep-credentials`
+    # recreates it and calls this.
+    install_root
     step "Done"
     return
   fi
