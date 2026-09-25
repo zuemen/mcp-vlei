@@ -423,6 +423,10 @@ def verify_request(
         replay_cache.check_and_record(aid, claimed_digest, ts)
 
 
+def _is_nan(value: Any) -> bool:
+    return isinstance(value, float) and math.isnan(value)
+
+
 def scope_satisfied(required: dict[str, Any] | None, held: dict[str, Any] | None) -> tuple[bool, str]:
     """Compare a tool's declared scope against the scope carried by the caller's credential.
 
@@ -451,8 +455,10 @@ def scope_satisfied(required: dict[str, Any] | None, held: dict[str, Any] | None
         have = held[key]
         if isinstance(want, (int, float)) and not isinstance(want, bool):
             # NaN compares false with everything, so `NaN < want` let it through as "enough".
+            # isnan only on floats: a JSON integer can be arbitrarily large, and math.isnan on
+            # 10**400 raises OverflowError instead of answering.
             if (isinstance(have, bool) or not isinstance(have, (int, float))
-                    or math.isnan(have) or math.isnan(want) or have < want):
+                    or _is_nan(have) or _is_nan(want) or have < want):
                 return False, f"{key}: requires at least {want}, credential carries {have!r}"
         elif isinstance(want, (list, tuple, set)):
             # Only a list covers a list. A string is iterable, and reading "TW" as {"T", "W"} once

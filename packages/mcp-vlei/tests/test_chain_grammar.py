@@ -65,6 +65,9 @@ async def test_a_qvi_trusted_as_root_cannot_issue_an_ecr_for_any_lei(world):
 
 
 async def test_an_le_trusted_as_root_cannot_name_another_entitys_lei(world):
+    """An ECR naming an LEI other than its LE credential's is refused wherever the root is. What
+    this does not settle: an LE trusted directly is trusted for the LEI its own LE credential
+    asserts — the operator chose to trust that entity, not the QVI that verified it."""
     ecr = world.issue(world.le_registry, ECR_SCHEMA, world.holder.pre, {"LEI": OTHER_LEI, **PERSON},
                       edge=("le", world.le_credential))
     stream = export([ecr, world.le_credential, world.qvi_credential])
@@ -147,6 +150,13 @@ def test_a_held_nan_satisfies_no_numeric_requirement():
 
     ok, _ = scope_satisfied({"maxAmount": 1_000_000}, held)
     assert not ok
+
+
+@pytest.mark.parametrize("required, held", [(5, 10**400), (10**400, 5)])
+def test_an_enormous_integer_is_compared_not_crashed(required, held):
+    """JSON integers have no size limit; the NaN check must not turn one into OverflowError."""
+    ok, _ = scope_satisfied({"maxAmount": required}, {"maxAmount": held})
+    assert ok is (held >= required)
 
 
 def test_a_boolean_requirement_is_not_met_by_a_number():
