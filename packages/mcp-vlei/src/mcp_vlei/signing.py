@@ -439,13 +439,20 @@ def scope_satisfied(required: dict[str, Any] | None, held: dict[str, Any] | None
     """
     if not required:
         return True, ""
-    held = held or {}
+    if held is None:
+        held = {}
+    if not isinstance(held, dict):
+        # `"maxAmount" in "maxAmount"` is true for a string, and indexing it then raised TypeError
+        # out of the verification with no layer and no record.
+        return False, f"the credential's scope is not an object: {held!r}"
     for key, want in required.items():
         if key not in held:
             return False, f"credential carries no {key!r}"
         have = held[key]
         if isinstance(want, (int, float)) and not isinstance(want, bool):
-            if isinstance(have, bool) or not isinstance(have, (int, float)) or have < want:
+            # NaN compares false with everything, so `NaN < want` let it through as "enough".
+            if (isinstance(have, bool) or not isinstance(have, (int, float))
+                    or math.isnan(have) or math.isnan(want) or have < want):
                 return False, f"{key}: requires at least {want}, credential carries {have!r}"
         elif isinstance(want, (list, tuple, set)):
             # Only a list covers a list. A string is iterable, and reading "TW" as {"T", "W"} once
@@ -458,6 +465,7 @@ def scope_satisfied(required: dict[str, Any] | None, held: dict[str, Any] | None
                 return False, f"{key}: cannot compare {have!r} with {want!r}"
             if missing:
                 return False, f"{key}: credential does not cover {sorted(map(str, missing))}"
-        elif have != want:
+        elif type(have) is not type(want) or have != want:
+            # By type as well as value: `1 == True`, so a held 1 met a required True.
             return False, f"{key}: requires {want!r}, credential carries {have!r}"
     return True, ""
