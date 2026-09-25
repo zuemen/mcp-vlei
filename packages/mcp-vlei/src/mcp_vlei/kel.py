@@ -159,7 +159,20 @@ def _parse_attachments(text: str, message: Message) -> None:
 
 
 def parse_messages(stream: str) -> list[Message]:
-    """Every JSON body in a CESR stream — key events, registry events and ACDCs — in order."""
+    """Every JSON body in a CESR stream — key events, registry events and ACDCs — in order.
+
+    An unreadable attachment is a refusal like any other, not a ValueError escaping verification
+    with no layer: a witness answering garbage is a witness that did not establish anything.
+    """
+    try:
+        return _parse_messages(stream)
+    except ChainInvalid:
+        raise
+    except ValueError as exc:  # binascii.Error included
+        raise ChainInvalid(f"unreadable attachment in the stream ({exc})") from exc
+
+
+def _parse_messages(stream: str) -> list[Message]:
     decoder = json.JSONDecoder()
     messages: list[Message] = []
     pos = 0
@@ -309,6 +322,7 @@ def verify_kel(messages: list[Message], pre: str, *, delegator: KeyState | None 
     for index, message in enumerate(events):
         body, ilk = message.body, message.ilk
         said = body.get("d", "")
+        prior_next_threshold = 0
         if body.get("s") != f"{index:x}":
             raise ChainInvalid(
                 f"the log of {pre} is not continuous: event {index} states sequence number "
@@ -344,6 +358,7 @@ def verify_kel(messages: list[Message], pre: str, *, delegator: KeyState | None 
             if ilk in ("icp", "dip"):
                 raise ChainInvalid(f"the log of {pre} has a second inception", aid=pre)
             if ilk in ("rot", "drt"):
+                prior_next_threshold = next_threshold
                 if (ilk == "drt") != (delegated_by is not None):
                     raise ChainInvalid(f"event {index} of {pre} has the wrong rotation type", aid=pre)
                 revealed = list(body.get("k") or [])
@@ -370,12 +385,34 @@ def verify_kel(messages: list[Message], pre: str, *, delegator: KeyState | None 
             next_digests = list(body.get("n") or [])
             next_threshold = _threshold(body.get("nt"), "next")
             toad = _threshold(body.get("bt"), "witness")
+            # Thresholds count distinct keys and witnesses. A key or witness listed twice let one
+            # signature or one receipt count twice, and a threshold of zero with witnesses listed
+            # let an event through with no receipt at all.
+            if len(set(keys)) != len(keys):
+                raise ChainInvalid(f"event {index} of {pre} lists a signing key twice", aid=pre)
+            if len(set(witnesses)) != len(witnesses):
+                raise ChainInvalid(f"event {index} of {pre} lists a witness twice", aid=pre)
+            if witnesses and not 1 <= toad <= len(witnesses):
+                raise ChainInvalid(
+                    f"event {index} of {pre} has a witness threshold of {toad} for "
+                    f"{len(witnesses)} witnesses",
+                    aid=pre,
+                )
 
         signed = _verified(message, keys, message.signatures)
         if len(signed) < max(threshold, 1):
             raise ChainInvalid(
                 f"event {index} of {pre} is not signed by its current keys "
                 f"({len(signed)} valid signature(s), threshold {threshold})",
+                aid=pre,
+            )
+        if len(signed) < prior_next_threshold:
+            # Pre-rotation commits to the next keys *and* to how many of them must sign. A
+            # rotation that lists every committed key but declares a threshold of one, signed with
+            # the one key a thief holds, satisfies its own threshold and not the committed one.
+            raise ChainInvalid(
+                f"rotation {index} of {pre} carries {len(signed)} signature(s) from the committed "
+                f"keys; the prior next threshold is {prior_next_threshold}",
                 aid=pre,
             )
         receipted = _verified(message, witnesses, message.receipts)
@@ -521,30 +558,60 @@ class WitnessKeyStates:
             )
         return parse_messages(response.text)
 
-    async def _copies(self, pre: str) -> list[tuple[str, list[Message]]]:
+    async def _copies(self, pre: str) -> tuple[list[tuple[str, list[Message]]], list[str]]:
+        """The copies witnesses hold, and why the others gave none.
+
+        An empty answer is not a copy: a witness that has never seen the log is not a witness of
+        it, and counting it toward the quorum let one copy be verified alone, compared with
+        nothing, while the record said several witnesses had answered.
+        """
         copies: list[tuple[str, list[Message]]] = []
-        failures: list[ChainInvalid] = []
+        missing: list[str] = []
         for url in self.witness_urls:
             try:
-                copies.append((url, await self.messages(pre, url)))
+                messages = await self.messages(pre, url)
             except ChainInvalid as exc:
-                failures.append(exc)
-        if len(copies) < self.quorum:
-            reason = f": {failures[0].message}" if failures else ""
-            raise ChainInvalid(
-                f"only {len(copies)} of {len(self.witness_urls)} witnesses answered for {pre}, "
-                f"and {self.quorum} are required; its key state was not established{reason}",
-                aid=pre,
-            )
-        return copies
+                missing.append(f"{url}: {exc.message}")
+                continue
+            if any(m.ilk in KEL_ILKS and m.body.get("i") == pre for m in messages):
+                copies.append((url, messages))
+            else:
+                missing.append(f"{url}: holds no copy")
+        return copies, missing
 
     async def resolve(self, pre: str, *, _depth: int = 0) -> KeyState:
         if _depth > MAX_DELEGATION_DEPTH:
             raise ChainInvalid(f"the delegation of {pre} does not terminate", aid=pre)
-        copies = await self._copies(pre)
+        copies, problems = await self._copies(pre)
+
+        # Each copy is verified on its own before any comparison. A copy that does not verify is a
+        # faulty witness, not evidence about the controller: counting it, one witness of three
+        # could veto an identifier the others agree on — by appending an event nobody signed, or
+        # by making one up at a number the others hold. Duplicity is two *valid* copies that
+        # disagree, and only valid copies make up the quorum.
+        delegators: dict[str, KeyState] = {}
+        valid: list[tuple[str, list[Message], KeyState]] = []
+        for url, messages in copies:
+            try:
+                named = delegator_of(messages, pre)
+                if named and named not in delegators:
+                    delegators[named] = await self.resolve(named, _depth=_depth + 1)
+                state = verify_kel(messages, pre, delegator=delegators.get(named) if named else None)
+            except ChainInvalid as exc:
+                problems.append(f"{url}: {exc.message}")
+                continue
+            valid.append((url, messages, state))
+        if len(valid) < self.quorum:
+            reason = f" ({problems[0]})" if problems else ""
+            raise ChainInvalid(
+                f"only {len(valid)} of {len(self.witness_urls)} witnesses served a valid key event "
+                f"log for {pre}, and {self.quorum} are required; its key state was not "
+                f"established{reason}",
+                aid=pre,
+            )
 
         seen: dict[int, tuple[str, str]] = {}
-        for url, messages in copies:
+        for url, messages, _ in valid:
             for message in messages:
                 if message.ilk not in KEL_ILKS or message.body.get("i") != pre:
                     continue
@@ -561,10 +628,5 @@ class WitnessKeyStates:
                     )
                 seen.setdefault(sn, (said, url))
 
-        def length(copy: tuple[str, list[Message]]) -> int:
-            return sum(1 for m in copy[1] if m.ilk in KEL_ILKS and m.body.get("i") == pre)
-
-        messages = max(copies, key=length)[1]
-        named = delegator_of(messages, pre)
-        delegator = await self.resolve(named, _depth=_depth + 1) if named else None
-        return verify_kel(messages, pre, delegator=delegator)
+        # A shorter valid copy is a witness still catching up; the longest valid copy is the state.
+        return max(valid, key=lambda copy: copy[2].sn)[2]
