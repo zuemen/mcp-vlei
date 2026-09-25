@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import httpx
 import pytest
 
 from mcp_vlei.testing import Controller, Key, Witness, serialize
@@ -328,3 +329,170 @@ async def test_one_witness_down_of_three_still_resolves():
     world = World()
     resolver = WitnessKeyStates(URLS, client=_witnesses(world, {"wes": {"*": "down"}}))
     assert (await resolver.resolve(world.holder.pre)).pre == world.holder.pre
+
+
+# --------------------------------------------------------------------------------------------- #
+# Checks that a mutation run found no test holding (packages/mcp-vlei/tools/mutate_checks.py)
+#
+# Each test below is the one input that only its check refuses: delete the check and every other
+# test still passes. The events are signed with the controller's own current key — what a stolen
+# signing key, or a controller showing different witnesses different logs, can produce. Those are
+# the cases pre-rotation, delegated approval and the hash chain exist for.
+# --------------------------------------------------------------------------------------------- #
+
+def _append_signed(controller: Controller, body: dict) -> None:
+    """Append an event whatever it says, signed with the controller's current keys."""
+    controller._append(serialize(body, ("d",)))
+
+
+def _rotation(controller: Controller, sn: int, revealed: list[Key], committed: list[Key], *,
+              ilk: str = "rot", next_threshold: str = "1") -> dict:
+    return {
+        "v": "", "t": ilk, "d": "", "i": controller.pre, "s": f"{sn:x}",
+        "p": controller.events[-1].said, "kt": "1", "k": [key.qb64 for key in revealed],
+        "nt": next_threshold, "n": [key.next_digest for key in committed],
+        "bt": "0", "br": [], "ba": [], "a": [],
+    }
+
+
+def test_an_event_with_a_skipped_sequence_number_is_refused():
+    """kel.py — sequence continuity. The prior digest is right; only the number is wrong."""
+    alice = Controller("alice")
+    _append_signed(alice, {"v": "", "t": "ixn", "d": "", "i": alice.pre, "s": "2",
+                           "p": alice.events[-1].said, "a": []})
+
+    with pytest.raises(ChainInvalid, match="continuous"):
+        state_of(alice)
+
+
+def test_a_log_spliced_from_two_branches_of_a_fork_is_refused():
+    """kel.py — prior digest. Every event is signed and numbered correctly; the history is not one.
+
+    A controller that signed two different events at sequence 1 can show a verifier the start of
+    one branch and the end of the other. Only the prior-digest chain tells them apart.
+    """
+    alice = Controller("alice")
+    alice.interact([{"i": "E" + "a" * 43, "s": "0", "d": "E" + "b" * 43}])
+    other_branch = alice.forked_kel([{"i": "E" + "c" * 43, "s": "0", "d": "E" + "d" * 43}])
+    alice.interact([])
+
+    spliced = other_branch + alice.events[2].cesr()
+    with pytest.raises(ChainInvalid, match="follow"):
+        verify_kel(parse_messages(spliced), alice.pre)
+
+
+def test_an_event_that_does_not_hash_to_its_said_is_refused():
+    """kel.py — event SAID. Signed by the right key, but its `d` names some other content."""
+    alice = Controller("alice")
+    raw = serialize({"v": "", "t": "ixn", "d": "", "i": alice.pre, "s": "1",
+                     "p": alice.events[-1].said, "a": []}, ("d",))
+    alice._append(raw.replace(json.loads(raw)["d"], "E" + "q" * 43))
+
+    with pytest.raises(ChainInvalid, match="SAID"):
+        state_of(alice)
+
+
+def test_a_stolen_key_cannot_restart_the_log_to_escape_pre_rotation():
+    """kel.py — a second inception. Pre-rotation says a stolen signing key cannot choose the next
+    one. Signing a fresh inception mid-log would reset the commitment to the thief's key and let
+    the rotation after it through; the log is refused at the second inception."""
+    alice = Controller("alice")
+    thief = Key("thief")
+    _append_signed(alice, {"v": "", "t": "icp", "d": "", "i": alice.pre, "s": "1",
+                           "p": alice.events[-1].said, "kt": "1", "k": [alice.keys[0].qb64],
+                           "nt": "1", "n": [thief.next_digest], "bt": "0", "b": [], "c": [],
+                           "a": []})
+    alice.keys = [thief]
+    _append_signed(alice, _rotation(alice, 2, [thief], [Key("thief:1")]))
+
+    with pytest.raises(ChainInvalid, match="second inception"):
+        state_of(alice)
+
+
+def test_a_delegated_identifier_cannot_rotate_without_its_delegator():
+    """kel.py — rotation type. A delegate that rotates with `rot` instead of `drt` skips the
+    delegator's approval, which is what lets a person withdraw or recover their agent's keys."""
+    person = Controller("person")
+    agent = Controller("agent", delegator=person)
+    committed = agent.next[0]
+    agent.keys = [committed]
+    _append_signed(agent, _rotation(agent, 1, [committed], [Key("agent:x")]))
+
+    with pytest.raises(ChainInvalid, match="rotation type"):
+        state_of(agent, delegator=person)
+
+
+def test_a_rotation_below_the_committed_threshold_is_refused():
+    """kel.py — next threshold. Two keys were committed, both required; revealing one is not a
+    rotation the controller agreed to, whoever holds that one key."""
+    alice = Controller("alice")
+    first, a, b = alice.next[0], Key("alice:a"), Key("alice:b")
+    alice.keys = [first]
+    _append_signed(alice, _rotation(alice, 1, [first], [a, b], next_threshold="2"))
+    alice.keys = [a]
+    _append_signed(alice, _rotation(alice, 2, [a], [Key("alice:c")]))
+
+    with pytest.raises(ChainInvalid, match="threshold"):
+        state_of(alice)
+
+
+def test_a_delegated_inception_without_its_delegator_is_refused_not_crashed():
+    """kel.py — no delegator's log to check against is a refusal, not an AttributeError."""
+    person = Controller("person")
+    agent = Controller("agent", delegator=person)
+
+    with pytest.raises(ChainInvalid, match="delegat"):
+        verify_kel(parse_messages(agent.kel()), agent.pre)
+
+
+def test_an_approval_from_someone_other_than_the_named_delegator_is_refused():
+    """kel.py — the delegator must be the one the inception names, not anyone who anchored the
+    seal. Mallory can anchor any seal she likes in her own log."""
+    person = Controller("person")
+    agent = Controller("agent", delegator=person)
+    mallory = Controller("mallory")
+    mallory.interact([{"i": agent.pre, "s": "0", "d": agent.pre}])
+
+    with pytest.raises(ChainInvalid, match="delegat"):
+        state_of(agent, delegator=mallory)
+
+
+def test_a_delegation_chain_deeper_than_the_limit_is_refused():
+    """kel.py — delegation depth. Anyone can create delegates of delegates; resolving them must
+    stop somewhere."""
+    from mcp_vlei.kel import MAX_DELEGATION_DEPTH, StreamKeyStates
+
+    controllers = [Controller("root")]
+    for depth in range(MAX_DELEGATION_DEPTH + 2):
+        controllers.append(Controller(f"d{depth}", delegator=controllers[-1]))
+    stream = "".join(c.kel() for c in controllers)
+
+    with pytest.raises(ChainInvalid, match="terminate"):
+        StreamKeyStates(parse_messages(stream)).resolve(controllers[-1].pre)
+
+
+async def test_a_delegation_chain_deeper_than_the_limit_is_refused_from_witnesses():
+    from mcp_vlei.kel import MAX_DELEGATION_DEPTH
+
+    controllers = [Controller("root")]
+    for depth in range(MAX_DELEGATION_DEPTH + 2):
+        controllers.append(Controller(f"d{depth}", delegator=controllers[-1]))
+    logs = {c.pre: c.kel() for c in controllers}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=logs.get(request.url.params.get("pre"), ""))
+
+    resolver = WitnessKeyStates("http://witness",
+                                client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    with pytest.raises(ChainInvalid, match="terminate"):
+        await resolver.resolve(controllers[-1].pre)
+
+
+def test_a_quorum_that_cannot_be_met_is_a_configuration_error():
+    """kel.py — fail at construction, not by quietly accepting fewer witnesses than configured."""
+    with pytest.raises(ValueError):
+        WitnessKeyStates([])
+    with pytest.raises(ValueError):
+        WitnessKeyStates(["http://a"], quorum=2)
+    with pytest.raises(ValueError):
+        WitnessKeyStates(["http://a", "http://b"], quorum=-1)  # 0 means the default majority
