@@ -19,6 +19,8 @@ in-process, at a gateway, or by a third party without the tool changing.
 
 from __future__ import annotations
 
+import logging
+
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -52,6 +54,8 @@ META_CREDENTIAL = "org.gleif.vlei/credential"
 META_DELEGATED_AID = "org.gleif.vlei/delegatedAid"
 META_SIGNATURE = "org.gleif.vlei/signature"
 META_ATTESTATION = "org.gleif.vlei/attestation"
+logger = logging.getLogger(__name__)
+
 META_REQUIRES = "org.gleif.vlei/requires"
 META_FAILURE = "org.gleif.vlei/failure"
 META_REPORT = "org.gleif.vlei/report"
@@ -120,11 +124,19 @@ class VleiIdentity(Extension):
         #: Given several witnesses, each caller's log is compared across them and a fork refused
         #: (see `mcp_vlei.kel.WitnessKeyStates`); given one, there is nothing to compare.
         self.key_states = WitnessKeyStates(witness_urls or witness_url, client=witness_client)
+        # The `verifier` source reads each issuer's log too: a vlei-verifier answers about the leaf
+        # only, and its own revocation check ships switched off, so a 200 from it establishes
+        # authorization, not that no link above the ECR was withdrawn.
         self.tel = (
             TelRevocationChecker(witness_url, client=witness_client)
-            if revocation_source == "tel"
+            if revocation_source in ("tel", "verifier")
             else None
         )
+        if revocation_source == "none":
+            logger.warning(
+                "revocation_source='none': revocation is NOT checked. A withdrawn credential will "
+                "be accepted until it expires; the decision record says revocationChecked=false."
+            )
         self._replay = ReplayCache(window_seconds=freshness_seconds)
         #: Tool name -> requirement. Populated from the bound server's tool list, or supplied
         #: directly for a deployment that keeps its policy elsewhere (a gateway, for instance).
@@ -411,11 +423,17 @@ class VleiIdentity(Extension):
                 live = await self.verifier.verify(
                     credential, said=said, aid=holder, source="presented"
                 )
+                links = result.chain_saids or [result.credential_said or said]
+                for link in links:
+                    await self.tel.check(link, aid=holder)
                 result.revocation_checked = True
                 result.role = live.role or result.role
                 result.lei = live.lei or result.lei
                 report.lei, report.role = result.lei, result.role
-                report.passed("revocation", "vlei-verifier")
+                report.passed(
+                    "revocation",
+                    f"vlei-verifier, and issuers' transaction event logs, all {len(links)} credentials",
+                )
             else:
                 report.skipped("revocation", "no revocation source configured")
         except VleiError as exc:
@@ -484,6 +502,9 @@ class VleiIdentity(Extension):
                 "delegateAid": result.aid if result.aid != result.holder_aid else None,
                 "credentialSaid": result.credential_said,
                 "source": result.source,
+                # A reader of the record must be able to tell a checked decision from one taken
+                # with revocation off; the report's "passed" does not distinguish them.
+                "revocationChecked": bool(result.revocation_checked),
             }
         else:
             record["identity"] = "unverified"

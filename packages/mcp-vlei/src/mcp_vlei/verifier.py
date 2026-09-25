@@ -278,6 +278,16 @@ class VleiVerifier:
         # The verifier answers about the credential this AID presented to it. If that is not the
         # one in front of us, its answer — revoked or not — is about something else.
         reported = pick("said", "credentialSaid", "d")
+        if said and not reported:
+            # An answer about the holder that does not say which credential it is about cannot be
+            # an answer about this one: a holder re-issued after a revocation would otherwise pass
+            # the old credential on the new one's record.
+            raise ChainInvalid(
+                f"the verifier's answer about {aid} does not say which credential it is about; "
+                f"it cannot establish the presented {said}",
+                aid=aid,
+                credential_said=said,
+            )
         if said and reported and reported != said:
             raise ChainInvalid(
                 f"the verifier's record for {aid} is credential {reported}, not the presented "
