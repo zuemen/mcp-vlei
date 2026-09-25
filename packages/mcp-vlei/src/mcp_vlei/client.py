@@ -27,6 +27,7 @@ this wrapper handles the signing.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -44,8 +45,11 @@ from .extension import (
     META_SIGNATURE,
 )
 from .kel import WitnessKeyStates
+from .revocation import TelRevocationChecker
 from .signing import Signer, scope_satisfied, sign_request
 from .verifier import OfflineVerifier, VerificationResult, VleiVerifier
+
+logger = logging.getLogger(__name__)
 
 __all__ = ["VleiClient", "VleiCapability", "Entitlement"]
 
@@ -155,6 +159,9 @@ class VleiClient:
         self._key_states = (
             WitnessKeyStates(witness_url, client=witness_client) if witness_url else None
         )
+        #: Where the server's credentials are checked for revocation. Without a witness the result
+        #: says revocation was not checked, rather than assuming it.
+        self._tel = TelRevocationChecker(witness_url, client=witness_client) if witness_url else None
         self._verifier = verifier
         if self._verifier is None and verifier_url and self.accepted_roots:
             self._verifier = VleiVerifier(verifier_url, accepted_roots=self.accepted_roots)
@@ -181,6 +188,9 @@ class VleiClient:
         self.server_credential: str | None = None
         self.server_capability: dict[str, Any] | None = None
         self.attested: VerificationResult | None = None
+        #: Why the last attestation was not accepted, when one was not. The tool result it came
+        #: with is still returned: the call already happened.
+        self.attestation_rejected: VleiError | None = None
         self._requirements: dict[str, dict[str, Any]] = {}
 
     # ------------------------------------------------------------------------------------- #
@@ -245,9 +255,18 @@ class VleiClient:
         # establishes the chain, the SAIDs and the root; it does not establish issuer signatures
         # or revocation, and `server_identity` carries flags saying so. A caller that needs those
         # must pass a verifier that can reach the issuer's logs.
-        self.server_identity = await self._server_verifier.verify(
-            credential, source=source
-        )
+        from .extension import _check_type, _presented
+
+        # A server speaks for a legal entity, so it presents the entity's LE credential. Any other
+        # chain that reaches the root would pass the checks below — including the ECR chain every
+        # agent hands a server on each protected call, which a server could replay as its own.
+        _check_type({"credential": "LE"}, _presented(credential, None))
+        identity = await self._server_verifier.verify(credential, source=source)
+        if self._tel is not None:
+            for link in identity.chain_saids or [identity.credential_said]:
+                await self._tel.check(link, aid=identity.holder_aid)
+            identity.revocation_checked = True
+        self.server_identity = identity
         return self.server_identity
 
     @staticmethod
@@ -314,6 +333,17 @@ class VleiClient:
         needs = present if present is not None else bool(self._requirements.get(name))
         meta: dict[str, Any] | None = None
 
+        if needs and self.verify_server and self.on_unverified_server == "stop"                 and self.server_identity is None:
+            # The signature and the credential are what make a call the holder's, and a server that
+            # receives them can present them onward. Asked to verify servers and stop otherwise,
+            # the client does not hand them to one it has not verified — whether connect() was
+            # never called or failed and the failure was caught.
+            raise ChainInvalid(
+                f"the server has not been verified; not presenting a credential or a signature to "
+                f"it for {name!r}. Call connect() first, or construct the client with "
+                "verify_server=False to talk to unverified servers deliberately."
+            )
+
         if needs:
             # Sign exactly what goes on the wire: the params object the SDK will serialize. No
             # arguments are sent as no `arguments` member, so none are signed that way either —
@@ -331,7 +361,13 @@ class VleiClient:
                 meta[META_DELEGATED_AID] = self.delegated_aid
 
         result = await self._session.call_tool(name, arguments, meta=meta)
-        await self._maybe_accept_attestation(result)
+        try:
+            await self._maybe_accept_attestation(result)
+        except VleiError as exc:
+            # The tool has run. Raising here told the agent the call failed, and it would retry an
+            # action that already happened; a malformed attestation is the server's problem.
+            self.attestation_rejected = exc
+            logger.warning("attestation from the server not accepted: %s", exc.message)
         return result
 
     def header_mirror(self, tool_name: str, meta: dict[str, Any]) -> dict[str, str]:
@@ -377,7 +413,9 @@ class VleiClient:
             raise ChainInvalid(
                 f"the attestation is about {subject}, not about this client"
             )
-        self.attested = verify_attestation(attestation, verifier_verkey=state.keys)
+        self.attested = verify_attestation(
+            attestation, verifier_verkey=state.keys, threshold=state.threshold
+        )
 
     def _holder(self) -> str | None:
         from .extension import _presented

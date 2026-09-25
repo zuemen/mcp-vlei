@@ -98,6 +98,7 @@ def verify_attestation(
     expected_subject_aid: str | None = None,
     max_age_seconds: int = DEFAULT_MAX_AGE_SECONDS,
     now: datetime | None = None,
+    threshold: int = 1,
 ) -> VerificationResult:
     """Check an attestation and return what it establishes.
 
@@ -138,6 +139,14 @@ def verify_attestation(
             f"beyond the {max_age_seconds}s limit; ask the attesting party again"
         )
 
+    if threshold > 1:
+        # An attestation carries one signature. An attester whose keys require several has not
+        # attested with one of them, whoever holds it — the same rule a request signer meets.
+        raise InvalidSignature(
+            f"the attesting party's keys require {threshold} signatures; an attestation carries "
+            "one",
+            aid=attestation["verifierAid"],
+        )
     body = {k: v for k, v in attestation.items() if k != "sig"}
     keys = [verifier_verkey] if isinstance(verifier_verkey, str) else list(verifier_verkey)
     try:
