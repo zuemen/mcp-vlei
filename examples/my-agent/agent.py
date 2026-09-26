@@ -35,6 +35,14 @@ from kli_signer import agent_signer  # noqa: E402
 ROOT = Path(__file__).resolve().parents[2]
 SKILLS = ROOT / "skills" / "vlei-identity"
 CREDENTIALS = ROOT / "credentials"
+# The demo's local settings — the witness above all, which the client needs to check the server's
+# credentials for revocation. Read as the association server and the acceptance test read them.
+_LOCAL_ENV = ROOT / "scripts" / ".env"
+if _LOCAL_ENV.exists():
+    for _line in _LOCAL_ENV.read_text(encoding="utf-8").splitlines():
+        if "=" in _line and not _line.lstrip().startswith("#"):
+            _key, _value = _line.split("=", 1)
+            os.environ.setdefault(_key.strip(), _value.strip())
 
 SERVER_URL = os.environ.get("MCP_SERVER_URL", "http://localhost:8080/mcp")
 MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-opus-5")
