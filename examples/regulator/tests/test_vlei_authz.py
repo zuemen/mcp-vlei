@@ -271,4 +271,8 @@ async def test_every_decision_record_says_whether_revocation_was_checked(world, 
     world.le_registry.revoke(world.ecr_credential.said)
     await ask(app, rpc("submit_filing", ARGS, signed_meta(world)))
     assert app.state.audit.records[-1]["decision"] == "deny"
-    assert app.state.audit.records[-1]["revocationChecked"] is False
+    assert app.state.audit.records[-1]["revocationChecked"] is True  # read, and found withdrawn
+
+    await ask(app, rpc("submit_filing", {**ARGS, "period": "x"}, {**signed_meta(world), "org.gleif.vlei/signature": {}}))
+    assert app.state.audit.records[-1]["decision"] == "deny"
+    assert app.state.audit.records[-1]["revocationChecked"] is False  # never reached

@@ -18,7 +18,8 @@ from mcp_vlei import VleiIdentity
 from mcp_vlei.errors import ChainInvalid
 from mcp_vlei.testing import World
 from mcp_vlei.verifier import VleiVerifier
-from test_extension import ARGS, REQUIRES_REGISTRATION, build, call_next, layer_of, present
+from test_extension import (ARGS, REQUIRES_REGISTRATION, build, call_next, layer_of, present,
+                            signer_for)
 
 
 @pytest.fixture
@@ -117,11 +118,39 @@ async def test_a_vlei_verifier_answer_does_not_claim_a_revocation_check():
     assert result.revocation_checked is False
 
 
-async def test_a_refused_call_is_recorded_as_not_revocation_checked(world, tmp_path):
+# `revocationChecked` means the logs were read and answered — nothing withdrawn, or withdrawn.
+# A refusal taken after they were read says so; one taken with revocation off, or before the
+# revocation stage was reached, does not.
+
+async def test_a_withdrawn_credential_is_recorded_as_checked(world, tmp_path):
     world.le_registry.revoke(world.ecr_credential.said)
     ext = build(world, tmp_path, {"register_member": REQUIRES_REGISTRATION})
 
     await ext.intercept_tool_call(present(world, "register_member", ARGS), Ctx(), call_next)
+
+    assert ext.records[-1]["allowed"] is False
+    assert ext.records[-1]["revocationChecked"] is True
+
+
+@pytest.mark.parametrize("source, checked", [("tel", True), ("none", False)])
+async def test_a_refusal_after_the_revocation_stage_says_whether_it_ran(world, tmp_path, source,
+                                                                         checked):
+    ext = build(world, tmp_path, {"register_member": {"credential": "ECR", "role": "treasurer"}},
+                revocation_source=source)
+
+    await ext.intercept_tool_call(present(world, "register_member", ARGS), Ctx(), call_next)
+
+    assert ext.records[-1]["note"] == "role_mismatch"
+    assert ext.records[-1]["revocationChecked"] is checked
+
+
+async def test_a_refusal_before_the_revocation_stage_says_it_was_not_checked(world, tmp_path):
+    from mcp_vlei.testing import Controller
+
+    ext = build(world, tmp_path, {"register_member": REQUIRES_REGISTRATION})
+    params = present(world, "register_member", ARGS, signer=signer_for(Controller("mallory")))
+
+    await ext.intercept_tool_call(params, Ctx(), call_next)
 
     assert ext.records[-1]["allowed"] is False
     assert ext.records[-1]["revocationChecked"] is False

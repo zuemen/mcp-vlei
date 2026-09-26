@@ -314,6 +314,7 @@ def create_app(
             record(
                 decision="deny", tool=tool, layer=exc.layer.value, message=exc.message,
                 aid=exc.aid, report=report.as_dict(),
+                revocationChecked=report.revocation_established,
             )
             return _deny(exc.layer.value, exc.message, report.as_dict())
 

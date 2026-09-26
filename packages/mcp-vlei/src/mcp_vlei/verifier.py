@@ -344,8 +344,8 @@ class OfflineVerifier:
     it terminates at a root this party accepts. It does **not** establish revocation, and it says so
     in the result rather than letting a caller assume otherwise — see :mod:`mcp_vlei.chain`.
 
-    Use it to decide who you are talking to. Use :class:`VleiVerifier` for anything that turns on a
-    credential still being valid.
+    Use it to decide who you are talking to. Whether each credential is still valid is read
+    separately, from each issuer's transaction event log (:mod:`mcp_vlei.revocation`).
     """
 
     def __init__(self, accepted_roots: list[str]) -> None:

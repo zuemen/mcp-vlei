@@ -156,6 +156,16 @@ class VerificationReport:
         return None
 
     @property
+    def revocation_established(self) -> bool:
+        """Whether the logs were read and answered: nothing withdrawn, or withdrawn.
+
+        Not when revocation was skipped (turned off), not reached (an earlier check refused), or
+        could not be established (a log that could not be read).
+        """
+        check = self.checks["revocation"]
+        return (check.passed is True and not check.skipped) or check.layer == "revoked"
+
+    @property
     def allowed(self) -> bool:
         return self.failure is None and any(c.passed for c in self.checks.values())
 

@@ -423,12 +423,10 @@ class VleiIdentity(Extension):
                 live = await self.verifier.verify(
                     credential, said=said, aid=holder, source="presented"
                 )
-                links = result.chain_saids or [result.credential_said or said]
-                for link in links:
-                    await self.tel.check(link, aid=holder)
                 # The presented credential decides the entity and the role; the service's summary
                 # of its own record may confirm them, never supply or replace them. Letting it
                 # fill in a role let an ECR carrying only an `officialRole` pass as that role.
+                # Checked before the logs are read, so a refusal here truthfully says they were not.
                 for what, theirs, ours in (("LEI", live.lei, result.lei),
                                            ("role", live.role, result.role)):
                     if theirs and theirs != ours:
@@ -438,6 +436,9 @@ class VleiIdentity(Extension):
                             aid=holder,
                             credential_said=result.credential_said,
                         )
+                links = result.chain_saids or [result.credential_said or said]
+                for link in links:
+                    await self.tel.check(link, aid=holder)
                 result.revocation_checked = True
                 report.passed(
                     "revocation",
@@ -516,7 +517,10 @@ class VleiIdentity(Extension):
             record["identity"] = "unverified"
         # On every record, allowed or not: a reader must be able to tell a decision taken with
         # revocation checked from one taken with it off, and "passed" does not distinguish them.
-        record["revocationChecked"] = bool(result and result.revocation_checked)
+        # A refusal after the logs were read — withdrawn, or a later check — says they were.
+        record["revocationChecked"] = bool(result and result.revocation_checked) or bool(
+            report is not None and report.revocation_established
+        )
         self.on_decision(record)
 
 
