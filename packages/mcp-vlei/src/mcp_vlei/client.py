@@ -35,7 +35,7 @@ import httpx
 from mcp.client.extension import ClientExtension
 
 from .attest import verify_attestation
-from .errors import ChainInvalid, MissingCredential, VleiError
+from .errors import ChainInvalid, MissingCredential, Revoked, VleiError
 from .extension import (
     EXTENSION_ID,
     META_ATTESTATION,
@@ -263,9 +263,19 @@ class VleiClient:
         _check_type({"credential": "LE"}, _presented(credential, None))
         identity = await self._server_verifier.verify(credential, source=source)
         if self._tel is not None:
-            for link in identity.chain_saids or [identity.credential_said]:
-                await self._tel.check(link, aid=identity.holder_aid)
-            identity.revocation_checked = True
+            try:
+                for link in identity.chain_saids or [identity.credential_said]:
+                    await self._tel.check(link, aid=identity.holder_aid)
+            except Revoked:
+                raise
+            except ChainInvalid as exc:
+                # Not established — most often because this client's witness does not serve the
+                # issuers' registries. Refusing every such server would turn the check into a denial
+                # of service; the identity stands, and says revocation was not checked.
+                logger.warning("the server's credential revocation was not established: %s",
+                               exc.message)
+            else:
+                identity.revocation_checked = True
         self.server_identity = identity
         return self.server_identity
 
@@ -332,6 +342,10 @@ class VleiClient:
         """
         needs = present if present is not None else bool(self._requirements.get(name))
         meta: dict[str, Any] | None = None
+        # Each call reports its own attestation: a rejected one must not leave an earlier accepted
+        # one looking current.
+        self.attested = None
+        self.attestation_rejected = None
 
         if needs and self.verify_server and self.on_unverified_server == "stop"                 and self.server_identity is None:
             # The signature and the credential are what make a call the holder's, and a server that

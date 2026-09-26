@@ -32,6 +32,7 @@ def credential_file(tmp_path: Path, world: World) -> Path:
 def vlei_client(session, world: World, tmp_path: Path, **kwargs) -> VleiClient:
     kwargs.setdefault("verify_server", False)
     kwargs.setdefault("on_unverified_server", "warn")
+    kwargs.setdefault("witness_client", world.witness_client())
     return VleiClient(
         session,
         credential=credential_file(tmp_path, world),
@@ -39,7 +40,6 @@ def vlei_client(session, world: World, tmp_path: Path, **kwargs) -> VleiClient:
         signer=signer_for(world.agent),
         delegated_aid=world.agent.pre,
         witness_url="http://witness",
-        witness_client=world.witness_client(),
         **kwargs,
     )
 

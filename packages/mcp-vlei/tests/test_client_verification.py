@@ -54,8 +54,10 @@ def verifying_client(session, world, tmp_path, **kwargs):
 # --------------------------------------------------------------------------------------------- #
 
 async def test_a_server_presenting_someones_role_credential_is_not_that_entity(world, tmp_path):
-    """Every agent hands a server its ECR chain on every protected call. A server that replays the
-    last caller's chain is not the caller's employer."""
+    """Every agent hands a server its ECR chain on every protected call. Presented back as the
+    server's identity, it claimed to be a person in a role. What this does not settle: the same
+    stream contains the employer's LE chain, and a server presenting that passes — no server proves
+    it holds the LE's keys (a specification gap, not closed here)."""
     client = verifying_client(FakeSession(world.ecr_stream), world, tmp_path)
 
     with pytest.raises(ChainInvalid, match="LE"):
@@ -177,3 +179,43 @@ def test_a_single_signature_attester_still_attests(world):
     attestation = make_attestation(Signer.from_seed(world.le.pre, one.seed), about)
 
     assert verify_attestation(attestation, verifier_verkey=[one.qb64], threshold=1).lei
+
+
+# --------------------------------------------------------------------------------------------- #
+# From the review of the fix above
+# --------------------------------------------------------------------------------------------- #
+
+async def test_a_server_whose_revocation_cannot_be_read_is_verified_but_says_so(world, tmp_path):
+    """The client's witness has never seen the issuer's registry — the usual case when issuers use
+    their own witnesses. Refusing every such server would make the check a denial of service; the
+    identity is established and says revocation was not."""
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("typ") == "tel":
+            return httpx.Response(200, text="")
+        return world.witness_handler(request)
+
+    client = verifying_client(FakeSession(world.le_stream), world, tmp_path,
+                              witness_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+
+    identity = await client.connect()
+
+    assert identity is not None and identity.revocation_checked is False
+
+
+async def test_each_call_reports_its_own_attestation(world, tmp_path):
+    """A rejected attestation must not leave an earlier accepted one looking current."""
+    session = FakeSession(None, result_meta={META_ATTESTATION: {"verifierAid": "garbage"}})
+    client = vlei_client(session, world, tmp_path)
+    client._requirements = {"file_report": {"credential": "ECR"}}
+    client.attested = VerificationResult(aid="E" + "x" * 43, lei="L")  # left from an earlier call
+
+    await client.call_tool("file_report", {"period": "2026Q2"})
+
+    assert client.attested is None and client.attestation_rejected is not None
+
+    session.result_meta = None
+    await client.call_tool("file_report", {"period": "2026Q3"})
+
+    assert client.attestation_rejected is None
