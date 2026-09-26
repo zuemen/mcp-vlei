@@ -71,9 +71,10 @@ policy permits continuing.
 4. **Check the vLEI shape**: each edge points at a credential of the schema it declares, the LE
    credential sits under a QVI credential, and an LEI is present → otherwise `chain_invalid`.
 5. **Check revocation** for every credential in the chain, in its issuer's live TEL → otherwise
-   `revoked`, or `chain_invalid` when a log cannot be read or records no issuance. **The reference
-   `VleiClient` does not perform this step** — it verifies offline, and its result carries
-   `revocation_checked=False`. Without a route to the live logs the server is verified *except for
+   `revoked`, or `chain_invalid` when a log cannot be read or records no issuance. The reference
+   `VleiClient` does this through its `witness_url`, and by default refuses a server whose logs it
+   cannot read. Only a client constructed with `on_unchecked_revocation="warn"` connects without the
+   check; its result carries `revocation_checked=False`. Then the server is verified *except for
    revocation*: say so, and never report its revocation as checked.
 6. If the discover result carried a signature, verify it under the server AID's current key state
    and check freshness. The specification does not define this signature yet, and the reference
