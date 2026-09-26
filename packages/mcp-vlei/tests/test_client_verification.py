@@ -241,3 +241,19 @@ async def test_each_call_reports_its_own_attestation(world, tmp_path):
     await client.call_tool("file_report", {"period": "2026Q3"})
 
     assert client.attestation_rejected is None
+
+
+def test_verifying_servers_without_a_witness_is_a_stated_choice(world, tmp_path):
+    """No witness means no revocation check at all — the silent version of `warn`. Refused at
+    construction, like `verify_server=True` without accepted roots."""
+    from mcp_vlei import VleiClient
+    from test_client import credential_file
+
+    with pytest.raises(ValueError, match="witness_url"):
+        VleiClient(object(), credential=credential_file(tmp_path, world),
+                   signer=signer_for(world.agent), verify_server=True,
+                   accepted_roots=[world.root.pre])
+
+    VleiClient(object(), credential=credential_file(tmp_path, world),
+               signer=signer_for(world.agent), verify_server=True,
+               accepted_roots=[world.root.pre], on_unchecked_revocation="warn")

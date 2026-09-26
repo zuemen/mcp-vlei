@@ -36,6 +36,14 @@ from kli_signer import agent_signer  # noqa: E402
 ROOT = Path(__file__).resolve().parents[3]
 CREDENTIALS = ROOT / "credentials"
 SERVER = os.environ.get("MCP_SERVER_URL", "http://localhost:8080")
+# The witness the demo runs, as the server reads it: scripts/.env, then the environment.
+_LOCAL_ENV = Path(__file__).resolve().parents[3] / "scripts" / ".env"
+if _LOCAL_ENV.exists():
+    for _line in _LOCAL_ENV.read_text(encoding="utf-8").splitlines():
+        if "=" in _line and not _line.lstrip().startswith("#"):
+            _key, _value = _line.split("=", 1)
+            os.environ.setdefault(_key.strip(), _value.strip())
+WITNESS_URL = os.environ.get("VLEI_WITNESS_URL", "http://localhost:5642")
 MCP_URL = f"{SERVER}/mcp"
 
 
@@ -126,6 +134,9 @@ async def vlei_session(env: dict[str, Any], **overrides: Any):
             delegated_aid=env.get("agentAid") or env["ecrAid"],
             accepted_roots=env["acceptedRoots"],
             verifier_url=env["verifierUrl"],
+            # Where the server's credentials are checked for revocation; without it the client
+            # refuses to verify servers at all (on_unchecked_revocation defaults to "stop").
+            witness_url=WITNESS_URL,
             role=env.get("role"),
             # Mode (a): the client checks the server's LE credential itself — chain, SAIDs and
             # root — because a relying party cannot present a counterparty's credential to the

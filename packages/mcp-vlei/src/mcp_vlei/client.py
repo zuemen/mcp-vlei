@@ -163,6 +163,13 @@ class VleiClient:
                 "verify_server=True needs accepted_roots: they are the whole trust decision. "
                 "Pass verify_server=False to connect without verifying the server."
             )
+        if verify_server and not witness_url and on_unchecked_revocation == "stop":
+            # Without a witness no log can be read, so the server's credentials would never be
+            # checked for revocation — the silent version of "warn". Choose it explicitly instead.
+            raise ValueError(
+                "verify_server=True needs witness_url to check the server's credentials for "
+                "revocation. Pass on_unchecked_revocation='warn' to verify without that check."
+            )
         #: Where an attesting party's current keys come from — never from what it declares.
         self._key_states = (
             WitnessKeyStates(witness_url, client=witness_client) if witness_url else None
@@ -271,7 +278,10 @@ class VleiClient:
         # agent hands a server on each protected call, which a server could replay as its own.
         _check_type({"credential": "LE"}, _presented(credential, None))
         identity = await self._server_verifier.verify(credential, source=source)
-        if self._tel is not None:
+        if self._tel is None:
+            logger.warning("the server's credentials were not checked for revocation: "
+                           "no witness is configured")
+        else:
             try:
                 for link in identity.chain_saids or [identity.credential_said]:
                     await self._tel.check(link, aid=identity.holder_aid)
