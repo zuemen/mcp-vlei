@@ -84,7 +84,10 @@ class Acdc:
 
     @property
     def role(self) -> str | None:
-        return self.attributes.get("engagementContextRole") or self.attributes.get("officialRole")
+        # Each role credential names its role in its own field: an ECR its engagement context
+        # role, an OOR its official role. Reading either from either let an ECR claim an office.
+        field = "officialRole" if _TYPE_OF.get(self.schema) == "OOR" else "engagementContextRole"
+        return self.attributes.get(field)
 
     @property
     def lei(self) -> str | None:
@@ -227,6 +230,24 @@ def walk_chain(
         chain.append(current)
 
         if current.issuer in accepted_roots:
+            if _TYPE_OF.get(current.schema) in ("ECR", "OOR"):
+                # The root is trusted, but a role credential's LEI is only what the LE credential it
+                # is issued under says. Without that credential in the chain, an issuer trusted as a
+                # root could name any entity's LEI; bring it in so the chain rules compare the two.
+                if not current.edges:
+                    raise ChainInvalid(
+                        f"the {_TYPE_OF[current.schema]} credential {current.said} is not issued "
+                        "under an LE credential, so nothing establishes the LEI it names",
+                        credential_said=current.said,
+                    )
+                parent = _parent(current, credentials)
+                if recompute_said(parent) != parent.said:
+                    raise ChainInvalid(
+                        f"credential {parent.said} does not hash to its own SAID — its contents "
+                        "were altered",
+                        credential_said=parent.said,
+                    )
+                chain.append(parent)
             return chain
 
         if not current.edges:
@@ -239,28 +260,31 @@ def walk_chain(
                 credential_said=current.said,
             )
 
-        # A vLEI credential carries one chaining edge. Where several exist, follow the one that
-        # continues this issuer's authority rather than guessing.
-        parent = None
-        for label, target in current.edges.items():
-            candidate = credentials.get(target)
-            if candidate is None:
-                raise ChainInvalid(
-                    f"credential {current.said} has an edge {label!r} to {target}, "
-                    "which was not presented with it",
-                    credential_said=current.said,
-                )
-            if candidate.issuee == current.issuer:
-                parent = candidate
-                break
-        if parent is None:
-            labels = ", ".join(sorted(current.edges))
+        current = _parent(current, credentials)
+
+
+def _parent(current: Acdc, credentials: dict[str, Acdc]) -> Acdc:
+    """The credential ``current`` chains to: the edge target issued to ``current``'s issuer.
+
+    A vLEI credential carries one chaining edge. Where several exist, follow the one that
+    continues this issuer's authority rather than guessing.
+    """
+    for label, target in current.edges.items():
+        candidate = credentials.get(target)
+        if candidate is None:
             raise ChainInvalid(
-                f"credential {current.said} was issued by {current.issuer}, but none of its "
-                f"edges ({labels}) was issued to that identifier — the chain is broken here",
+                f"credential {current.said} has an edge {label!r} to {target}, "
+                "which was not presented with it",
                 credential_said=current.said,
             )
-        current = parent
+        if candidate.issuee == current.issuer:
+            return candidate
+    labels = ", ".join(sorted(current.edges))
+    raise ChainInvalid(
+        f"credential {current.said} was issued by {current.issuer}, but none of its "
+        f"edges ({labels}) was issued to that identifier — the chain is broken here",
+        credential_said=current.said,
+    )
 
 
 def verify_issuance(
@@ -336,11 +360,34 @@ def verify_vlei_chain(chain: list[Acdc]) -> None:
       LEI the QVI cares to write;
     * an LE issuing an ECR that names **another** entity's LEI.
 
-    So: every edge must point at a credential of the type it declares; an ECR or OOR must be issued
-    under an LE credential, and an LE credential under a QVI credential; and an ECR or OOR must name
-    the same LEI as the LE credential it is issued under.
+    So: every credential must be a vLEI credential — the rules below say nothing about any other
+    schema, so one that carries an LEI would carry it unchecked; every edge must point at a
+    credential of the type it declares; an ECR or OOR must be issued under an LE credential, and an
+    LE credential under a QVI credential; a QVI credential is issued by the root of trust, never
+    under another credential; and an ECR or OOR must name the same LEI as the LE credential it is
+    issued under — which must therefore be in the chain, wherever the root is.
     """
+    for link in chain:
+        if link.schema not in _TYPE_OF:
+            raise ChainInvalid(
+                f"credential {link.said} is of schema {link.schema}, which is not a vLEI "
+                "credential schema; the chain rules do not cover it",
+                credential_said=link.said,
+            )
+    last = chain[-1]
+    if _TYPE_OF[last.schema] in ("ECR", "OOR"):
+        raise ChainInvalid(
+            f"the {_TYPE_OF[last.schema]} credential {last.said} is presented without the LE "
+            "credential it is issued under, so nothing establishes the LEI it names",
+            credential_said=last.said,
+        )
     for child, parent in zip(chain, chain[1:]):
+        if _TYPE_OF[child.schema] == "QVI":
+            raise ChainInvalid(
+                f"a QVI credential is issued by the root of trust; {child.said} is issued under "
+                f"{parent.said}",
+                credential_said=child.said,
+            )
         declared = {
             (child.edge_schemas or {}).get(label)
             for label, target in child.edges.items()

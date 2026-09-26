@@ -366,7 +366,8 @@ class OfflineVerifier:
 
         target = said or _last_in_chain(credentials)
         chain = walk_chain(credentials, target, self.accepted_roots)
-        leaf, root = chain[0], chain[-1]
+        # The walk may carry past the root: a role credential brings its LE credential with it.
+        leaf = chain[0]
 
         messages = parse_messages(cesr)
         key_states = StreamKeyStates(messages)
@@ -394,7 +395,7 @@ class OfflineVerifier:
             credential_said=leaf.said,
             holder_aid=leaf.issuee,
             scope=leaf.attributes.get("scope") or {},
-            root_aid=root.issuer,
+            root_aid=next(link.issuer for link in chain if link.issuer in self.accepted_roots),
             source=source,
             revocation_checked=False,
             signatures_checked=True,

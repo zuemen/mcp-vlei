@@ -377,8 +377,12 @@ class VleiIdentity(Extension):
             result = await self.offline.verify(
                 credential, said=said, aid=holder, source="presented"
             )
-            if requirement:
-                _check_type(requirement, presented)
+            # A tool that names no credential type still gets the one this server requires: the
+            # capability advertises it, and a tool declaring only a role or scope, or no
+            # requirement at all (vlei_whoami), must not accept an OOR or LE in its place.
+            wanted = (requirement or {}).get("credential") or self.requires
+            if wanted:
+                _check_type({"credential": wanted}, presented)
         except VleiError as exc:
             report.failed("chain", exc.layer.value, exc.message)
             raise
