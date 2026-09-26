@@ -160,6 +160,9 @@ class Audit:
     records: list[dict[str, Any]] = field(default_factory=list)
 
     def __call__(self, **fields: Any) -> None:
+        # Whether revocation was established, on every decision: a gateway run with
+        # VLEI_REVOCATION_SOURCE=none must be distinguishable in the log, one call at a time.
+        fields.setdefault("revocationChecked", False)
         fields["at"] = datetime.now(timezone.utc).isoformat()
         self.records.append(fields)
         line = json.dumps(fields, ensure_ascii=False)
@@ -323,6 +326,7 @@ def create_app(
             holderAid=result.holder_aid,
             delegateAid=result.aid if result.aid != result.holder_aid else None,
             credentialSaid=result.credential_said,
+            revocationChecked=bool(result.revocation_checked),
         )
         # Hand the backend the established facts and nothing else. The filing server reads these
         # headers and contains no identity code.

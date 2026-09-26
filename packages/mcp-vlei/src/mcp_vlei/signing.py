@@ -345,9 +345,10 @@ def _check_fresh_and_digest(
         )
     try:
         digest = digest_params(params)
-    except ValueError as exc:
-        # NaN and Infinity parse from JSON text in most libraries but have no canonical form, so no
-        # signature can cover them. Refused here with a layer, rather than escaping as a crash.
+    except (ValueError, TypeError) as exc:
+        # NaN and Infinity parse from JSON text in most libraries but have no canonical form, and
+        # an in-process caller can pass values JSON has no type for at all; no signature can cover
+        # either. Refused here with a layer, rather than escaping as a crash.
         raise DigestMismatch(
             f"request arguments contain a value no signature can cover ({exc})", aid=aid
         ) from exc

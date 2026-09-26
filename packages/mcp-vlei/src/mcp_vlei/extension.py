@@ -426,10 +426,19 @@ class VleiIdentity(Extension):
                 links = result.chain_saids or [result.credential_said or said]
                 for link in links:
                     await self.tel.check(link, aid=holder)
+                # The presented credential decides the entity and the role; the service's summary
+                # of its own record may confirm them, never supply or replace them. Letting it
+                # fill in a role let an ECR carrying only an `officialRole` pass as that role.
+                for what, theirs, ours in (("LEI", live.lei, result.lei),
+                                           ("role", live.role, result.role)):
+                    if theirs and theirs != ours:
+                        raise ChainInvalid(
+                            f"the verifier's record gives {what} {theirs!r}; the presented "
+                            f"credential carries {ours!r}",
+                            aid=holder,
+                            credential_said=result.credential_said,
+                        )
                 result.revocation_checked = True
-                result.role = live.role or result.role
-                result.lei = live.lei or result.lei
-                report.lei, report.role = result.lei, result.role
                 report.passed(
                     "revocation",
                     f"vlei-verifier, and issuers' transaction event logs, all {len(links)} credentials",
@@ -502,12 +511,12 @@ class VleiIdentity(Extension):
                 "delegateAid": result.aid if result.aid != result.holder_aid else None,
                 "credentialSaid": result.credential_said,
                 "source": result.source,
-                # A reader of the record must be able to tell a checked decision from one taken
-                # with revocation off; the report's "passed" does not distinguish them.
-                "revocationChecked": bool(result.revocation_checked),
             }
         else:
             record["identity"] = "unverified"
+        # On every record, allowed or not: a reader must be able to tell a decision taken with
+        # revocation checked from one taken with it off, and "passed" does not distinguish them.
+        record["revocationChecked"] = bool(result and result.revocation_checked)
         self.on_decision(record)
 
 

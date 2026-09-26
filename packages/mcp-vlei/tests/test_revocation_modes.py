@@ -96,3 +96,63 @@ async def test_arguments_json_cannot_carry_are_refused_and_recorded(world, tmp_p
 
     assert layer_of(result) == "digest_mismatch"
     assert ext.records and ext.records[-1]["allowed"] is False
+
+
+# --------------------------------------------------------------------------------------------- #
+# From the review of the fix above
+# --------------------------------------------------------------------------------------------- #
+
+async def test_a_vlei_verifier_answer_does_not_claim_a_revocation_check():
+    """The service's own revocation check ships off; its 200 says nothing either way."""
+    aid, said = "E" + "h" * 43, "E" + "s" * 43
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"aid": aid, "said": said, "lei": "984500ABCDEF12345678",
+                                         "role": "r"})
+
+    verifier = VleiVerifier("http://verifier", accepted_roots=["E" + "r" * 43],
+                            client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    result = await verifier.verify("cesr", said=said, aid=aid)
+
+    assert result.revocation_checked is False
+
+
+async def test_a_refused_call_is_recorded_as_not_revocation_checked(world, tmp_path):
+    world.le_registry.revoke(world.ecr_credential.said)
+    ext = build(world, tmp_path, {"register_member": REQUIRES_REGISTRATION})
+
+    await ext.intercept_tool_call(present(world, "register_member", ARGS), Ctx(), call_next)
+
+    assert ext.records[-1]["allowed"] is False
+    assert ext.records[-1]["revocationChecked"] is False
+
+
+async def test_verifier_mode_does_not_lend_the_credential_a_role_it_does_not_carry(world, tmp_path):
+    """An ECR with no engagement context role, only an `officialRole`; the service's record says
+    the role the tool wants. The presented credential decides, not the service's summary of it."""
+    from mcp_vlei.testing import ECR_SCHEMA, LEI, export
+
+    ecr = world.issue(world.le_registry, ECR_SCHEMA, world.holder.pre,
+                      {"LEI": LEI, "personLegalName": "Chen", "officialRole": "member-registration"},
+                      edge=("le", world.le_credential))
+    ext = build(world, tmp_path, {"register_member": REQUIRES_REGISTRATION},
+                revocation_source="verifier", verifier=StubVerifier(role="member-registration"))
+    params = present(world, "register_member", ARGS,
+                     stream=export([ecr, world.le_credential, world.qvi_credential]),
+                     said=ecr.said)
+
+    result = await ext.intercept_tool_call(params, Ctx(), call_next)
+
+    assert result.is_error
+
+
+async def test_arguments_with_values_json_does_not_have_are_refused(world, tmp_path):
+    from datetime import datetime, timezone
+
+    ext = build(world, tmp_path, {"register_member": REQUIRES_REGISTRATION})
+    params = present(world, "register_member", {**ARGS, "when": "now"})
+    params.arguments["when"] = datetime.now(timezone.utc)
+
+    result = await ext.intercept_tool_call(params, Ctx(), call_next)
+
+    assert layer_of(result) == "digest_mismatch"

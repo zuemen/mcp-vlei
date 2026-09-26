@@ -40,7 +40,9 @@ class VerificationResult:
     #: Whether revocation was actually established. False means the chain was checked but the
     #: issuer's transaction event log was not reached — a distinction a relying party must be able
     #: to see, because "valid as far as we could tell" is not "valid".
-    revocation_checked: bool = True
+    #: True only where a transaction event log was actually read. Defaulting to True made a
+    #: vlei-verifier answer — whose own revocation check ships switched off — say otherwise.
+    revocation_checked: bool = False
     #: Whether issuance was established — each credential anchored in its issuer's key event log.
     signatures_checked: bool = True
     #: Every credential in the chain, leaf first. Revocation is established for each of them: an

@@ -13,12 +13,16 @@ Three sources, selectable, because each fails differently:
     service. This is the default for the reference deployment.
 
 ``"verifier"``
-    Ask a running ``vlei-verifier``. Correct in principle and the right answer in production, where
-    the verifier is an operated service with its own view of the ecosystem. Blocked today by an
-    upstream defect — see ``docs/upstream/issue.md``.
+    Ask a running ``vlei-verifier`` as well — and still read every link's transaction event log, as
+    ``"tel"`` does. The service answers about the leaf only, and its own revocation check ships
+    switched off, so its 200 establishes that the holder presented the credential to it, not that
+    nothing in the chain was withdrawn. Its record may confirm the LEI and role the presented
+    credential carries; a disagreement is a refusal. It needs a witness that serves every link's
+    log, exactly like ``"tel"``. See also ``docs/upstream/issue.md``.
 
 ``"none"``
-    Do not establish revocation. Every result then says ``revocation_checked=False``, and a relying
+    Do not establish revocation. Every result then says ``revocation_checked=False``, every decision
+    record says ``revocationChecked: false``, a warning is logged at construction, and a relying
     party that acts on it is choosing to.
 """
 

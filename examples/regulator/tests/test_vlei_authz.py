@@ -260,3 +260,15 @@ def test_the_service_contains_no_verification_logic_of_its_own():
                    "x-vlei-verkey", "VleiVerifier("):
         assert needle not in source, needle
     assert ".verify_call(" in source
+
+
+async def test_every_decision_record_says_whether_revocation_was_checked(world, tmp_path):
+    """A gateway run with revocation off must be distinguishable, decision by decision."""
+    app = authz_app(world, tmp_path)
+    await ask(app, rpc("submit_filing", ARGS, signed_meta(world)))
+    assert app.state.audit.records[-1]["revocationChecked"] is True
+
+    world.le_registry.revoke(world.ecr_credential.said)
+    await ask(app, rpc("submit_filing", ARGS, signed_meta(world)))
+    assert app.state.audit.records[-1]["decision"] == "deny"
+    assert app.state.audit.records[-1]["revocationChecked"] is False
