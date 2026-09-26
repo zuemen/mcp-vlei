@@ -157,10 +157,12 @@ class VerificationReport:
 
     @property
     def revocation_established(self) -> bool:
-        """Whether the logs were read and answered: nothing withdrawn, or withdrawn.
+        """Whether a revocation source answered: nothing withdrawn, or withdrawn.
 
-        Not when revocation was skipped (turned off), not reached (an earlier check refused), or
-        could not be established (a log that could not be read).
+        With the `tel` source the answer is the issuers' logs. With `verifier`, a "withdrawn" may be
+        the vlei-verifier's answer, given before any log is read; a "nothing withdrawn" is always
+        the logs'. False when revocation was skipped (turned off), not reached (an earlier check
+        refused), or could not be established (a log that could not be read).
         """
         check = self.checks["revocation"]
         return (check.passed is True and not check.skipped) or check.layer == "revoked"
