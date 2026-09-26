@@ -193,3 +193,37 @@ async def test_an_unverified_inception_does_not_send_the_resolver_after_its_dele
     await WitnessKeyStates(URLS, client=client).resolve(world.holder.pre)
 
     assert lure not in asked
+
+
+async def test_a_delegator_is_named_only_by_a_delegated_inception():
+    """An `icp` carrying a stray `di` is not delegated; nothing should go looking for that AID."""
+    import httpx
+
+    lure = "E" + "L" * 43
+    key = Key("icp:0")
+    raw = serialize({"v": "", "t": "icp", "d": "", "i": "", "s": "0", "kt": "1", "k": [key.qb64],
+                     "nt": "1", "n": [Key("icp:1").next_digest], "bt": "0", "b": [], "c": [],
+                     "a": [], "di": lure}, ("d", "i"))
+    pre = json.loads(raw)["i"]
+    stream = raw + group(counter("A", 1) + key.indexed(raw.encode(), 0))
+    asked: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        asked.append(request.url.params.get("pre", ""))
+        return httpx.Response(200, text=stream if request.url.params.get("pre") == pre else "")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    state = await WitnessKeyStates(URLS, client=client).resolve(pre)
+
+    assert state.delegator is None and lure not in asked
+
+
+async def test_a_delegators_failure_names_the_identifier_being_resolved():
+    world = World()
+    world.holder.interact([{"i": "E" + "a" * 43, "s": "0", "d": "E" + "b" * 43}])
+    fork = world.holder.forked_kel([{"i": "E" + "c" * 43, "s": "0", "d": "E" + "d" * 43}])
+    client = _witnesses(world, {"wes": {world.holder.pre: fork}})
+
+    with pytest.raises(ChainInvalid) as caught:
+        await WitnessKeyStates(URLS, client=client).resolve(world.agent.pre)
+    assert world.agent.pre in caught.value.message

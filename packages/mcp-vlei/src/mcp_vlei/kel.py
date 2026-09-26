@@ -504,7 +504,9 @@ def _delegator_named_by(copies: list[tuple[str, list[Message]]], pre: str) -> st
             check_said(inception, ("d", "i"))
         except ChainInvalid:
             continue
-        return inception.body.get("di") or None
+        # Only a delegated inception names a delegator; a stray `di` on an `icp` names nothing,
+        # as `delegator_of` and `verify_kel` already treat it.
+        return (inception.body.get("di") or None) if inception.ilk == "dip" else None
     return None
 
 
@@ -612,7 +614,15 @@ class WitnessKeyStates:
         # a delegator of its choosing — and resolved once, outside the per-copy checks, so that its
         # own failure (duplicity above all) is reported as its own, not as this prefix's quorum.
         named = _delegator_named_by(copies, pre)
-        delegator = await self.resolve(named, _depth=_depth + 1) if named else None
+        delegator = None
+        if named:
+            try:
+                delegator = await self.resolve(named, _depth=_depth + 1)
+            except ChainInvalid as exc:
+                # The delegator's own failure, reported as its own — naming what was being resolved.
+                raise ChainInvalid(
+                    f"resolving the delegator of {pre}: {exc.message}", aid=exc.aid
+                ) from exc
         valid: list[tuple[str, list[Message], KeyState]] = []
         for url, messages in copies:
             try:
