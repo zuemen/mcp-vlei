@@ -150,3 +150,46 @@ def test_an_unreadable_attachment_is_refused_not_crashed(junk):
 
     with pytest.raises(ChainInvalid):
         parse_messages(alice.kel() + junk)
+
+
+# --------------------------------------------------------------------------------------------- #
+# From the review of the fix above
+# --------------------------------------------------------------------------------------------- #
+
+async def test_a_duplicitous_delegator_is_reported_as_the_delegators_duplicity():
+    """The strongest signal KERI has must not arrive as a quorum problem about the delegate."""
+    world = World()
+    world.holder.interact([{"i": "E" + "a" * 43, "s": "0", "d": "E" + "b" * 43}])
+    fork = world.holder.forked_kel([{"i": "E" + "c" * 43, "s": "0", "d": "E" + "d" * 43}])
+    client = _witnesses(world, {"wes": {world.holder.pre: fork}})
+
+    with pytest.raises(ChainInvalid, match="duplicity") as caught:
+        await WitnessKeyStates(URLS, client=client).resolve(world.agent.pre)
+    assert caught.value.aid == world.holder.pre
+
+
+async def test_an_unverified_inception_does_not_send_the_resolver_after_its_delegator():
+    """One witness answers with a `dip` that does not derive the prefix, naming a delegator of its
+    choosing. That delegator is never looked up."""
+    import httpx
+
+    world = World()
+    lure = "E" + "L" * 43
+    forged = serialize({"v": "", "t": "dip", "d": "", "i": "", "s": "0", "kt": "1",
+                        "k": [Key("x").qb64], "nt": "1", "n": [Key("x:1").next_digest],
+                        "bt": "0", "b": [], "c": [], "a": [], "di": lure}, ("d", "i"))
+    forged = forged.replace(json.loads(forged)["i"], world.holder.pre)
+    asked: list[str] = []
+    honest = _witnesses(world)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        pre = request.url.params.get("pre", "")
+        asked.append(pre)
+        if request.url.host == "wes" and pre == world.holder.pre:
+            return httpx.Response(200, text=forged)
+        return world.witness_handler(request)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    await WitnessKeyStates(URLS, client=client).resolve(world.holder.pre)
+
+    assert lure not in asked

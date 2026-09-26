@@ -493,6 +493,21 @@ def key_states_in(messages: list[Message]) -> dict[str, KeyState]:
     return {pre: source.resolve(pre) for pre in source.prefixes()}
 
 
+def _delegator_named_by(copies: list[tuple[str, list[Message]]], pre: str) -> str | None:
+    """The delegator named by an inception that derives ``pre``, from whichever copy has one."""
+    for _, messages in copies:
+        inception = next((m for m in messages
+                          if m.ilk in ("icp", "dip") and m.body.get("i") == pre), None)
+        if inception is None or inception.body.get("d") != pre:
+            continue
+        try:
+            check_said(inception, ("d", "i"))
+        except ChainInvalid:
+            continue
+        return inception.body.get("di") or None
+    return None
+
+
 class WitnessKeyStates:
     """Current key states, read from witnesses' copies of each log and verified here.
 
@@ -505,8 +520,9 @@ class WitnessKeyStates:
     that is merely shorter is a witness still catching up, not a conflict, and the longest copy is
     the one verified. With one witness there is nothing to compare, and nothing is claimed.
 
-    ``quorum`` is how many witnesses must answer; by default a majority. Fewer is not "no
-    conflict", it is "not established".
+    ``quorum`` is how many witnesses must serve a valid copy; by default a majority. Fewer is not
+    "no conflict", it is "not established". A witness with no copy of the log does not count, so
+    every configured witness must witness every identifier resolved — see docs/CONFORMANCE.md.
     """
 
     def __init__(
@@ -589,14 +605,18 @@ class WitnessKeyStates:
         # could veto an identifier the others agree on — by appending an event nobody signed, or
         # by making one up at a number the others hold. Duplicity is two *valid* copies that
         # disagree, and only valid copies make up the quorum.
-        delegators: dict[str, KeyState] = {}
+        #
+        # The delegator is named by the inception, and the inception is bound to the prefix by its
+        # SAID, so every valid copy names the same one. It is taken only from an inception that
+        # derives the prefix — an unverified `dip` from one witness must not send the resolver after
+        # a delegator of its choosing — and resolved once, outside the per-copy checks, so that its
+        # own failure (duplicity above all) is reported as its own, not as this prefix's quorum.
+        named = _delegator_named_by(copies, pre)
+        delegator = await self.resolve(named, _depth=_depth + 1) if named else None
         valid: list[tuple[str, list[Message], KeyState]] = []
         for url, messages in copies:
             try:
-                named = delegator_of(messages, pre)
-                if named and named not in delegators:
-                    delegators[named] = await self.resolve(named, _depth=_depth + 1)
-                state = verify_kel(messages, pre, delegator=delegators.get(named) if named else None)
+                state = verify_kel(messages, pre, delegator=delegator)
             except ChainInvalid as exc:
                 problems.append(f"{url}: {exc.message}")
                 continue

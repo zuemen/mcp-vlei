@@ -78,6 +78,13 @@ The table would be dishonest without these.
   disagree about. Given one, nothing is compared. Witnesses run by one operator — the demo's three
   are one container — can be made to agree; independent witnesses or watchers are what make the
   check mean something, and this implementation runs no watcher.
+
+  **Every configured witness must witness every identifier resolved.** A witness that answers with
+  no copy of a log is not counted, so an identifier held by fewer configured witnesses than the
+  quorum (a majority by default) is *not established*. That is deliberate — counting empty answers
+  let one copy be verified alone while the record said several had agreed — but it means a
+  deployment resolving identifiers with different witness sets must configure one witness, or a
+  quorum that fits. Finding each identifier's own witnesses (from its OOBIs) is not implemented.
 - **The subset of KERI is `kli`'s.** Single-sig and numeric thresholds, Ed25519, Blake3-256. Weighted
   thresholds, other key or digest codes, and multi-sig signers of a single-pass request are refused,
   not guessed at.
