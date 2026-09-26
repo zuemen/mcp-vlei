@@ -121,7 +121,8 @@ async def run(task: str, claude: Any = None) -> None:
         # Stages 1-2: verify the server before anything is called.
         identity = await session.connect()
         if identity:
-            print(f"server verified: LEI {identity.lei} (credential via {identity.source})")
+            checked = "" if identity.revocation_checked else " — revocation NOT checked"
+            print(f"server verified: LEI {identity.lei} (credential via {identity.source}){checked}")
         else:
             print("server presented no organizational identity — unverified")
 

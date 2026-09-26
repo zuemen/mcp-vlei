@@ -185,23 +185,45 @@ def test_a_single_signature_attester_still_attests(world):
 # From the review of the fix above
 # --------------------------------------------------------------------------------------------- #
 
-async def test_a_server_whose_revocation_cannot_be_read_is_verified_but_says_so(world, tmp_path):
-    """The client's witness has never seen the issuer's registry — the usual case when issuers use
-    their own witnesses. Refusing every such server would make the check a denial of service; the
-    identity is established and says revocation was not."""
+def _unreadable_revocation(world, status: int = 200):
+    """A witness that serves key event logs but no transaction event log for this chain."""
     import httpx
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.params.get("typ") == "tel":
-            return httpx.Response(200, text="")
+            return httpx.Response(status, text="")
         return world.witness_handler(request)
 
-    client = verifying_client(FakeSession(world.le_stream), world, tmp_path,
-                              witness_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
-    identity = await client.connect()
+
+@pytest.mark.parametrize("status", [200, 503])
+async def test_a_server_whose_revocation_cannot_be_established_is_refused_by_default(
+        world, tmp_path, status):
+    """Whoever can blank or block the client's path to the logs must not be able to make a
+    withdrawn credential look like a clean one. Refusing is the default, as for an unverified
+    server."""
+    client = verifying_client(FakeSession(world.le_stream), world, tmp_path,
+                              witness_client=_unreadable_revocation(world, status))
+
+    with pytest.raises(ChainInvalid, match="revocation"):
+        await client.connect()
+    assert client.server_identity is None
+
+
+async def test_connecting_without_a_revocation_check_is_a_stated_choice(world, tmp_path, caplog):
+    """A deployment whose issuers use witnesses this client cannot reach may choose to connect
+    anyway; the identity then says so, and so does the log."""
+    import logging
+
+    client = verifying_client(FakeSession(world.le_stream), world, tmp_path,
+                              witness_client=_unreadable_revocation(world),
+                              on_unchecked_revocation="warn")
+    with caplog.at_level(logging.WARNING):
+        identity = await client.connect()
 
     assert identity is not None and identity.revocation_checked is False
+    assert any("revocation" in r.message for r in caplog.records)
 
 
 async def test_each_call_reports_its_own_attestation(world, tmp_path):

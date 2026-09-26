@@ -117,6 +117,7 @@ class VleiClient:
         verifier_url: str | None = None,
         verify_server: bool = True,
         on_unverified_server: str = "stop",
+        on_unchecked_revocation: str = "stop",
         role: str | None = None,
         scope: dict[str, Any] | None = None,
         verifier: VleiVerifier | None = None,
@@ -145,6 +146,13 @@ class VleiClient:
         if on_unverified_server not in ("stop", "warn"):
             raise ValueError("on_unverified_server must be 'stop' or 'warn'")
         self.on_unverified_server = on_unverified_server
+        if on_unchecked_revocation not in ("stop", "warn"):
+            raise ValueError("on_unchecked_revocation must be 'stop' or 'warn'")
+        #: What to do when the server's credentials cannot be checked for revocation — the logs
+        #: unreadable, or not served by this client's witness. "stop" by default: whoever can
+        #: blank or block the path to the logs must not be able to make a withdrawn credential
+        #: look like a clean one. "warn" connects anyway, with `revocation_checked=False`.
+        self.on_unchecked_revocation = on_unchecked_revocation
         self.role = role
         self.scope = scope or {}
         self.accepted_roots = list(accepted_roots or [])
@@ -189,7 +197,8 @@ class VleiClient:
         self.server_capability: dict[str, Any] | None = None
         self.attested: VerificationResult | None = None
         #: Why the last attestation was not accepted, when one was not. The tool result it came
-        #: with is still returned: the call already happened.
+        #: with is still returned: the call already happened. Both describe the most recent call
+        #: only; with concurrent calls on one client, read them per call or not at all.
         self.attestation_rejected: VleiError | None = None
         self._requirements: dict[str, dict[str, Any]] = {}
 
@@ -269,10 +278,17 @@ class VleiClient:
             except Revoked:
                 raise
             except ChainInvalid as exc:
-                # Not established — most often because this client's witness does not serve the
-                # issuers' registries. Refusing every such server would turn the check into a denial
-                # of service; the identity stands, and says revocation was not checked.
-                logger.warning("the server's credential revocation was not established: %s",
+                # Not established: the logs could not be read, or this client's witness does not
+                # serve the issuers' registries. An unreachable log and a withdrawn credential are
+                # different facts, but only the second can be told from a clean one by reading, so
+                # by default this is a refusal too.
+                if self.on_unchecked_revocation == "stop":
+                    raise ChainInvalid(
+                        f"the server's credentials could not be checked for revocation "
+                        f"({exc.message}); refusing. Pass on_unchecked_revocation='warn' to "
+                        "connect to servers whose issuers' logs this client cannot read."
+                    ) from exc
+                logger.warning("the server's credentials were not checked for revocation: %s",
                                exc.message)
             else:
                 identity.revocation_checked = True

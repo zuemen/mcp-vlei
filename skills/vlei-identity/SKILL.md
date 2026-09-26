@@ -48,10 +48,11 @@ problem, not a rejected credential. Say so precisely, and reconnect with the cap
 Obtain the server's LE credential from `server/discover`'s `_meta`, or from the `/.well-known/vlei`
 URL given in its declared `discovery.wellKnown`. The package recomputes every SAID, walks the chain
 to a root in your accepted list, and checks that each credential was issued by the identifier it
-names — anchored in that issuer's key event log, carried in the stream. It does **not** establish
-the server credential's revocation status: `VleiClient.connect` reads no live log, and its result
-says so (`revocation_checked=False`). Describe such a server as verified except for revocation; never
-say its revocation was checked.
+names — anchored in that issuer's key event log, carried in the stream. With a witness configured,
+`VleiClient.connect` also reads every link's transaction event log, and refuses a withdrawn
+credential — or, by default, one whose logs it cannot read. A client constructed with
+`on_unchecked_revocation="warn"` connects anyway and says so (`revocation_checked=False`): describe
+such a server as verified except for revocation; never say its revocation was checked.
 
 - **Verification passes** → continue.
 - **Verification fails** → tell the user the **failure layer by name** and **stop**. Do not call any
