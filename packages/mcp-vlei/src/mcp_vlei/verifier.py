@@ -40,7 +40,9 @@ class VerificationResult:
     #: Whether revocation was actually established. False means the chain was checked but the
     #: issuer's transaction event log was not reached — a distinction a relying party must be able
     #: to see, because "valid as far as we could tell" is not "valid".
-    revocation_checked: bool = True
+    #: True only where a transaction event log was actually read. Defaulting to True made a
+    #: vlei-verifier answer — whose own revocation check ships switched off — say otherwise.
+    revocation_checked: bool = False
     #: Whether issuance was established — each credential anchored in its issuer's key event log.
     signatures_checked: bool = True
     #: Every credential in the chain, leaf first. Revocation is established for each of them: an
@@ -278,6 +280,16 @@ class VleiVerifier:
         # The verifier answers about the credential this AID presented to it. If that is not the
         # one in front of us, its answer — revoked or not — is about something else.
         reported = pick("said", "credentialSaid", "d")
+        if said and not reported:
+            # An answer about the holder that does not say which credential it is about cannot be
+            # an answer about this one: a holder re-issued after a revocation would otherwise pass
+            # the old credential on the new one's record.
+            raise ChainInvalid(
+                f"the verifier's answer about {aid} does not say which credential it is about; "
+                f"it cannot establish the presented {said}",
+                aid=aid,
+                credential_said=said,
+            )
         if said and reported and reported != said:
             raise ChainInvalid(
                 f"the verifier's record for {aid} is credential {reported}, not the presented "
@@ -332,8 +344,8 @@ class OfflineVerifier:
     it terminates at a root this party accepts. It does **not** establish revocation, and it says so
     in the result rather than letting a caller assume otherwise — see :mod:`mcp_vlei.chain`.
 
-    Use it to decide who you are talking to. Use :class:`VleiVerifier` for anything that turns on a
-    credential still being valid.
+    Use it to decide who you are talking to. Whether each credential is still valid is read
+    separately, from each issuer's transaction event log (:mod:`mcp_vlei.revocation`).
     """
 
     def __init__(self, accepted_roots: list[str]) -> None:

@@ -103,7 +103,7 @@ Nine layers, and exactly one — `stale_signature` — is worth retrying.
 | Setting | Default | Notes |
 |---|---|---|
 | `accepted_roots` | — | **Security critical.** The entire trust decision. An empty list raises rather than accepting anything |
-| `revocation_source` | `"tel"` | `"tel"` reads the issuer's log from a witness; `"verifier"` asks a `vlei-verifier`; `"none"` marks every result `revocation_checked=False` |
+| `revocation_source` | `"tel"` | `"tel"` reads every link's transaction event log from a witness; `"verifier"` also asks a `vlei-verifier`, and still reads every link's log (the service answers about the leaf only, and ships with its revocation check off); `"none"` checks nothing, says `revocationChecked: false` on every decision record and logs a warning |
 | `witness_url` | — | **Required.** Every caller's current key state is read from its key event log here — never from the request — and `revocation_source="tel"` reads the issuers' transaction event logs here too |
 | `witness_urls` | — | Several witnesses: each caller's key event log is read from all of them and compared; a log they disagree about (duplicity) is refused, and fewer answers than a majority is *not established* |
 | `verifier_url` | — | Required by `revocation_source="verifier"`; choosing that source without one raises |
