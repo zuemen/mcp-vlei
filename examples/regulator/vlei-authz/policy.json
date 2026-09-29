@@ -1,0 +1,11 @@
+{
+  "_comment": "Per-tool requirements for labor-insurance-sim (simulated — not connected to the Bureau of Labor Insurance), held by the gateway because it decides before the server is reached. A tool mapped to null is public. A tools/call naming a tool not listed here is refused: the list is closed. `arguments` are rules on the call itself, checked with the credential: an enrolment or withdrawal may be filed for today or up to ten days ahead, 'today' being the date at VLEI_POLICY_UTC_OFFSET (+08:00 in deploy/agentgateway).",
+  "tools": {
+    "list_insured": {"credential": "ECR"},
+    "enroll_employee": {"credential": "ECR", "role": "labor-insurance-filing",
+                        "arguments": {"start_date": {"dateWithinDays": [0, 10]}}},
+    "withdraw_employee": {"credential": "ECR", "role": "labor-insurance-filing",
+                          "arguments": {"end_date": {"dateWithinDays": [0, 10]}}},
+    "adjust_insured_salary": {"credential": "ECR", "role": "labor-insurance-payroll"}
+  }
+}

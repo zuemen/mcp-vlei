@@ -1,0 +1,7 @@
+{
+  "wil": {
+    "dt": "2026-01-01T00:00:00.000000+00:00",
+    "curls": ["tcp://witness-demo:5633/", "http://witness-demo:5643/"]
+  },
+  "iurls": []
+}

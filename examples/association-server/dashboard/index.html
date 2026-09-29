@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Association Server — identity decisions</title>
+<style>
+  /*
+    Built to be filmed. Large type, strong contrast, nothing that moves on its own, and every
+    status carried by an icon and a word as well as a colour — a projector washes colour out, and
+    a colour-blind viewer never had it.
+  */
+  :root {
+    --bg: #faf9f6;
+    --panel: #ffffff;
+    --ink: #17171a;
+    --muted: #63636b;
+    --line: #e2e0d9;
+    --shadow: 0 1px 2px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.04);
+
+    --verified: #1a6b46;   --verified-bg: #e6f3ec;
+    --public:   #7a5c12;   --public-bg:   #f8efd8;
+    --refused:  #97301d;   --refused-bg:  #fbe8e4;
+    --unverif:  #4a4a52;   --unverif-bg:  #ececef;
+
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #121215;
+      --panel: #1b1b20;
+      --ink: #f0f0ee;
+      --muted: #9b9ba4;
+      --line: #2e2e36;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.3);
+
+      --verified: #6cd39b;   --verified-bg: #143026;
+      --public:   #e0bb5c;   --public-bg:   #332a11;
+      --refused:  #f08a72;   --refused-bg:  #3a1a14;
+      --unverif:  #b6b6c0;   --unverif-bg:  #26262c;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #121215; --panel: #1b1b20; --ink: #f0f0ee; --muted: #9b9ba4; --line: #2e2e36;
+    --verified: #6cd39b; --verified-bg: #143026;
+    --public: #e0bb5c;   --public-bg: #332a11;
+    --refused: #f08a72;  --refused-bg: #3a1a14;
+    --unverif: #b6b6c0;  --unverif-bg: #26262c;
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 17px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-feature-settings: "tnum" 1;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 36px 16px 80px; }
+
+  header { display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start; justify-content: space-between; }
+  h1 { font-size: 27px; margin: 0; letter-spacing: -.02em; }
+  .sub { color: var(--muted); font-size: 15px; margin: 6px 0 0; max-width: 62ch; }
+
+  .controls { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  label.limit { color: var(--muted); font-size: 15px; display: flex; align-items: center; gap: 8px; }
+  select, button {
+    font: inherit; border-radius: 9px; border: 1px solid var(--line);
+    background: var(--panel); color: var(--ink); padding: 9px 13px;
+  }
+  button.revoke { border-color: var(--refused); color: var(--refused); font-weight: 650; cursor: pointer; }
+  button.revoke:hover:not(:disabled) { background: var(--refused-bg); }
+  button.revoke:disabled { opacity: .65; cursor: default; }
+
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; margin: 26px 0 18px; }
+  .tile { background: var(--panel); border: 1px solid var(--line); border-radius: 13px; padding: 16px 18px; box-shadow: var(--shadow); }
+  .tile .k { color: var(--muted); font-size: 12.5px; text-transform: uppercase; letter-spacing: .07em; font-weight: 600; }
+  .tile .v { font-size: 30px; margin-top: 5px; letter-spacing: -.02em; }
+
+  .rows { display: flex; flex-direction: column; gap: 10px; }
+  .row {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 13px;
+    box-shadow: var(--shadow); overflow: hidden;
+  }
+  .row > summary {
+    list-style: none; cursor: pointer; padding: 15px 18px;
+    display: grid; grid-template-columns: 92px 200px 1fr auto; gap: 18px; align-items: center;
+  }
+  .row > summary::-webkit-details-marker { display: none; }
+  .row[open] > summary { border-bottom: 1px solid var(--line); }
+  .when { font-family: var(--mono); font-size: 14px; color: var(--muted); }
+  .tool { font-family: var(--mono); font-size: 16px; font-weight: 600; }
+  .who { color: var(--muted); font-size: 15px; }
+  .who b { color: var(--ink); font-weight: 600; }
+
+  .pill {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 5px 13px; border-radius: 999px; font-size: 14.5px; font-weight: 650;
+    white-space: nowrap;
+  }
+  .pill .ic { font-size: 15px; line-height: 1; }
+  .pill.verified   { background: var(--verified-bg); color: var(--verified); }
+  .pill.public     { background: var(--public-bg);   color: var(--public); }
+  .pill.refused    { background: var(--refused-bg);  color: var(--refused); }
+  .pill.unverified { background: var(--unverif-bg);  color: var(--unverif); }
+
+  .detail { padding: 6px 18px 18px; }
+  .checks { width: 100%; border-collapse: collapse; margin-top: 6px; }
+  .checks td { padding: 7px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+  .checks tr:last-child td { border-bottom: 0; }
+  .checks .mark { width: 30px; font-family: var(--mono); font-weight: 700; }
+  .checks .lbl { font-size: 15.5px; }
+  .checks .aside { text-align: right; color: var(--muted); font-family: var(--mono); font-size: 14px; white-space: nowrap; }
+  .ok   { color: var(--verified); }
+  .bad  { color: var(--refused); }
+  .skip { color: var(--muted); }
+  .why  { color: var(--refused); font-size: 14.5px; padding-bottom: 8px; }
+  .caveat { color: var(--muted); font-size: 14.5px; margin-top: 8px; }
+
+  .ids { margin-top: 14px; display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px 26px; }
+  .ids div { font-size: 14.5px; }
+  .ids .k { color: var(--muted); }
+  .ids .v { font-family: var(--mono); font-size: 13.5px; word-break: break-all; }
+
+  .empty { color: var(--muted); padding: 34px 18px; text-align: center; background: var(--panel);
+           border: 1px dashed var(--line); border-radius: 13px; font-size: 16px; }
+  .note { color: var(--muted); font-size: 14.5px; margin-top: 34px; border-top: 1px solid var(--line); padding-top: 16px; max-width: 78ch; }
+  .revoked-at { color: var(--refused); font-size: 14px; font-family: var(--mono); }
+
+  @media (max-width: 760px) {
+    .wrap { padding: 22px 16px 56px; }
+    h1 { font-size: 22px; }
+    .row > summary { grid-template-columns: 1fr auto; gap: 8px; }
+    .when, .who { grid-column: 1 / -1; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Association Server — identity decisions</h1>
+      <p class="sub">
+        Every call, what it presented, and which check decided the outcome.
+        Open a row to see the checks in order.
+      </p>
+    </div>
+    <div class="controls">
+      <label class="limit">
+        Show
+        <select id="limit">
+          <option>5</option><option selected>10</option><option>25</option><option>100</option>
+        </select>
+        most recent
+      </label>
+      <button class="revoke" id="revoke">Revoke the ECR credential</button>
+    </div>
+  </header>
+
+  <div class="tiles">
+    <div class="tile"><div class="k">Calls</div><div class="v" id="t-total">0</div></div>
+    <div class="tile"><div class="k">Verified</div><div class="v ok" id="t-verified">0</div></div>
+    <div class="tile"><div class="k">Refused</div><div class="v bad" id="t-refused">0</div></div>
+    <div class="tile"><div class="k">Members registered</div><div class="v" id="t-members">0</div></div>
+  </div>
+
+  <div id="revoked-banner" class="revoked-at" hidden></div>
+  <div class="rows" id="rows">
+    <div class="empty">No calls yet. Start the agent to populate this table.</div>
+  </div>
+
+  <p class="note">
+    Four outcomes, and the difference between them is the point.
+    <b>verified</b> — a credential was presented and every check passed.
+    <b>public</b> — the tool declares no requirement, so none was asked for.
+    <b>unverified</b> — the caller connected and presented nothing; it was not rejected as invalid,
+    it simply never claimed anything.
+    <b>refused</b> — something was presented and a named check stopped it.
+    <br><br>
+    Real KERI, real ACDC, real revocation. The root of trust is self-configured; in production it
+    would be GLEIF's.
+  </p>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const MARK = { true: "✓", false: "✗", null: "·" };
+
+/* A decision's outcome, as four distinct states rather than pass/fail.
+   `unverified` is split out from `refused` deliberately: a client that presented nothing was not
+   judged and found wanting — it never made a claim. That distinction is the second shot of the
+   recording. */
+function outcome(d) {
+  if (d.note === "public tool") return "public";
+  if (d.allowed) return "verified";
+  if (d.note === "missing_credential") return "unverified";
+  return "refused";
+}
+
+const PILL = {
+  verified:   { ic: "✓", text: "verified" },
+  public:     { ic: "○", text: "public" },
+  unverified: { ic: "—", text: "unverified" },
+  refused:    { ic: "✗", text: "refused" },
+};
+
+function short(aid) {
+  return aid ? `${aid.slice(0, 12)}…${aid.slice(-4)}` : "—";
+}
+
+function pill(d) {
+  const state = outcome(d);
+  const { ic, text } = PILL[state];
+  const label = state === "refused" ? `refused · ${d.note}` : text;
+  return `<span class="pill ${state}"><span class="ic">${ic}</span>${label}</span>`;
+}
+
+function who(d) {
+  if (d.lei) {
+    return `<b>${d.lei}</b>${d.role ? ` · ${d.role}` : ""}`;
+  }
+  return "no organizational identity presented";
+}
+
+function checksTable(report) {
+  if (!report) return "";
+  const rows = report.checks.map((c) => {
+    const cls = c.passed === true ? "ok" : c.passed === false ? "bad" : "skip";
+    const aside = c.passed === false
+      ? c.layer
+      : c.passed === null ? "not reached" : `${c.durationMs.toFixed(1)} ms`;
+    const why = (c.passed === false && c.detail)
+      ? `<tr><td></td><td class="why" colspan="2">${c.detail}</td></tr>` : "";
+    return `<tr>
+        <td class="mark ${cls}">${MARK[c.passed]}</td>
+        <td class="lbl">${c.label}</td>
+        <td class="aside">${aside}</td>
+      </tr>${why}`;
+  }).join("");
+
+  const caveats = (report.caveats || [])
+    .map((c) => `<div class="caveat">! ${c}</div>`).join("");
+
+  const id = report.identity || {};
+  const ids = [
+    ["LEI", id.lei], ["role", id.role],
+    ["credential", id.credentialSaid], ["holder", id.holderAid], ["agent", id.delegateAid],
+  ].filter(([, v]) => v)
+   .map(([k, v]) => `<div><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
+
+  return `<div class="detail">
+      <table class="checks">${rows}</table>
+      ${caveats}
+      ${ids ? `<div class="ids">${ids}</div>` : ""}
+    </div>`;
+}
+
+function render(data) {
+  const all = data.decisions || [];
+  $("t-total").textContent = all.length;
+  $("t-verified").textContent = all.filter((d) => outcome(d) === "verified").length;
+  $("t-refused").textContent = all.filter((d) => outcome(d) === "refused").length;
+  $("t-members").textContent = data.members ?? 0;
+
+  const limit = Number($("limit").value);
+  const shown = all.slice(0, limit);
+
+  if (!shown.length) return;
+
+  /* Preserve which rows the presenter had opened: re-rendering every second must not close a
+     detail someone is reading on camera. */
+  const open = new Set(
+    [...document.querySelectorAll(".row[open]")].map((el) => el.dataset.key)
+  );
+
+  $("rows").innerHTML = shown.map((d, i) => {
+    const key = `${d.at}|${d.tool}|${i}`;
+    return `<details class="row" data-key="${key}" ${open.has(key) ? "open" : ""}>
+        <summary>
+          <span class="when">${d.at || ""}</span>
+          <span class="tool">${d.tool}</span>
+          <span class="who">${who(d)}</span>
+          ${pill(d)}
+        </summary>
+        ${checksTable(d.report)}
+      </details>`;
+  }).join("");
+}
+
+async function poll() {
+  try {
+    render(await (await fetch("/api/audit")).json());
+  } catch { /* server not up yet; the next tick will try again */ }
+}
+
+$("limit").addEventListener("change", poll);
+
+$("revoke").addEventListener("click", async (e) => {
+  const button = e.currentTarget;
+  button.disabled = true;
+  button.textContent = "Revoking…";
+  const banner = $("revoked-banner");
+  banner.hidden = false;
+  banner.textContent = "revoking the ECR credential in the legal entity's transaction event log…";
+
+  try {
+    const body = await (await fetch("/api/revoke", { method: "POST" })).json();
+    const at = new Date().toLocaleTimeString();
+    if (body.ok) {
+      button.textContent = "ECR revoked";
+      banner.textContent = `revoked at ${at} — the next call presenting it will be refused`;
+    } else {
+      button.textContent = "Revoke failed";
+      button.disabled = false;
+      banner.textContent = `revocation failed at ${at}: ${(body.output || "").trim().slice(-160)}`;
+    }
+  } catch (err) {
+    button.textContent = "Revoke failed";
+    button.disabled = false;
+    banner.textContent = `revocation failed: ${err}`;
+  }
+  poll();
+});
+
+poll();
+setInterval(poll, 1000);
+</script>
+</body>
+</html>

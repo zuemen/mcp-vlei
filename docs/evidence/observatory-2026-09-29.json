@@ -1,0 +1,112 @@
+{
+  "_about": "Records from the MCP observatory (examples/observatory): what a server received from real MCP clients and from a replay of one. Every value is as the client sent it, self-reported and unverified.",
+  "server": "https://mcp.zuemen.net/mcp",
+  "exportedAt": "2026-09-29T04:38:25Z",
+  "fields": [
+    "ts",
+    "layer",
+    "run",
+    "method",
+    "tool",
+    "era",
+    "protocolVersion",
+    "negotiatedVersion",
+    "clientInfo",
+    "capabilities",
+    "headers",
+    "truncated"
+  ],
+  "neverRecorded": "IP addresses, tokens, the value of an Authorization header (only whether one was present), tool arguments, conversation content; checked again before export by examples/observatory/export_evidence.py",
+  "records": [
+    {
+      "label": "claude.ai",
+      "side": "real",
+      "selector": "2026-09-29T04:10:48.9",
+      "ts": "2026-09-29T04:10:48.905Z",
+      "layer": "transport",
+      "run": null,
+      "method": "tools/call",
+      "tool": "echo_identity",
+      "era": "modern",
+      "protocolVersion": "2026-07-28",
+      "clientInfo": {
+        "name": "Anthropic/ClaudeAI",
+        "version": "1.0.0"
+      },
+      "capabilities": {
+        "extensions": {
+          "io.modelcontextprotocol/ui": {
+            "mimeTypes": [
+              "text/html;profile=mcp-app"
+            ]
+          }
+        }
+      },
+      "headers": {
+        "userAgent": "Claude-User",
+        "mcpProtocolVersion": "2026-07-28",
+        "origin": null,
+        "authorizationPresent": false
+      },
+      "truncated": false
+    },
+    {
+      "label": "replay",
+      "side": "replay",
+      "selector": "2026-09-29T04:13:30.7",
+      "ts": "2026-09-29T04:13:30.707Z",
+      "layer": "transport",
+      "run": "replay",
+      "method": "tools/call",
+      "tool": "echo_identity",
+      "era": "modern",
+      "protocolVersion": "2026-07-28",
+      "clientInfo": {
+        "name": "Anthropic/ClaudeAI",
+        "version": "1.0.0"
+      },
+      "capabilities": {},
+      "headers": {
+        "userAgent": "python-httpx2/2.13.0",
+        "mcpProtocolVersion": "2026-07-28",
+        "origin": null,
+        "authorizationPresent": false
+      },
+      "truncated": false
+    },
+    {
+      "label": "claude-code",
+      "side": "real",
+      "selector": "2026-09-29T04:17:30.3",
+      "ts": "2026-09-29T04:17:30.387Z",
+      "layer": "transport",
+      "run": null,
+      "method": "server/discover",
+      "era": "modern",
+      "protocolVersion": "2026-07-28",
+      "clientInfo": {
+        "name": "claude-code",
+        "title": "Claude Code",
+        "version": "2.1.284",
+        "description": "Anthropic's agentic coding tool",
+        "websiteUrl": "https://claude.com/claude-code"
+      },
+      "capabilities": {
+        "roots": {
+          "listChanged": true
+        },
+        "elicitation": {
+          "form": {},
+          "url": {}
+        }
+      },
+      "headers": {
+        "userAgent": "Claude-User",
+        "mcpProtocolVersion": "2026-07-28",
+        "origin": null,
+        "authorizationPresent": false
+      },
+      "truncated": false
+    }
+  ]
+}

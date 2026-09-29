@@ -1,0 +1,102 @@
+# The regulator scenario, end to end.
+#
+#   export VLEI_ACCEPTED_ROOTS=$(python -c "import json;print(','.join(json.load(open('credentials/env.json'))['acceptedRoots']))")
+#   docker compose -f deploy/agentgateway/docker-compose.yml up -d --build
+#   python examples/regulator/gateway_client.py --url http://localhost:3000/mcp ...
+#
+# Assumes scripts/docker-compose.yml is up (it creates the `mcp-vlei_default` network and the
+# witness on it) and scripts/bootstrap-credentials.sh has produced credentials/.
+#
+# Reaching the witness: vlei-authz joins `mcp-vlei_default` and addresses the witness by its
+# service name, http://witness-demo:5642. That is the port *inside* the network, which stays 5642
+# even when the host port is remapped (VLEI_WITNESS_HOST_PORT_WAN, needed on Windows hosts that
+# reserve 5550-5649) — host.docker.internal would have to track that remapping, the network does
+# not. Override with VLEI_GATEWAY_WITNESS_URL / VLEI_GATEWAY_WITNESS_URLS — deliberately not
+# VLEI_WITNESS_URL, which scripts/.env sets to the *host* address (localhost:15642) for everything
+# running outside Docker; exported into this file it would point the container at itself.
+#
+# Several witnesses: vlei-authz compares each caller's key log across all three demo witnesses and
+# refuses a fork (duplicity). They are one container here, so the check is exercised, not earned.
+
+name: mcp-vlei-regulator
+
+x-python-build: &python-build
+  # One Dockerfile for both Python services; the second build is served from the layer cache.
+  context: ../..
+  dockerfile: deploy/agentgateway/Dockerfile.python
+
+x-le-credential: &le-credential
+  # Only the regulator's own LE credential is mounted — not credentials/, which also holds the
+  # holder's material. create_host_path: false makes a missing file an error instead of a directory.
+  type: bind
+  source: ${VLEI_LE_CREDENTIAL_FILE:-../../credentials/le.cesr}
+  target: /run/vlei/le.cesr
+  read_only: true
+  bind:
+    create_host_path: false
+
+services:
+  # Simulated — not connected to the Bureau of Labor Insurance. Does no vLEI verification at all;
+  # reads the gateway's headers. That is the deliverable.
+  labor-insurance-sim:
+    build: *python-build
+    command: python examples/regulator/labor-insurance-sim/server.py
+    environment:
+      - PORT=8081
+      - VLEI_LE_CREDENTIAL=/run/vlei/le.cesr
+      - VLEI_ACCEPTED_ROOTS=${VLEI_ACCEPTED_ROOTS:-}
+      # The Host header agentgateway sends; the SDK's DNS-rebinding check stays on.
+      - LABOR_SIM_ALLOWED_HOSTS=labor-insurance-sim,labor-insurance-sim:*,localhost:*,127.0.0.1:*
+      # The extension's namespace: provisional, and configuration (see spec/SPEC.md, Namespace).
+      - MCP_VLEI_NAMESPACE=${MCP_VLEI_NAMESPACE:-org.gleif.vlei}
+    volumes:
+      - *le-credential
+    expose:
+      - "8081"
+
+  # mcp_vlei's VleiIdentity.verify_call behind HTTP — the same checks as the in-process extension.
+  vlei-authz:
+    build: *python-build
+    command: python examples/regulator/vlei-authz/service.py
+    environment:
+      - PORT=9000
+      - VLEI_LE_CREDENTIAL=/run/vlei/le.cesr
+      - VLEI_ACCEPTED_ROOTS=${VLEI_ACCEPTED_ROOTS:-}
+      - VLEI_WITNESS_URL=${VLEI_GATEWAY_WITNESS_URL:-http://witness-demo:5642}
+      - VLEI_WITNESS_URLS=${VLEI_GATEWAY_WITNESS_URLS:-http://witness-demo:5642,http://witness-demo:5643,http://witness-demo:5644}
+      # Per witness request; must stay well under extAuthz's requestTimeout (10s in config.yaml).
+      - VLEI_WITNESS_TIMEOUT=${VLEI_WITNESS_TIMEOUT:-3}
+      - VLEI_REVOCATION_SOURCE=${VLEI_REVOCATION_SOURCE:-tel}
+      - VLEI_AUDIT_LOG=/audit/decisions.jsonl
+      # The filing window counts days in Taiwan (the simulated Bureau's), not in the container's UTC.
+      - VLEI_POLICY_UTC_OFFSET=${VLEI_POLICY_UTC_OFFSET:-+08:00}
+      # The extension's namespace: provisional, and configuration (see spec/SPEC.md, Namespace).
+      - MCP_VLEI_NAMESPACE=${MCP_VLEI_NAMESPACE:-org.gleif.vlei}
+    volumes:
+      - *le-credential
+      # One JSON object per decision, allowed and denied alike. Bind-mounted so the log survives
+      # the container and can be read during the demo.
+      - ./audit:/audit
+    expose:
+      - "9000"
+    networks:
+      - default
+      - mcp-vlei_default
+
+  agentgateway:
+    # Pinned: v1.5.0 is the release this configuration was validated against
+    # (`agentgateway --validate-only`), not whatever :latest is on the day of the demo.
+    image: ghcr.io/agentgateway/agentgateway:v1.5.0
+    command: ["-f", "/etc/agentgateway/config.yaml"]
+    volumes:
+      - ./config.yaml:/etc/agentgateway/config.yaml:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - labor-insurance-sim
+      - vlei-authz
+
+networks:
+  # Created by scripts/docker-compose.yml; the witness is reachable on it as witness-demo:5642.
+  mcp-vlei_default:
+    external: true

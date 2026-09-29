@@ -1,0 +1,81 @@
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "result": {
+    "tools": [
+      {
+        "name": "list_insured",
+        "title": "List insured employees (simulated)",
+        "description": "Simulated — not connected to the Bureau of Labor Insurance. The calling employer's insured employees, and no one else's. Requires an ECR: the employer is known only from the verified credential.",
+        "inputSchema": { "type": "object", "properties": {} },
+        "_meta": {
+          "org.gleif.vlei/requires": { "credential": "ECR" }
+        }
+      },
+      {
+        "name": "enroll_employee",
+        "title": "Enrol an employee in labour insurance (simulated)",
+        "description": "Simulated — not connected to the Bureau of Labor Insurance. Enrol a fictitious employee of the calling employer from their start date. Requires an ECR carrying the labor-insurance-filing role; the start date must be today or up to ten days ahead.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "person_ref": { "type": "string", "pattern": "^EMP-[0-9]{4}$" },
+            "start_date": { "type": "string", "format": "date" },
+            "salary_grade": { "type": "integer", "minimum": 1 }
+          },
+          "required": ["person_ref", "start_date", "salary_grade"]
+        },
+        "_meta": {
+          "org.gleif.vlei/requires": {
+            "credential": "ECR",
+            "role": "labor-insurance-filing",
+            "arguments": {
+              "start_date": { "dateWithinDays": [0, 10] }
+            }
+          }
+        }
+      },
+      {
+        "name": "withdraw_employee",
+        "title": "Withdraw an employee from labour insurance (simulated)",
+        "description": "Simulated — not connected to the Bureau of Labor Insurance. Withdraw a fictitious employee of the calling employer from their leaving date. Requires an ECR carrying the labor-insurance-filing role; the leaving date must be today or up to ten days ahead.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "person_ref": { "type": "string", "pattern": "^EMP-[0-9]{4}$" },
+            "end_date": { "type": "string", "format": "date" }
+          },
+          "required": ["person_ref", "end_date"]
+        },
+        "_meta": {
+          "org.gleif.vlei/requires": {
+            "credential": "ECR",
+            "role": "labor-insurance-filing",
+            "arguments": {
+              "end_date": { "dateWithinDays": [0, 10] }
+            }
+          }
+        }
+      },
+      {
+        "name": "adjust_insured_salary",
+        "title": "Adjust an insured salary grade (simulated)",
+        "description": "Simulated — not connected to the Bureau of Labor Insurance. Change an enrolled employee's salary grade. Requires an ECR carrying the labor-insurance-payroll role.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "person_ref": { "type": "string", "pattern": "^EMP-[0-9]{4}$" },
+            "salary_grade": { "type": "integer", "minimum": 1 }
+          },
+          "required": ["person_ref", "salary_grade"]
+        },
+        "_meta": {
+          "org.gleif.vlei/requires": {
+            "credential": "ECR",
+            "role": "labor-insurance-payroll"
+          }
+        }
+      }
+    ]
+  }
+}

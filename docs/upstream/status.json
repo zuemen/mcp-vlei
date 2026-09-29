@@ -1,0 +1,15 @@
+{
+  "_comment": "The one place the vlei-verifier issue's status is written. scripts/upstream-status.py checks it, and checks a talk against it when given one: the talk must say `say`, and while `filed` is false none of `never_say_until_filed`. When the issue is filed: set filed, issue and filed_on, and change `say`.",
+  "filed": true,
+  "issue": "https://github.com/GLEIF-IT/vlei-verifier/issues/147",
+  "filed_on": "2026-09-29",
+  "say": "filed as vlei-verifier issue #147",
+  "never_say_until_filed": [
+    "we reported it",
+    "we filed",
+    "reported upstream",
+    "filed upstream",
+    "have reported",
+    "issue #"
+  ]
+}

@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+title: "mcp-vlei: verifiable organizational identity for the Model Context Protocol"
+message: "If you refer to this work, please cite it as below."
+type: software
+authors:
+  - family-names: Chu
+    given-names: Ting-Yi
+repository-code: "https://github.com/zuemen/mcp-vlei"
+abstract: >-
+  An additive extension to the Model Context Protocol that carries GLEIF vLEI
+  credentials, so a tool call can establish which legal entity is accountable and
+  under what delegated authority. Every layer MCP authenticates proves control of
+  a domain or the identity of a human user; none expresses a legal entity. The
+  extension travels in the fields MCP already reserves for extensions and does not
+  modify the core schema.
+keywords:
+  - model context protocol
+  - vLEI
+  - GLEIF
+  - KERI
+  - ACDC
+  - agent identity
+  - organizational identity
+license: Apache-2.0
+version: "0.2"
+date-released: "2026-09-23"

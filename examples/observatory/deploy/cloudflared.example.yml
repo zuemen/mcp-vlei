@@ -1,0 +1,10 @@
+# Cloudflare Tunnel for the observatory. Copy to ~/.cloudflared/config.yml and fill in the
+# tunnel id `cloudflared tunnel create mcp-observatory` printed. HTTPS terminates at Cloudflare;
+# the server itself listens on 127.0.0.1 only.
+tunnel: <TUNNEL-ID>
+credentials-file: <HOME>/.cloudflared/<TUNNEL-ID>.json
+
+ingress:
+  - hostname: mcp.zuemen.net
+    service: http://127.0.0.1:8765
+  - service: http_status:404

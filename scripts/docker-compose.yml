@@ -1,0 +1,135 @@
+# Credential environment for mcp-vlei.
+#
+# Real KERI, real ACDC, real verifier. The root of trust is self-configured — in production it
+# would be GLEIF's. Nothing here depends on a GLEIF-issued credential.
+#
+#   docker compose -f scripts/docker-compose.yml up -d
+#   bash scripts/bootstrap-credentials.sh
+
+name: mcp-vlei
+
+services:
+  # Three demo witnesses (wan, wil, wes) on 5642-5644. Their AIDs are the well-known demo set,
+  # derived from the fixed salt baked into `kli witness demo`.
+  witness-demo:
+    image: weboftrust/keri:1.2.14
+    container_name: mcp-vlei-witness
+    environment:
+      - PYTHONUNBUFFERED=1
+    # The image's entrypoint is already `kli`, so the command is the subcommand alone.
+    command: witness demo
+    volumes:
+      # weboftrust/keri:1.2.14 ships /keripy/scripts/keri/cf/main/*.json as ZERO-BYTE files. Without
+      # them a witness starts and signs correctly but publishes no endpoint (`curls`) records, so a
+      # controller resolving its OOBI learns the KEL and no address — and inception then fails with
+      # "unable to find a valid endpoint for witness" before it ever dials. Mounting real configs
+      # over the empty ones is what makes receipting work.
+      - ./witness-config:/keripy/scripts/keri/cf/main
+    healthcheck:
+      # No curl in this image; it is a Python image, so use urllib.
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:5642/oobi')"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    # Host ports are configurable because Windows reserves dynamic port ranges at boot (see
+    # `netsh interface ipv4 show excludedportrange protocol=tcp`), and 5550-5649 is a range it has
+    # been observed to take. Inside the compose network the witnesses stay on 5642-5644, so nothing
+    # else changes; set VLEI_WITNESS_HOST_PORT_* and VLEI_WITNESS_URL in scripts/.env.
+    ports:
+      - "${VLEI_WITNESS_HOST_PORT_WAN:-5642}:5642"
+      - "${VLEI_WITNESS_HOST_PORT_WIL:-5643}:5643"
+      - "${VLEI_WITNESS_HOST_PORT_WES:-5644}:5644"
+
+  # Serves the published vLEI ACDC schemas by SAID, so `kli vc create --schema <SAID>` can resolve
+  # them. This is the WebOfTrust/vLEI schema set, unmodified.
+  vlei-server:
+    image: gleif/vlei:0.2.0
+    container_name: mcp-vlei-schema
+    command:
+      - vLEI-server
+      - -s
+      - ./schema/acdc
+      - -c
+      - ./samples/acdc/
+      - -o
+      - ./samples/oobis/
+      - -p
+      - "7723"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:7723/oobi/EBfdlu8R27Fbx-ehrqwImnK-8Cm79sqbAQ4MmvEAYqao')"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    ports:
+      - "7723:7723"
+
+  # GLEIF-IT/vlei-verifier. VERIFY_ROOT_OF_TRUST empty at start; the bootstrap script installs our
+  # self-configured root via POST /root_of_trust/{aid}, which is the documented mechanism for
+  # running the verifier against a non-GLEIF root.
+  vlei-verifier:
+    # No `latest` tag is published for this image, and the version ordering is not what it looks
+    # like: 0.1.5 (2026-08-20) is newer than 1.0.0 (2026-06-29). Both carry the same defect in
+    # process_revocations_from_event_log — verified by reading 0.1.5's own source — so changing
+    # the tag does not avoid it. The variable is here so a fixed release can be adopted the day it
+    # appears, without editing this file.
+    image: gleif/vlei-verifier:${VLEI_VERIFIER_TAG:-1.0.0}
+    container_name: mcp-vlei-verifier
+    # vlei-verifier 1.0.0 crashes the whole service when its revocation observer meets a stored
+    # state whose `aid` is None: `process_revocations_from_event_log` does
+    # `vdb.iss.pin(keys=(aid,), ...)` without checking, and keripy's koming raises
+    # "TypeError: sequence item 0: expected str instance, NoneType found".
+    #
+    # It takes the HTTP service down with it, and every client then reports a connection error
+    # rather than anything about credentials — which is how it stayed hidden. Restarting keeps a
+    # demo usable; the fix belongs upstream, and it is worth raising with GLEIF.
+    restart: unless-stopped
+    environment:
+      - VERIFY_ROOT_OF_TRUST=True
+      - VLEI_VERIFIER_PORT=7676
+      # `production` requires Signify-signed headers on /authorizations too, which a relying party
+      # cannot produce — it is not the holder. `test` keeps presentation signed (the holder still
+      # proves control of the AID) while letting a relying party read back what that established,
+      # and it is what enables /root_of_trust for a self-configured root.
+      #
+      # This is a demo-environment setting and the talk says so. In production the relying party
+      # would be an authenticated client of the verifier rather than an anonymous reader.
+      - VERIFIER_MODE=test
+    volumes:
+      # The shipped config has `revocationCheck: false`, and the flag is read from the config file
+      # only — there is no environment variable for it. With it off the verifier never polls a
+      # witness for a credential's TEL, so a revoked credential keeps returning "valid login
+      # account" indefinitely. Ours turns it on and points the schema and witness URLs at this
+      # compose network instead of GLEIF's testnet. Not read-only: keripy's Configer
+      # opens a config file for writing even when it only reads it, and falls back to a path that
+      # does not exist if it cannot.
+      - ./verifier-config/verifier-config-public.json:/usr/local/var/vlei-verifier/scripts/keri/cf/verifier-config-public.json
+    depends_on:
+      witness-demo:
+        condition: service_healthy
+      vlei-server:
+        condition: service_healthy
+    ports:
+      - "7676:7676"
+
+  # Long-running container that holds the keystores. The bootstrap script drives `kli` here via
+  # `docker compose exec`, so keystores survive between steps and can be inspected afterwards.
+  keri-cli:
+    image: weboftrust/keri:1.2.14
+    container_name: mcp-vlei-cli
+    entrypoint: ["tail", "-f", "/dev/null"]
+    # No shared network namespace. The witness configs in ./witness-config publish their endpoints
+    # as http://witness-demo:564x, so ordinary compose DNS reaches them — and sharing the witness
+    # container's namespace would tie this container's lifetime to the witness's, so recreating the
+    # witnesses would silently kill the CLI mid-run.
+    depends_on:
+      witness-demo:
+        condition: service_healthy
+      vlei-server:
+        condition: service_healthy
+    volumes:
+      # Not read-only: keripy's Configer opens the config directory for writing even when it only
+      # reads the file, and fails silently to load `iurls` if it cannot.
+      - ./keri-config:/keri-config
+      - ../credentials:/credentials

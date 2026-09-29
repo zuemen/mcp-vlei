@@ -1,0 +1,4 @@
+{
+  "_comment": "Test values. A real LEI record carries the entity's registration number in its registeredAs field; for a company registered in Taiwan that number is its unified business number (統一編號). This table stands in for that lookup. The LEI and the number below are fictitious: the LEI fails the ISO 17442 check digits, and 00000000 is a placeholder.",
+  "984500ABCDEF12345678": {"registeredAs": "00000000"}
+}

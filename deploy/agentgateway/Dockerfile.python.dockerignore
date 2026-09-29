@@ -1,0 +1,33 @@
+# Applies to Dockerfile.python, whose build context is the repository root. BuildKit (the default
+# builder, and what `docker compose build` uses) reads <Dockerfile>.dockerignore from the
+# Dockerfile's own directory in preference to a .dockerignore at the context root.
+
+# Secrets: issued credentials, key stores, local environment files.
+credentials/
+**/credentials/
+**/keys/
+**/*.key
+**/*.pem
+**/.env
+**/.env.*
+
+# Local state that has no business in an image.
+.git/
+**/.venv/
+**/venv/
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/node_modules/
+*.log
+**/audit/
+
+# Not used by the services this image runs.
+docs/
+skills/
+spec/
+scripts/
+examples/console/
+examples/my-agent/
+examples/association-server/
+examples/impersonation/

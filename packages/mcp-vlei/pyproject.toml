@@ -1,0 +1,51 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mcp-vlei"
+version = "0.2.0"
+description = "Verifiable organizational identity for MCP using GLEIF vLEI (org.gleif.vlei/identity)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Ting-Yi Chu" }]
+keywords = ["mcp", "vlei", "gleif", "keri", "acdc", "identity"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Financial and Insurance Industry",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Security :: Cryptography",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Typing :: Typed",
+]
+dependencies = [
+  "mcp>=2.2.0",
+  "httpx>=0.27",
+  "cryptography>=42.0",
+  # Recomputing an ACDC SAID, which is how a relying party checks a counterparty's credential
+  # without asking anyone.
+  "blake3>=0.4",
+]
+
+[project.optional-dependencies]
+keri = ["keri>=1.2.6"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "respx>=0.21"]
+
+[project.urls]
+Homepage = "https://github.com/zuemen/mcp-vlei"
+Specification = "https://github.com/zuemen/mcp-vlei/blob/main/spec/SPEC.md"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mcp_vlei"]
+# py.typed must ship, or the type hints are invisible to anyone installing the package.
+artifacts = ["src/mcp_vlei/py.typed"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

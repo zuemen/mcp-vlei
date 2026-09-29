@@ -1,0 +1,99 @@
+# mcp-vlei
+
+[![tests](https://github.com/zuemen/mcp-vlei/actions/workflows/test.yml/badge.svg)](https://github.com/zuemen/mcp-vlei/actions/workflows/test.yml)
+
+**Reference design · v0.2 · root of trust self-configured**
+
+> **Namespace.** This draft uses `org.gleif.vlei/identity` as a provisional, demonstration
+> namespace. It has not been reviewed or endorsed by GLEIF. Reverse-domain prefixes conventionally
+> belong to the domain's owner, so the final name is expected to follow GLEIF's view — it may stay
+> as is, or move to another prefix. Implementations should treat the namespace as configuration
+> (`MCP_VLEI_NAMESPACE`), not as a constant.
+
+Verifiable **organizational** identity for the Model Context Protocol, using GLEIF's vLEI ecosystem.
+
+MCP authenticates domains (TLS, OAuth `iss`, OAuth `client_id`) and human users (OAuth `sub`). No
+layer expresses a legal entity, and `clientInfo` is self-reported, not verified by the protocol,
+and SHOULD NOT be relied on for security decisions. When an agent acts autonomously across organizational boundaries, the accountable party
+is not verifiable in the call. This project closes that gap **additively**, through MCP's own
+extension mechanism. The MCP core schema is not modified.
+
+**Extension identifier:** `org.gleif.vlei/identity`
+
+## Layout
+
+| Path | Contents |
+|---|---|
+| `docs/PROBLEM.md` | Problem statement — the applicability boundary, with measurements and corroboration |
+| `docs/GOVERNMENT.md` | Adoption path for public-sector institutions |
+| `spec/SPEC.md` | The extension specification |
+| `spec/schema.ts` | Type definitions — additive, nothing in core MCP redefined |
+| `spec/examples/` | Wire-format examples |
+| `skills/implementing-vlei/` | **For development (build time)** — for whoever writes a server or client, human or coding assistant: how to implement the extension correctly. Output is code: reviewed once, then executed every time. `CONFORMANCE.md` records an AI building from it with no other input |
+| `skills/vlei-identity/` | **For execution (runtime)** — for the agent itself, while it runs: how to present credentials and read a refusal. Output is behaviour: guidance, not a guarantee |
+| `docs/CONFORMANCE.md` | Every normative statement in the spec, with its implementation and its test |
+| `docs/evidence/` | Records from the observatory — what real MCP clients sent — exported with every value checked for addresses, tokens and conversation |
+| `docs/upstream/` | A defect found in `vlei-verifier` while building this, written up for GLEIF |
+| `scripts/` | One-command credential environment bootstrap |
+| `packages/mcp-vlei/` | Python implementation (`VleiIdentity` server extension, `VleiClient`) |
+| `examples/impersonation/` | The problem, made executable: quota granted on a name the caller chose |
+| `examples/console/` | The Trust Console — the interface the recording is shot on |
+| `examples/` | Reference server, reference agent, regulator scenario |
+| `deploy/agentgateway/` | Gateway configuration for zero-code-change adoption |
+
+## What it adds
+
+- A server presents a **Legal Entity (LE)** credential; a client verifies it before calling anything.
+- An agent presents an **Engagement Context Role (ECR)** credential plus a delegated AID and a
+  single-pass signature over the request.
+- A tool declares its permission requirement in `Tool._meta` (`org.gleif.vlei/requires`), so an agent
+  can determine **before calling** whether it is entitled to call.
+- Two verification modes: passive verification from a public location, and signed attestation between
+  institutions.
+- Failures name their layer (`revoked`, `role_mismatch`, `digest_mismatch`, …), because the correct
+  recovery differs per layer.
+
+## Status
+
+| Task | State |
+|---|---|
+| 0 — Problem statement | `docs/PROBLEM.md` |
+| 1 — Schema extension | `spec/` |
+| 2 — Skills and workflow | `skills/implementing-vlei/` (development) · `skills/vlei-identity/` (execution) |
+| 3 — Credential environment | `scripts/` — **all six acceptance checks pass** |
+| 4 — Python package | `packages/mcp-vlei/` — 309 tests, against the real SDK types and real KERI event logs |
+| 5 — Reference implementation | runs on SDK 2.2.0 at protocol 2026-07-28; acceptance tests green — see `examples/README.md` |
+| 6A — Government adoption path | `docs/GOVERNMENT.md` |
+| 6B — Government gateway | `examples/regulator/`, `deploy/agentgateway/` |
+
+`scripts/bootstrap-credentials.sh` now runs end to end against live containers: it issues the
+chain, installs the self-configured root, presents the ECR credential to GLEIF's verifier (202),
+reads back the LEI and role (200), revokes, and confirms the revocation is honoured (401).
+
+The reference implementations run against the official SDK: the server registers its tools with
+their `_meta` requirements, advertises `org.gleif.vlei/identity` at protocol 2026-07-28, verifies a
+counterparty's credential locally, reads revocation from the issuer's transaction event log, and
+refuses a protected tool to an unmodified client with a named failure layer.
+
+A defect in `vlei-verifier` 1.0.0 that used to block half the acceptance suite is now off the
+critical path — three selectable revocation sources, and every check the request alone can decide
+runs before any witness is asked — and
+written up for upstream in `docs/upstream/`. `examples/README.md` has the detail.
+
+**2026-09-24 — a security defect, fixed.** Request signatures were verified under a key the request
+itself carried, delegation and issuance were never checked, and a request with no key skipped the
+signature check. Anyone who had seen a holder's credential could present it as theirs. A request is
+now verified under the signer's current key state from its key event log at a witness; the signer
+must be the holder or delegated by them; every issuance must be anchored in its issuer's log; the
+chain must have the vLEI shape with a consistent LEI; revocation covers every link. The details, and
+the tests that would have caught it, are in `docs/CONFORMANCE.md`. The console's five scenes all run
+for real — see `examples/console/README.md`; four of them are a labour-insurance filing through the
+gateway, simulated and not connected to the Bureau of Labor Insurance.
+
+Witness host ports are configurable (`scripts/.env`, gitignored) because Windows reserves dynamic
+port ranges at boot and has been seen to take 5550–5649.
+
+## Honesty statement
+
+Real KERI, real ACDC, real revocation. The root of trust is self-configured; in production it would
+be GLEIF's.

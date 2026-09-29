@@ -1,0 +1,34 @@
+__pycache__/
+*.pyc
+.venv/
+keys/
+credentials/
+.env
+node_modules/
+bootstrap.log
+verify.log
+server.log
+console.log
+skill-server.log
+reset.log
+# vlei-authz decision log (LEI, role, AIDs per call) written by the gateway demo
+deploy/agentgateway/audit/
+gateway.log
+# Observatory: the log of what real clients sent stays on the machine that received it. Export
+# chosen records with examples/observatory/export_evidence.py instead (docs/evidence/).
+examples/observatory/data/*
+!examples/observatory/data/.gitignore
+# Cloudflare Tunnel: the origin certificate, tunnel credentials and a filled-in config never
+# belong in the repository (they live in ~/.cloudflared/; deploy/ keeps only the example).
+.cloudflared/
+**/.cloudflared/
+cert.pem
+*.pem
+examples/observatory/deploy/*.json
+examples/observatory/deploy/config.yml
+# Screenshots and draft recordings the scripts write (scripts/capture-console.py, record-demo.py).
+shots/
+recordings/
+*.mp4
+*.mov
+*.pptx

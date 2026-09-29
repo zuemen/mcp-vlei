@@ -1,0 +1,70 @@
+{
+  "description": "Test vectors for the request digest and signature of org.gleif.vlei/identity (spec/SPEC.md, Request signing). digest = base64url(sha256(JCS(params without _meta))), unpadded; the signed payload is method + LF + ts + LF + digest; Ed25519 is deterministic, so the signature is reproducible from the seed.",
+  "digests": [
+    {
+      "note": "the _meta member is excluded, whatever it holds",
+      "params": {
+        "name": "submit_filing",
+        "arguments": {
+          "form": "A1",
+          "period": "2026Q2"
+        },
+        "_meta": {
+          "org.gleif.vlei/signature": {
+            "sig": "..."
+          }
+        }
+      },
+      "canonical": "{\"arguments\":{\"form\":\"A1\",\"period\":\"2026Q2\"},\"name\":\"submit_filing\"}",
+      "digest": "WX2NR6lYuqSYTMttNXGSiS-KY2oIh14kv-Su3YLbev4"
+    },
+    {
+      "note": "a tool with no arguments: no `arguments` member is sent, so none is signed",
+      "params": {
+        "name": "ping"
+      },
+      "canonical": "{\"name\":\"ping\"}",
+      "digest": "Pxtc5xcIBBQ-pshAgl8R4fzhrtMNult_DYMiD4QGaIk"
+    },
+    {
+      "note": "RFC 8785: keys sorted by UTF-16 code units, 1.0 serialized as 1, non-ASCII as literal UTF-8, arrays in order",
+      "params": {
+        "name": "t",
+        "arguments": {
+          "b": 1.0,
+          "a": "臺北 é",
+          "z": [
+            3,
+            2,
+            1
+          ],
+          "n": null,
+          "t": true
+        }
+      },
+      "canonical": "{\"arguments\":{\"a\":\"臺北 é\",\"b\":1,\"n\":null,\"t\":true,\"z\":[3,2,1]},\"name\":\"t\"}",
+      "digest": "tDxXa89Wax91onOmcYYKwHKsjExntGe5nU-DalBTFCw"
+    },
+    {
+      "note": "key order in the request does not change the digest",
+      "params": {
+        "arguments": {
+          "period": "2026Q2",
+          "form": "A1"
+        },
+        "name": "submit_filing"
+      },
+      "canonical": "{\"arguments\":{\"form\":\"A1\",\"period\":\"2026Q2\"},\"name\":\"submit_filing\"}",
+      "digest": "WX2NR6lYuqSYTMttNXGSiS-KY2oIh14kv-Su3YLbev4"
+    }
+  ],
+  "signature": {
+    "seedHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "verkey": "DAOhB7_zzhC-HXDdGOdLwJln5NYwm6UNXx3chmQSVTG4",
+    "method": "tools/call",
+    "ts": "2026-09-24T09:00:00.000Z",
+    "digest": "WX2NR6lYuqSYTMttNXGSiS-KY2oIh14kv-Su3YLbev4",
+    "payload": "tools/call\n2026-09-24T09:00:00.000Z\nWX2NR6lYuqSYTMttNXGSiS-KY2oIh14kv-Su3YLbev4",
+    "sig": "0BAJEn7FUM_CkzaaQXxlDfqwiUP_r0mz_zQ6hIiRnrvd7-TXC7sov7k3QLgy3Y07Jkqe2iM2UbB9P6R7Ko3qbzkC"
+  }
+}

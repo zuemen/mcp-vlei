@@ -1,0 +1,9 @@
+# For a build whose context is this directory. The compose file builds from the repository root,
+# and for that build the rules in Dockerfile.python.dockerignore apply instead.
+credentials/
+**/keys/
+**/*.key
+**/.env
+**/.venv/
+**/__pycache__/
+audit/
