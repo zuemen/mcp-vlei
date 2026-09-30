@@ -36,19 +36,19 @@ h1{font-size:28px;font-weight:600;margin:0 0 6px;letter-spacing:-.01em}
 table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--rule);
 table-layout:fixed}
 th,td{text-align:left;vertical-align:top;padding:14px 16px;border-bottom:1px solid var(--rule)}
-thead th{font-size:13px;font-weight:600;color:var(--ink-2);background:var(--bg)}
+thead th{font-size:13px;font-weight:600;color:var(--ink);background:transparent;border-bottom:1px solid var(--ink)}
 thead th small{display:block;font-weight:400;color:var(--muted);margin-top:4px}
 col.f{width:210px}col.v{width:160px}
-td.field{font-size:14px;font-weight:600}
-code{font-family:var(--mono);font-size:12.5px;white-space:pre-wrap;word-break:break-word;
-background:var(--code-bg);display:block;padding:8px 10px;border-radius:2px}
+td.field{font-size:15px;font-weight:600}
+code{font-family:var(--mono);font-size:14px;white-space:pre-wrap;word-break:break-word;
+background:transparent;display:block;padding:2px 0;border-radius:0}
 .none{color:var(--muted);font-style:italic;font-size:13px}
-.verdict{font-size:13px;font-weight:600;letter-spacing:.02em}
+.verdict{font-size:14px;font-weight:600;letter-spacing:.02em}
 .same{color:var(--pass)}.different{color:var(--fail)}.pending{color:var(--muted)}
-tr.clientInfo td{background:#F2F5F9}
+tr.clientInfo td.field{color:var(--ink)}
 .note{margin:28px 0 0;padding:18px 20px;border-left:3px solid var(--pass);background:var(--panel);
 font-size:15px;line-height:1.6;max-width:900px}
-.meta{margin-top:18px;color:var(--muted);font-size:12.5px;line-height:1.6}
+.meta{margin-top:18px;color:var(--muted);font-size:13px;line-height:1.6}
 .pair{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:0 0 20px}
 .pair div{background:var(--panel);border:1px solid var(--rule);padding:12px 16px;font-size:14px;
 line-height:1.55}

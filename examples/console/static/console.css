@@ -1,36 +1,41 @@
 /*
-  Trust Console — styles.
+  Trust Console.
 
-  Built for one size (1920×1080) and one medium (a recording played on a projector). Light, because
-  a dark panel washes out in a lit room. Fixed, because responsive layout solves a problem this
-  screen does not have.
+  One stage, 1280×720 CSS pixels, scaled to the window by console.js (CSS zoom): at 1920×1080
+  everything below is drawn 1.5× larger and still sharp. The sizes are set for a room — the
+  smallest must-read text should be about a fiftieth of the screen's height — and for a recording
+  that is played inside a slide.
+
+  Light, because a dark panel washes out in a lit room. Square, without shadows: lines and
+  alignment carry the hierarchy. Colour means a state and nothing else — green passed, red
+  refused, gold simulated; navy is the brand's mark. Four sizes: 28, 18, 16, 13; spacing in 8s.
+  No transitions: a state is drawn at once, so the frame a recording keeps is never half-way.
 */
 
 :root {
-  --bg:       #F7F5EF;
-  --panel:    #FFFFFF;
-  --ink:      #1B2330;
-  --ink-2:    #5B6472;
-  --muted:    #8A93A0;
-  --pass:     #2E5D89;
-  --fail:     #C0392B;
-  --code-bg:  #EFEDE6;
-  --rule:     #D8D3C8;
+  --bg:     #F7F6F1;
+  --panel:  #FFFFFF;
+  --ink:    #1B2330;
+  --body:   #374151;
+  --muted:  #5B6472;
+  --faint:  #9AA1AB;
+  --ghost:  #C9C4B8;
+  --rule:   #DAD6CC;
+  --navy:   #2E5D89;
+  --pass:   #2E7C6A;
+  --fail:   #C0392B;
+  --sim:    #8A6100;
 
-  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-
-  --col-1: 420px;
-  --col-2: 860px;
-  --col-3: 640px;
+  --mono: Consolas, "Cascadia Mono", ui-monospace, Menlo, monospace;
+  --sans: "Segoe UI", "Microsoft JhengHei", system-ui, -apple-system, Roboto, sans-serif;
 }
 
 * { box-sizing: border-box; }
 
 html, body {
   margin: 0;
-  width: 1920px;
-  height: 1080px;
+  width: 1280px;
+  height: 720px;
   overflow: hidden;              /* a scrollbar appearing mid-take is a reshoot */
   background: var(--bg);
   color: var(--ink);
@@ -41,8 +46,8 @@ html, body {
 
 .console {
   display: grid;
-  grid-template-rows: 72px 1fr 96px;
-  height: 1080px;
+  grid-template-rows: 54px 1fr 36px;
+  height: 720px;
 }
 
 /* ---------------------------------------------------------------- header */
@@ -50,40 +55,44 @@ html, body {
 .header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 0 32px;
+  gap: 22px;
+  padding: 0 24px;
   border-bottom: 1px solid var(--rule);
-  background: var(--panel);
 }
-.title { font-size: 28px; font-weight: 600; letter-spacing: -0.01em; }
-.title .x { color: var(--muted); font-weight: 400; margin: 0 6px; }
+.brand { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
+.brand .mark { width: 10px; height: 10px; background: var(--navy); align-self: center; flex: none; }
+.title { font-size: 18px; font-weight: 600; letter-spacing: -0.005em; white-space: nowrap; }
+.title .x { color: var(--faint); font-weight: 400; margin: 0 4px; }
 
-.header-right { display: flex; align-items: center; gap: 28px; }
-
-.live { display: flex; align-items: center; gap: 9px; font-size: 15px; color: var(--ink-2); }
-.dot {
-  width: 9px; height: 9px; border-radius: 50%;
-  background: var(--pass);
-  transition: background 220ms ease;
-}
-.dot.down { background: var(--fail); }
+/* Labour-insurance scenes are a simulation, and the screen says so wherever they are shown. */
+.banner { font-size: 13px; font-weight: 600; color: var(--sim); white-space: nowrap; }
 
 .scene-indicator {
-  font-size: 15px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
-  color: var(--ink-2);
+  margin-left: auto;
+  font-size: 18px; font-weight: 600; color: var(--ink);
+  white-space: nowrap; flex: none;
 }
-.scene-title { color: var(--muted); font-weight: 400; letter-spacing: 0; text-transform: none; }
-body.no-chrome .scene-indicator { visibility: hidden; }
+.scene-indicator .counter { color: var(--muted); }
+.scene-indicator .counter::after { content: " · "; color: var(--faint); font-weight: 400; }
+body.no-chrome .scene-indicator .counter { display: none; }
+/* Recording: no log strip (it would show takes out of order) and no connection mark; the panes
+   take the room. The revocation's time is on the agent's card. */
+body.no-chrome .console { grid-template-rows: 54px 1fr; }
+body.no-chrome .log, body.no-chrome .live { display: none; }
+
+.live { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); flex: none; }
+.dot { width: 8px; height: 8px; background: var(--pass); }
+.dot.down { background: var(--fail); }
 
 /* ----------------------------------------------------------------- panes */
 
 .panes {
   display: grid;
-  grid-template-columns: var(--col-1) var(--col-2) var(--col-3);
+  grid-template-columns: 300px 500px 480px;
   min-height: 0;
 }
 .pane {
-  padding: 26px 28px;
+  padding: 16px 24px;
   border-right: 1px solid var(--rule);
   min-height: 0;
   display: flex;
@@ -92,131 +101,123 @@ body.no-chrome .scene-indicator { visibility: hidden; }
 .pane:last-child { border-right: 0; }
 
 .pane > h2 {
-  margin: 0 0 20px;
-  font-size: 15px; font-weight: 600;
+  margin: 0 0 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--ink);
+  font-size: 13px; font-weight: 700;
   letter-spacing: 0.08em; text-transform: uppercase;
-  color: var(--ink-2);
+  color: var(--ink);
 }
 
 /* ------------------------------------------------------------ identities */
 
 .card {
-  position: relative;
-  background: var(--panel);
-  border: 1px solid var(--rule);
-  border-radius: 12px;
-  padding: 18px 20px 18px 26px;
-  margin-bottom: 18px;
-  overflow: hidden;
-  transition: opacity 260ms ease;
+  padding: 8px 0 16px;
+  border-bottom: 1px solid var(--rule);
 }
-.card::before {
-  content: "";
-  position: absolute; left: 0; top: 0; bottom: 0;
-  width: 4px;
-  background: var(--muted);
-  transition: background 260ms ease;
-}
-.card.valid::before   { background: var(--pass); }
-.card.revoked::before { background: var(--fail); }
-.card.revoked         { opacity: .6; }
 
 .card .kind {
-  font-size: 13px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase;
-  color: var(--muted);
   display: flex; justify-content: space-between;
+  font-size: 13px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--muted);
 }
-.card .lei { font-size: 20px; font-weight: 600; font-family: var(--mono); margin: 10px 0 4px; }
-.card .label { font-size: 16px; color: var(--ink-2); }
-.card .status { margin-top: 12px; font-size: 15px; font-weight: 600; color: var(--muted); }
-.card.valid   .status { color: var(--pass); }
-.card.revoked .status { color: var(--fail); }
-.card .stamp { margin-top: 5px; font-size: 13px; font-family: var(--mono); color: var(--fail); }
-.card .note  { margin-top: 10px; font-size: 13px; color: var(--muted); font-style: italic; }
+.card .lei   { font-family: var(--mono); font-size: 18px; font-weight: 700; margin: 8px 0 0; }
+.card .label { font-size: 16px; color: var(--body); }
+.card .status {
+  display: flex; align-items: center; gap: 6px;
+  margin-top: 8px; font-size: 16px; font-weight: 700; color: var(--faint);
+}
+.card .status::before { content: ""; width: 9px; height: 9px; background: currentColor; flex: none; }
+.card.valid     .status { color: var(--pass); }
+.card.revoked   .status,
+.card.refused   .status,
+.card.invalid   .status { color: var(--fail); }
+.card.simulated .status { color: var(--sim); }
+.card .stamp { min-height: 17px; margin-top: 4px; font-size: 13px; font-family: var(--mono); color: var(--fail); }
+.card .note  { margin-top: 8px; font-size: 13px; color: var(--muted); }
 
 .revoke {
+  margin-top: 16px;
   width: 100%;
   font: 600 16px var(--sans);
-  padding: 13px;
-  border: 1.5px solid var(--fail);
-  border-radius: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--ink);
+  border-radius: 0;
   background: var(--panel);
-  color: var(--fail);
+  color: var(--ink);
   cursor: pointer;
-  transition: background 200ms ease, color 200ms ease, opacity 200ms ease;
 }
-.revoke:hover:not(:disabled) { background: rgba(192, 57, 43, .07); }
-.revoke:disabled { opacity: .55; cursor: default; }
+.revoke:hover:not(:disabled) { background: #EFEDE6; }
+.revoke:disabled { color: var(--faint); border-color: var(--rule); background: transparent; cursor: default; }
 
 .evidence {
   margin-top: auto;
-  padding-top: 18px;
+  padding-top: 8px;
   border-top: 1px solid var(--rule);
   font-size: 13px;
   color: var(--muted);
-  line-height: 1.7;
+  line-height: 1.5;
 }
-.evidence b { color: var(--ink-2); font-weight: 600; }
+.evidence b { color: var(--body); font-weight: 400; }
+.card.simulated .note { display: none; }   /* the header says it once */
 
 /* --------------------------------------------------------------- request */
 
-.req-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 16px; }
-.req-method { font-family: var(--mono); font-size: 17px; color: var(--ink-2); }
-.req-name   { font-family: var(--mono); font-size: 21px; font-weight: 600; }
+.req-head { display: flex; align-items: baseline; gap: 8px; margin: 8px 0 16px; }
+.req-method { font-family: var(--mono); font-size: 16px; color: var(--muted); }
+.req-name   { font-family: var(--mono); font-size: 18px; font-weight: 700; }
 
 pre.json {
-  flex: 1;
   margin: 0;
-  padding: 20px 22px;
-  background: var(--code-bg);
-  border-radius: 10px;
+  padding: 16px;
+  background: var(--panel);
+  border: 1px solid var(--rule);
   font-family: var(--mono);
-  font-size: 17px;
-  line-height: 1.62;
+  flex: none;
+  max-height: 100%;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--body);
   overflow: hidden;              /* truncation is the design, not a scrollbar */
-  white-space: pre-wrap;
-  word-break: break-word;
+  white-space: pre;
 }
-.k    { color: var(--ink-2); }
+.k    { color: var(--muted); }
 .s    { color: var(--ink); }
 .n    { color: var(--ink); }
-.vlei { color: var(--fail); background: rgba(192, 57, 43, .06); border-radius: 3px; padding: 0 2px; }
+.vlei { color: var(--ink); font-weight: 700; }    /* the extension's own keys */
 
-.self-asserted {
-  margin-top: 14px;
-  font-size: 15px;
-  color: var(--muted);
-}
+.self-asserted { margin-top: 8px; font-size: 13px; color: var(--muted); }
 
 /* ------------------------------------------------- scene 0, observed mode */
 
-.observed { margin-top: 4px; }
+.observed { margin-top: 6px; }
 .obs-grid {
   display: grid;
-  grid-template-columns: 150px 1fr 1fr 72px;
-  gap: 10px 14px;
+  grid-template-columns: 96px 1fr 1fr 54px;
+  gap: 6px 10px;
   align-items: start;
 }
-.obs-head { font-size: 14px; font-weight: 600; color: var(--ink-2); }
-.obs-label { font-size: 15px; font-weight: 600; padding-top: 8px; }
+.obs-head { font-size: 13px; font-weight: 700; color: var(--ink); padding-bottom: 4px; border-bottom: 1px solid var(--ink); }
+.obs-label { font-size: 13px; font-weight: 600; padding-top: 6px; }
 .obs-cell code {
   display: block;
   font-family: var(--mono);
   font-size: 13px;
   white-space: pre-wrap;
   word-break: break-word;
-  background: var(--code-bg);
-  padding: 8px 10px;
-  max-height: 150px;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  padding: 6px 8px;
+  max-height: 110px;
   overflow: hidden;
 }
-.obs-none { color: var(--muted); font-style: italic; font-size: 14px; display: block; padding-top: 8px; }
-.obs-verdict { font-size: 14px; font-weight: 600; padding-top: 8px; }
+.obs-none { color: var(--muted); font-size: 13px; display: block; padding-top: 6px; }
+.obs-verdict { font-size: 13px; font-weight: 700; padding-top: 6px; }
 .obs-verdict.same { color: var(--pass); }
 .obs-verdict.different { color: var(--fail); }
-.obs-verdict.pending { color: var(--muted); }
-.obs-empty { font-size: 17px; color: var(--ink-2); padding: 18px 0; }
-.obs-source { margin-top: 14px; font-size: 13px; color: var(--muted); }
+.obs-verdict.pending { color: var(--faint); }
+.obs-empty { font-size: 16px; color: var(--body); padding: 14px 0; }
+.obs-source { margin-top: 10px; font-size: 13px; color: var(--muted); }
 
 /* ---------------------------------------------------------- verification */
 
@@ -224,77 +225,70 @@ pre.json {
 .check {
   position: relative;
   display: grid;
-  grid-template-columns: 30px 1fr auto;
+  grid-template-columns: 20px 1fr auto;
   align-items: baseline;
-  gap: 12px;
-  padding: 11px 0 11px 10px;
-  font-size: 19px; font-weight: 500;
-  color: var(--muted);
+  gap: 8px;
+  padding: 8px 0 8px 8px;
+  font-size: 16px; font-weight: 600;
+  color: var(--faint);
   border-bottom: 1px solid var(--rule);
-  transition: color 240ms ease;
 }
-.check:last-of-type { border-bottom: 0; }
 .check .mark { font-family: var(--mono); font-weight: 700; text-align: center; }
-.check .ms   { font-family: var(--mono); font-size: 14px; color: var(--muted); }
-.check .why  { grid-column: 2 / -1; font-size: 14.5px; font-weight: 400; color: var(--fail); }
+.check .num  { font-family: var(--mono); font-weight: 400; color: var(--faint); margin-right: 9px; }
+.check .ms   { font-family: var(--mono); font-size: 13px; font-weight: 400; color: var(--muted); }
+.check .why  { grid-column: 2 / -1; font-size: 13px; font-weight: 400; color: var(--fail); }
 
-.check.pass    { color: var(--pass); }
-.check.fail    { color: var(--fail); }
-.check.skipped { color: var(--rule); }
-.check.running { color: var(--pass); }
+.check.pass          { color: var(--ink); }
+.check.pass .mark    { color: var(--pass); }
+.check.fail          { color: var(--fail); }
+.check.fail .num     { color: var(--fail); }
+.check.skipped       { color: var(--ghost); }
+.check.skipped .num  { color: var(--ghost); }
+.check.running       { color: var(--ink); }
+.check.running .mark { color: var(--navy); }
 .check.running::before {
   content: "";
   position: absolute; left: 0; top: 8px; bottom: 8px;
   width: 2px;
-  background: var(--pass);
+  background: var(--navy);
 }
 
+/* The result: large, in its state's colour, marked by a rule on its left — not a filled block. */
 .outcome {
-  margin-top: 26px;
-  padding: 24px 22px;
-  border-radius: 12px;
-  color: #fff;
-  font-size: 34px; font-weight: 700;
+  margin-top: 24px;
+  padding: 8px 0 8px 16px;
+  border-left: 6px solid transparent;
+  font-size: 28px; font-weight: 700;
   letter-spacing: -0.01em;
-  background: var(--muted);
-  transition: background 260ms ease;
+  color: var(--faint);
+  min-height: 46px;
 }
-.outcome.allowed       { background: var(--pass); }
-.outcome.refused       { background: var(--fail); }
-.outcome.self-asserted { background: var(--muted); }
-.outcome .layer { font-weight: 600; }
-.outcome .note  { display: block; margin-top: 9px; font-size: 15px; font-weight: 400; opacity: .92; }
+.outcome.allowed       { color: var(--pass); border-left-color: var(--pass); }
+.outcome.refused       { color: var(--fail); border-left-color: var(--fail); }
+.outcome.self-asserted { color: var(--muted); border-left-color: var(--muted); }
+.outcome.unavailable   { color: var(--muted); border-left-color: var(--ghost); }
+.outcome .layer { font-family: var(--mono); font-weight: 700; }
+.outcome .note  { display: block; margin-top: 8px; font-size: 13px; font-weight: 400; color: var(--body); }
 
 /* ------------------------------------------------------------------- log */
 
 .log {
   display: flex;
   align-items: center;
-  gap: 26px;
-  padding: 0 32px;
+  gap: 16px;
+  padding: 0 24px;
   border-top: 1px solid var(--rule);
-  background: var(--panel);
-  font-size: 14px;
-  color: var(--ink-2);
+  font-size: 13px;
+  color: var(--body);
   overflow: hidden;
+  white-space: nowrap;
 }
 .log .lbl {
-  font-size: 13px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase;
+  font-size: 13px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
   color: var(--muted);
 }
-.log .entry { white-space: nowrap; margin-right: 28px; }  /* entries were running into each other */
-.log .entry .ts { font-family: var(--mono); color: var(--muted); margin-right: 7px; }
+.log .entry { margin-right: 20px; }
+.log .entry .ts { font-family: var(--mono); color: var(--muted); margin-right: 6px; }
 
-/* A refusal that is not a revocation — a wrong key, a forged chain — and a server whose own
-   credential did not verify. Same colour as a failed check: it is one. */
-.card.refused .status, .card.invalid .status { color: var(--fail); }
-.outcome.unavailable { color: var(--muted, #888); }
-.diff { margin-top: 6px; font-family: var(--mono, monospace); opacity: .8; }
-
-/* Labour-insurance scenes are a simulation, and the screen says so wherever they are shown. */
-.banner {
-  margin-top: 4px; font-size: 14px; font-weight: 600; letter-spacing: .02em;
-  color: var(--fail); text-transform: none;
-}
-.card.simulated::before { background: var(--muted); }
-.card.simulated .status { color: var(--muted); }
+.diff { margin-top: 6px; font-family: var(--mono); color: var(--body);
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

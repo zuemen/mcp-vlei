@@ -39,7 +39,7 @@ The same agent is used throughout; its source does not change between deployment
 | Directory | What it is |
 |---|---|
 | `my-agent/` | An agent that presents a vLEI credential — Claude as the model, official MCP client, `VleiClient` for identity, and the skill loaded as its system prompt |
-| `console/` | The Trust Console the recording is shot on. Every scene makes its real call — scenes 1–4 through the gateway to the simulator; `console/tests/` — 27 tests |
+| `console/` | The Trust Console the recording is shot on. Every scene makes its real call — scenes 1–4 through the gateway to the simulator; `console/tests/` — 28 tests |
 | `skill-server/` | A server written from `skills/implementing-vlei/SKILL.md` alone, with no stubs; what it found is in `skill-server/REPORT.md`. `skill-server/tests/` — 31 tests |
 | `impersonation/` | The problem, made executable: a vendor server granting quota on a name the caller chose |
 | `observatory/` | The same measurement off the laptop: a read-only MCP server that records what it receives about the client, so a real client (the claude.ai connector) and a replay of its `clientInfo` can be compared side by side at `/observatory`. `observatory/tests/` — 39 tests |

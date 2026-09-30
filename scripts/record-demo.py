@@ -5,7 +5,7 @@ so the checks, the revocation and the gateway call on screen are all real, but i
 to a live narration the way a person does. It exists so the deck can be rehearsed against a real
 recording, and so the timing of each scene can be judged before anyone records.
 
-Frames come from Chrome's screencast (full-resolution JPEG, with timestamps), not from Playwright's
+Frames come from Chrome's screencast (full-resolution JPEG at quality 100, with timestamps), not from Playwright's
 built-in recorder, whose 1 Mbit/s VP8 blurs text at 1080p. Each scene is its own segment; scene 4
 revokes the ECR for real, and it is re-issued once the recording ends, off camera, exactly as
 between takes. Segments are encoded to H.264 and joined.
@@ -69,10 +69,18 @@ def record_scene(page, cdp, scene: int, seconds: float, workdir: Path) -> list[t
         cdp.send("Page.screencastFrameAck", {"sessionId": event["sessionId"]})
 
     cdp.on("Page.screencastFrame", on_frame)
-    cdp.send("Page.startScreencast", {"format": "jpeg", "quality": 92,
+    # JPEG at quality 100: at 92 a lossy frame, encoded again as 4:2:0 video, blurred small coloured
+    # text twice; PNG is lossless but Chrome sends it too slowly to catch the checks lighting up.
+    cdp.send("Page.startScreencast", {"format": "jpeg", "quality": 100,
                                       "maxWidth": 1920, "maxHeight": 1080})
-    started = time.time()
+    # The scene starts when its own call is on screen. Until the backend has made it, the page still
+    # shows the scene before — on a freshly opened page, the one the console was last on, replaying —
+    # and a clip that starts at the key press opens on the wrong scene's result.
+    before = page.inner_text("#req-json")
     page.keyboard.press(str(scene))
+    page.wait_for_function("(before) => document.querySelector('#req-json').textContent !== before",
+                           arg=before, timeout=120_000)
+    started = time.time()
     revoked = False
     while time.time() - started < seconds:
         if scene == REVOCATION_SCENE and not revoked and time.time() - started >= REVOKE_AT:
@@ -100,7 +108,7 @@ def encode(frames: list[tuple[Path, float]], out: Path, fps: int = 30) -> None:
     start, end = frames[0][1], frames[-1][1]
     command = [ffmpeg(), "-loglevel", "error", "-y", "-f", "image2pipe", "-framerate", str(fps),
                "-c:v", "mjpeg", "-i", "-",
-               # JPEG frames are full-range; players, PowerPoint among them, expect TV range.
+               # Screen frames are full-range; players, PowerPoint among them, expect TV range.
                "-vf", "scale=out_range=tv,format=yuv420p", "-color_range", "tv",
                "-c:v", "libx264", "-preset", "slow", "-crf", "16", "-movflags", "+faststart",
                str(out)]

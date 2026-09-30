@@ -7,10 +7,18 @@
 */
 
 const CHECK_STEP_MS = 280;          // readable, without wasting the clock
-const NUMERALS = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧"];
 const MARK = { pass: "✓", fail: "✗", pending: "–", skipped: "–", running: "–" };
 
 const $ = (id) => document.getElementById(id);
+
+/* The console is one 1280×720 stage, scaled to fill the window: at 1920×1080 it is drawn 1.5×,
+   natively, so a recording at that size is as sharp as the screen. */
+const STAGE = { width: 1280, height: 720 };
+function fitStage() {
+  document.documentElement.style.zoom = Math.min(innerWidth / STAGE.width, innerHeight / STAGE.height);
+}
+addEventListener("resize", fitStage);
+fitStage();
 const params = new URLSearchParams(location.search);
 if (params.get("chrome") === "off") document.body.classList.add("no-chrome");
 
@@ -30,8 +38,8 @@ function renderCard(card) {
       <div class="kind"><span>${card.role}</span><span>${card.type}</span></div>
       <div class="lei">${card.lei}</div>
       <div class="label">${card.label}</div>
-      <div class="status">● ${text}</div>
-      ${card.revokedAt ? `<div class="stamp">${card.revokedAt}</div>` : ""}
+      <div class="status">${text}</div>
+      <div class="stamp">${card.revokedAt || ""}</div>
       ${card.note ? `<div class="note">${card.note}</div>` : ""}
     </div>`;
 }
@@ -73,7 +81,7 @@ function checkRow(check, index, status) {
     ? `<div class="why">${check.detail}</div>` : "";
   return `<li class="check ${status}">
       <span class="mark">${mark}</span>
-      <span>${NUMERALS[index]} ${check.label}</span>
+      <span><span class="num">${index + 1}</span>${check.label}</span>
       <span class="ms">${right}</span>
       ${why}
     </li>`;
@@ -166,7 +174,7 @@ function render(state) {
   if (state.sceneCount) $("scene-total").textContent = state.sceneCount;
   $("banner").hidden = !state.banner;
   $("banner").textContent = state.banner || "";
-  $("scene-title").textContent = state.sceneTitle ? `· ${state.sceneTitle}` : "";
+  $("scene-title").textContent = state.sceneTitle || "";
 
   $("card-employer").innerHTML = renderCard(state.identities?.employer);
   $("card-agent").innerHTML = renderCard(state.identities?.agent);
@@ -198,15 +206,17 @@ function render(state) {
   $("observed").innerHTML = observed ? renderObserved(observed) : "";
   $("self-asserted").hidden = request.mode !== "plain";
 
-  $("log-entries").innerHTML = (state.log || [])
+  $("log-entries").innerHTML = (state.log || []).slice(0, 3)
     .map((e) => `<span class="entry"><span class="ts">${e.ts}</span>${e.text}</span>`)
     .join("");
 
   pendingOutcome = state.verification?.outcome || null;
 
-  /* Re-render without replaying: a state that arrives for the same scene (a reconnect, a log line)
-     should not restart the reveal someone is watching. */
-  const sceneKey = `${state.scene}|${state.sceneMode}|${state.identities?.agent?.status}`;
+  /* Re-render without replaying: a state that arrives for the same run (a reconnect, a log line)
+     should not restart the reveal someone is watching. A new run of the same scene — its key pressed
+     again — carries a new signed request, and is replayed from the first check. */
+  const sceneKey = `${state.scene}|${state.sceneMode}|${state.identities?.agent?.status}`
+    + `|${state.request?.json || ""}`;
   const checks = state.verification?.checks || [];
   if (sceneKey !== lastSceneKey) {
     lastSceneKey = sceneKey;

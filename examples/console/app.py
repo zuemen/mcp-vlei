@@ -593,8 +593,10 @@ def _request_json(scene: dict[str, Any], meta: dict[str, Any] | None,
     }
     if KEYS.delegated_aid in meta:
         shown[KEYS.delegated_aid] = meta[KEYS.delegated_aid]
+    # What is asked comes first, the proof after it: the column is truncated at the bottom, and the
+    # proof's long values wrap. (Only the order on screen; a JSON object's members have none.)
     # ensure_ascii=False: the truncation mark is "…"; escaped, it showed on screen as its escape.
-    return json.dumps({"_meta": shown, "name": scene["tool"], "arguments": arguments}, indent=2,
+    return json.dumps({"name": scene["tool"], "arguments": arguments, "_meta": shown}, indent=2,
                       ensure_ascii=False)
 
 

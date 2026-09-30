@@ -164,6 +164,14 @@ async def test_scene_1_carries_the_extension_keys(console):
     assert state["request"]["mode"] == "vlei"
 
 
+async def test_the_request_shows_what_is_asked_before_the_proof(console):
+    """On screen the JSON is truncated at the bottom of its column, so what the agent asks for —
+    the tool and its arguments, where scene 3's start date is — comes first, and the extension's
+    keys, whose long values wrap, after it."""
+    body = (await scene(console, 3))["request"]["json"]
+    assert body.index('"name"') < body.index('"arguments"') < body.index('"_meta"')
+
+
 def _stopped_at(state: dict, check_id: str, layer: str) -> None:
     checks = state["verification"]["checks"]
     failed = next(i for i, c in enumerate(checks) if c["status"] == "fail")
