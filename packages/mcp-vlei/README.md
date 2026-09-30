@@ -124,7 +124,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-309 tests, no containers required. They cover every failure layer, RFC 8785 canonicalization, replay,
+310 tests, no containers required. They cover every failure layer, RFC 8785 canonicalization, replay,
 check ordering, key event log verification, issuance anchoring, the vLEI chain shape, the report's
 contents, and the attacks the first version let through — someone else's credential signed with your
 own key, a key sent along with the request, a delegate of the wrong person, a credential its issuer

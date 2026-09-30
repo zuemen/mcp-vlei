@@ -1,14 +1,46 @@
 # Reference implementations
 
-Three deployments, one agent. The agent's source does not change between them.
+## The main case: labour-insurance filing (`regulator/`)
+
+The government scenario, and the one the demonstration records. An employer's agent files
+labour-insurance enrolments with a filing simulator — *simulated, not connected to the Bureau of
+Labor Insurance*. The simulator does **no** vLEI verification at all. It sits behind a gateway
+(`deploy/agentgateway/`) whose external-authorisation service, `regulator/vlei-authz/`, verifies the
+agent's ECR and its signed request, and passes the simulator only the verified employer.
+
+| Scene | What the agent does | Outcome |
+|---|---|---|
+| 1 | Enrols an employee on the start date (`enroll_employee`) | allowed |
+| 2 | The same agent adjusts an insured salary (`adjust_insured_salary`) — a role its ECR does not carry | refused · `role_mismatch` |
+| 3 | Enrols an employee fifteen days ahead — the tool allows today to ten days ahead (`dateWithinDays: [0, 10]`) | refused · `scope_exceeded` |
+| 4 | The employer revokes the handler's ECR; the agent files again | refused · `revoked` |
+
+Where it is tested:
+
+- `regulator/tests/` — 43 tests, no containers: the authoriser (`test_vlei_authz.py`), the
+  simulator (`test_labor_insurance_sim.py`) and the client that calls through the gateway
+  (`test_gateway_client.py`).
+- The four scenes as the console runs them: `console/tests/` (below).
+- Against the live stack: `scripts/record-check.sh` checks every precondition, and
+  `scripts/rehearse.py` drives scenes 1–4 in a real browser and checks that each ends as it should.
+- On the wire: the tool's definition is `spec/examples/tool-with-requirement.json`, and a signed call
+  of it is `spec/examples/tools-call-request.json`.
+
+## The most basic reference implementation (`association-server/`)
+
+The smallest complete deployment, without a gateway: the association's own MCP server presents its
+LE, requires an ECR for `register_member`, and shows every decision on a live dashboard. It is where
+the extension was first built end to end; *Running the whole thing* and *Status* below are about it.
+
+## Everything else
+
+The same agent is used throughout; its source does not change between deployments.
 
 | Directory | What it is |
 |---|---|
-| `association-server/` | The association's own MCP server: presents its LE, requires an ECR for `register_member`, and shows every decision on a live dashboard |
 | `my-agent/` | An agent that presents a vLEI credential — Claude as the model, official MCP client, `VleiClient` for identity, and the skill loaded as its system prompt |
-| `regulator/` | The government scenario: a labour-insurance filing simulator — *simulated, not connected to the Bureau of Labor Insurance* — that does **no** vLEI verification at all, sitting behind a gateway (`vlei-authz`, `deploy/agentgateway/`) that does. `regulator/tests/` — 43 tests, no containers |
-| `skill-server/` | A server written from `skills/implementing-vlei/SKILL.md` alone, with no stubs — cut from the recording; what it found is on slide 12. `skill-server/tests/` — 31 tests |
 | `console/` | The Trust Console the recording is shot on. Every scene makes its real call — scenes 1–4 through the gateway to the simulator; `console/tests/` — 27 tests |
+| `skill-server/` | A server written from `skills/implementing-vlei/SKILL.md` alone, with no stubs; what it found is in `skill-server/REPORT.md`. `skill-server/tests/` — 31 tests |
 | `impersonation/` | The problem, made executable: a vendor server granting quota on a name the caller chose |
 | `observatory/` | The same measurement off the laptop: a read-only MCP server that records what it receives about the client, so a real client (the claude.ai connector) and a replay of its `clientInfo` can be compared side by side at `/observatory`. `observatory/tests/` — 39 tests |
 

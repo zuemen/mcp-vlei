@@ -120,6 +120,6 @@ The table would be dishonest without these.
 ## Running the checks behind this table
 
 ```bash
-pytest packages/mcp-vlei/tests          # 309 tests, no containers required
+pytest packages/mcp-vlei/tests          # 310 tests, no containers required
 pytest examples/association-server/tests -s   # end to end; needs the credential environment
 ```

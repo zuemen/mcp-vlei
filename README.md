@@ -61,7 +61,7 @@ extension mechanism. The MCP core schema is not modified.
 | 1 — Schema extension | `spec/` |
 | 2 — Skills and workflow | `skills/implementing-vlei/` (development) · `skills/vlei-identity/` (execution) |
 | 3 — Credential environment | `scripts/` — **all six acceptance checks pass** |
-| 4 — Python package | `packages/mcp-vlei/` — 309 tests, against the real SDK types and real KERI event logs |
+| 4 — Python package | `packages/mcp-vlei/` — 310 tests, against the real SDK types and real KERI event logs |
 | 5 — Reference implementation | runs on SDK 2.2.0 at protocol 2026-07-28; acceptance tests green — see `examples/README.md` |
 | 6A — Government adoption path | `docs/GOVERNMENT.md` |
 | 6B — Government gateway | `examples/regulator/`, `deploy/agentgateway/` |

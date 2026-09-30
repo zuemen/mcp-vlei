@@ -62,13 +62,13 @@
           "credentialSaid": "EM3weUShBeSCTj7iyoWibnx5OTNq2QhEVsySsjA63qbJ"
         },
         "org.gleif.vlei/report": {
-          "tool": "register_member",
+          "tool": "enroll_employee",
           "allowed": false,
           "layer": "revoked",
           "totalMs": 41.6,
           "identity": {
             "lei": "984500ABCDEF12345678",
-            "role": "member-registration",
+            "role": "labor-insurance-filing",
             "credentialSaid": "EM3weUShBeSCTj7iyoWibnx5OTNq2QhEVsySsjA63qbJ",
             "holderAid": "EHLragWzyPdQ_JFPHAQXn3IqdeQaVRRqy_iDvMXYwqz4",
             "delegateAid": "EFn3RtYqXmLdW5oJbP2TvNcUiSpRyEg7ZhKa4QsMxVwB"

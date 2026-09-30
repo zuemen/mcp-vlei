@@ -396,9 +396,16 @@ procedure in `examples/README.md`, not part of any test.
 ## Reference Implementation
 
 - `spec/schema.ts` — the type definitions, importable alongside the core schema.
-- `spec/examples/` — wire-format examples for each message shape.
+- `spec/examples/` — wire-format examples for each message shape. In `tools-call-request.json` the
+  digest is computed and the signature is real: it verifies against the test key of
+  `digest-vectors.json`. The credential, its SAID and the delegated AID are illustrative — no key
+  event log stands behind them, so a verifier refuses the request. The example shows the shape;
+  the test key shows the arithmetic.
 - `packages/mcp-vlei/` — Python implementation (`VleiIdentity` server extension, `VleiClient`).
-- `examples/association-server/`, `examples/my-agent/` — end-to-end reference deployment.
+- `examples/regulator/` — the labour-insurance case: a filing simulator with no vLEI code, behind a
+  gateway that verifies.
+- `examples/association-server/`, `examples/my-agent/` — the most basic end-to-end reference
+  deployment.
 - `skills/implementing-vlei/` — build-time guidance for implementing this specification.
 - `skills/vlei-identity/` — runtime guidance for an agent using it.
 - `examples/README.md` — the acceptance status of the reference deployment.
