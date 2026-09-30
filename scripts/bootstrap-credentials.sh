@@ -45,18 +45,18 @@ SCHEMA_QVI="${SCHEMA_QVI:-EBfdlu8R27Fbx-ehrqwImnK-8Cm79sqbAQ4MmvEAYqao}"
 SCHEMA_LE="${SCHEMA_LE:-ENPXp1vQzRF6JwIuS-mp2U8Uf1MoADoP_GqQ62VsDZWY}"
 SCHEMA_ECR="${SCHEMA_ECR:-EEy9PkikFcANV1l7EHukCeXqrzT1hNZjGlUk7wuMO5jw}"
 
-# The legal entity this demo issues for. LEI is a test value: the association does not hold a
-# real LEI, and every artifact says so.
-LE_NAME="${LE_NAME:-Taiwan Blockchain Enthusiasts Association}"
-LE_LEI="${LE_LEI:-984500ABCDEF12345678}"
+# The legal entity this demo issues for. Every identity here is fictional; the LEI is a test
+# value, not in GLEIF's index, and every artifact says so.
+LE_NAME="${LE_NAME:-Demo Staffing Co., Ltd. (fictional)}"
+LE_LEI="${LE_LEI:-984500DEMOSTAFF00178}"
 # One engagement context, used by every example. A person may hold several ECRs — one per context
-# — and a second would be the natural way to give the association and the regulator different
+# — and a second would be the natural way to give the employer and the regulator different
 # roles. It is left out because issuing two credentials from one issuer needs the SAID read back by
 # diffing the issuer's list, and that is not yet verified against this keripy build.
 # The engagement context the demo files in: labour-insurance enrolment (simulated — not connected
 # to the Bureau of Labor Insurance; see examples/regulator/labor-insurance-sim).
 ECR_ROLE="${ECR_ROLE:-labor-insurance-filing}"
-ECR_PERSON="${ECR_PERSON:-Chen Wei-Ting}"
+ECR_PERSON="${ECR_PERSON:-Wang Xiao-Ming (fictional)}"
 
 # Keystore names. Each is an independent controller with its own keystore, as separate parties
 # would be in reality.
@@ -467,6 +467,9 @@ _write_env() {
   "leSaid":      "$(cat "${WORK}/le.said")",
   "ecrSaid":     "$(cat "${WORK}/ecr.said")",
   "lei":         "${LE_LEI}",
+  "leName":      "${LE_NAME}",
+  "person":      "${ECR_PERSON}",
+  "fictional":   "All identities are fictional. The root of trust is self-hosted for demonstration.",
   "role":        "${ECR_ROLE}",
   "verifierUrl": "${VERIFIER}",
   "acceptedRoots": ["$(cat "${WORK}/root.aid")"],
@@ -639,6 +642,15 @@ verify_all() {
 reissue_ecr() {
   step "Re-issuing the ECR credential, so the environment is left usable"
   local ecr_aid; ecr_aid="$(cat "${WORK}/ecr.aid")"
+  # Written again rather than reused: a changed ECR_PERSON, ECR_ROLE or LE_LEI takes effect on a
+  # re-issue, as it did when the handler's name was replaced by a fictional one.
+  cat > "${WORK}/ecr-data.json" <<EOF
+{
+  "LEI": "${LE_LEI}",
+  "personLegalName": "${ECR_PERSON}",
+  "engagementContextRole": "${ECR_ROLE}"
+}
+EOF
   ECR_SAID="$(issue le "$ecr_aid" ecr "$SCHEMA_ECR"               /credentials/_work/ecr-data.json /credentials/_work/ecr-edges.json               /credentials/_work/ecr-rules.json private)"
   printf '%s' "$ECR_SAID" > "${WORK}/ecr.said"
 

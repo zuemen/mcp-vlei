@@ -17,7 +17,7 @@ agent ──▶ agentgateway :3000 ──▶ labor-insurance-sim :8081
 |---|---|
 | `examples/regulator/labor-insurance-sim/` | The names of four headers. Nothing else. |
 | `examples/regulator/vlei-authz/` | All of it — the same `mcp_vlei` the in-process extension uses |
-| `examples/my-agent/` | Unchanged from the association scenario |
+| `examples/my-agent/` | Unchanged from the association-server scenario |
 
 ## Running it
 
@@ -78,7 +78,7 @@ next working day, which a fixed day count does not model.
 (default `/var/log/vlei-authz/decisions.jsonl`), for allowed and denied requests alike:
 
 ```json
-{"decision":"allow","tool":"enroll_employee","lei":"984500ABCDEF12345678","role":"labor-insurance-filing","holderAid":"EDq8…","delegateAid":"EFn3…","credentialSaid":"EBcd…","at":"2026-09-23T04:12:47+00:00"}
+{"decision":"allow","tool":"enroll_employee","lei":"984500DEMOSTAFF00178","role":"labor-insurance-filing","holderAid":"EDq8…","delegateAid":"EFn3…","credentialSaid":"EBcd…","at":"2026-09-23T04:12:47+00:00"}
 {"decision":"deny","tool":"enroll_employee","layer":"revoked","message":"the credential has been revoked","aid":"EFn3…","at":"2026-09-23T04:15:02+00:00"}
 ```
 

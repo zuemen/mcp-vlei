@@ -101,14 +101,14 @@ async def test_a_protected_tool_that_takes_no_arguments_verifies(tmp_path):
 
 def _verified_server(world: World) -> VerificationResult:
     return VerificationResult(
-        aid=world.le.pre, lei="984500ABCDEF12345678", holder_aid=world.le.pre,
+        aid=world.le.pre, lei="984500DEMOSTAFF00178", holder_aid=world.le.pre,
         credential_said=world.le_credential.said, source="well-known",
     )
 
 
 def _about_the_agent(world: World) -> VerificationResult:
     return VerificationResult(
-        aid=world.agent.pre, lei="984500ABCDEF12345678", role="member-registration",
+        aid=world.agent.pre, lei="984500DEMOSTAFF00178", role="member-registration",
         credential_said=world.ecr_credential.said, holder_aid=world.holder.pre,
     )
 

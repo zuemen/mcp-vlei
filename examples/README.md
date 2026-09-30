@@ -28,7 +28,7 @@ Where it is tested:
 
 ## The most basic reference implementation (`association-server/`)
 
-The smallest complete deployment, without a gateway: the association's own MCP server presents its
+The smallest complete deployment, without a gateway: the legal entity's own MCP server presents its
 LE, requires an ECR for `register_member`, and shows every decision on a live dashboard. It is where
 the extension was first built end to end; *Running the whole thing* and *Status* below are about it.
 
@@ -52,14 +52,14 @@ The same agent is used throughout; its source does not change between deployment
 #    (VLEI_WITNESS_HOST_PORT_WAN/WIL/WES and VLEI_WITNESS_URL); everything here reads it.
 bash scripts/bootstrap-credentials.sh
 
-# 2. The association's server (terminal 2)
+# 2. The legal entity's server (terminal 2)
 pip install -e packages/mcp-vlei
 python examples/association-server/server.py
 #    dashboard: http://localhost:8080/dashboard/
 
 # 3. The agent (terminal 3)
 export ANTHROPIC_API_KEY=...
-python examples/my-agent/agent.py "register Chen Wei-Ting, weiting@example.org"
+python examples/my-agent/agent.py "register Wang Xiao-Ming, xiaoming@example.org"
 
 # 4. Acceptance tests, printing layer-by-layer outcomes
 pytest examples/association-server/tests -v -s
@@ -167,7 +167,7 @@ test double — add the server to Claude Desktop's configuration:
 
 Restart Claude Desktop, then in a conversation:
 
-1. Ask it to list the association's events → `list_events` succeeds.
+1. Ask it to list the legal entity's events → `list_events` succeeds.
 2. Ask it to register a member → `register_member` is refused, and the refusal names its layer:
    `missing_credential`.
 

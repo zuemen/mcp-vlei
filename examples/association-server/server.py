@@ -1,7 +1,8 @@
-"""The association's public MCP server.
+"""A legal entity's public MCP server.
 
-Taiwan Blockchain Enthusiasts Association, as a legal entity presenting an LE credential and
-requiring an ECR credential for anything that changes its membership records.
+Demo Staffing Co., Ltd. — fictional, like every identity in this repository — as a legal entity
+presenting an LE credential and requiring an ECR credential for anything that changes its
+membership records.
 
 Run::
 
@@ -101,7 +102,7 @@ vlei.bind(mcp)
 
 @mcp.tool()
 def list_events(limit: int = 10) -> list[dict[str, Any]]:
-    """List the association's upcoming public events.
+    """List the legal entity's upcoming public events.
 
     Public on purpose. An unmodified client with no vLEI support can call this, which is the
     backward-compatibility claim made executable.

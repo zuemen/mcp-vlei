@@ -4,6 +4,9 @@
 **Prerequisite reading:** none. No code appears in this document.
 **中文摘要在文末。**
 
+> **All identities are fictional. The root of trust is self-hosted for demonstration.**
+> 所有身分都是虛構的。信任根為示範而自行架設。
+
 This document answers one question: if a government institution wants to let agents act — its own
 agents, or other institutions' agents calling it — what has to change, and what does it adopt to
 make that change? Section 7 works one case through end to end: an employer's agent filing labour

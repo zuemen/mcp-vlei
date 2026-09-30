@@ -4,6 +4,10 @@
 
 **Reference design · v0.2 · root of trust self-configured**
 
+> **All identities are fictional. The root of trust is self-hosted for demonstration.** The legal entity (Demo Staffing Co., Ltd.), its LEI
+> (`984500DEMOSTAFF00178`, a test value), its 統一編號 (`00000000`) and the handler
+> (Wang Xiao-Ming) are all invented; none is a real company or person.
+
 > **Namespace.** This draft uses `org.gleif.vlei/identity` as a provisional, demonstration
 > namespace. It has not been reviewed or endorsed by GLEIF. Reverse-domain prefixes conventionally
 > belong to the domain's owner, so the final name is expected to follow GLEIF's view — it may stay

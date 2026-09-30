@@ -7,7 +7,7 @@ follows are the same text a reader of this repo can audit — not something bake
 Run::
 
     export ANTHROPIC_API_KEY=...
-    python examples/my-agent/agent.py "register Chen Wei-Ting, weiting@example.org"
+    python examples/my-agent/agent.py "register Wang Xiao-Ming, xiaoming@example.org"
 
 What this file is responsible for: transport, credentials, and handing the model accurate facts.
 What the *model* is responsible for, guided by the skill: deciding whether this agent is entitled
@@ -37,7 +37,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SKILLS = ROOT / "skills" / "vlei-identity"
 CREDENTIALS = ROOT / "credentials"
 # The demo's local settings — the witness above all, which the client needs to check the server's
-# credentials for revocation. Read as the association server and the acceptance test read them.
+# credentials for revocation. Read as examples/association-server and the acceptance test read them.
 _LOCAL_ENV = ROOT / "scripts" / ".env"
 if _LOCAL_ENV.exists():
     for _line in _LOCAL_ENV.read_text(encoding="utf-8").splitlines():
@@ -200,5 +200,5 @@ def _render(result: Any) -> str:
 
 
 if __name__ == "__main__":
-    task = " ".join(sys.argv[1:]) or "List the upcoming events, then register Chen Wei-Ting (weiting@example.org) as a member."
+    task = " ".join(sys.argv[1:]) or "List the upcoming events, then register Wang Xiao-Ming (xiaoming@example.org) as a member."
     asyncio.run(run(task))

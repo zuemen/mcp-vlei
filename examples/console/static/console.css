@@ -159,6 +159,7 @@ body.no-chrome .log, body.no-chrome .live { display: none; }
   line-height: 1.5;
 }
 .evidence b { color: var(--body); font-weight: 400; }
+.evidence .fictional { color: var(--sim); font-weight: 600; margin-bottom: 4px; }
 .card.simulated .note { display: none; }   /* the header says it once */
 
 /* --------------------------------------------------------------- request */

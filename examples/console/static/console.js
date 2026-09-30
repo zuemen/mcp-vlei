@@ -193,7 +193,8 @@ function render(state) {
   // A set-up problem shown before the take, not discovered during it.
   const warning = state.readiness
     ? `<div style="color:var(--fail);margin-bottom:8px">⚠ ${state.readiness}</div>` : "";
-  $("evidence").innerHTML = warning + provenance
+  const fictional = state.fictional ? `<div class="fictional">${state.fictional}</div>` : "";
+  $("evidence").innerHTML = warning + fictional + provenance
     + (diff ? `<div class="diff">${diff.replace(/</g, "&lt;")}</div>` : "");
 
   const request = state.request || {};

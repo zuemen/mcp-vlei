@@ -23,7 +23,7 @@ def verifier_answering_about(said: str) -> tuple[VleiVerifier, list[str]]:
     def handler(request: httpx.Request) -> httpx.Response:
         asked.append(request.url.path)
         return httpx.Response(200, json={
-            "aid": AID, "said": said, "lei": "984500ABCDEF12345678", "role": "r",
+            "aid": AID, "said": said, "lei": "984500DEMOSTAFF00178", "role": "r",
         })
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))

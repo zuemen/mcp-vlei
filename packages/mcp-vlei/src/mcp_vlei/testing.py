@@ -40,7 +40,7 @@ FIRST_SEEN = "1AAG" + "2026-09-23T09c04c48d924882p00c00"
 QVI_SCHEMA = "EBfdlu8R27Fbx-ehrqwImnK-8Cm79sqbAQ4MmvEAYqao"
 LE_SCHEMA = "ENPXp1vQzRF6JwIuS-mp2U8Uf1MoADoP_GqQ62VsDZWY"
 ECR_SCHEMA = "EEy9PkikFcANV1l7EHukCeXqrzT1hNZjGlUk7wuMO5jw"
-LEI = "984500ABCDEF12345678"
+LEI = "984500DEMOSTAFF00178"
 
 
 # ------------------------------------------------------------------------------------------- #
@@ -460,7 +460,7 @@ class World:
         )
         attributes: dict[str, Any] = {
             "LEI": LEI,
-            "personLegalName": "Chen Wei-Ting",
+            "personLegalName": "Wang Xiao-Ming",
             "engagementContextRole": self.role,
         }
         if self.scope:

@@ -20,7 +20,7 @@ from conftest import ARGS, REGULATOR, labor, serve
 from mcp.client.client import Client
 from mcp.client.streamable_http import streamable_http_client
 
-LEI = "984500ABCDEF12345678"
+LEI = "984500DEMOSTAFF00178"
 REPORT = {
     "tool": "enroll_employee",
     "allowed": True,
@@ -93,7 +93,7 @@ async def test_only_fictitious_person_references_are_accepted():
     """Nothing shaped like a national ID number enters this simulation."""
     async with connected(HEADERS) as client:
         for person_ref in ("A123456789", "a123456789", "F223456789", "EMP-1", "EMP-00001",
-                           "Chen Wei-Ting", "EMP-０００１", "EMP-٠٠٠١"):
+                           "Wang Xiao-Ming", "EMP-０００１", "EMP-٠٠٠١"):
             result = await client.call_tool("enroll_employee", {**ARGS, "person_ref": person_ref})
             assert result.is_error is True and "EMP-0001" in result.content[0].text, person_ref
     assert labor.INSURED == {}

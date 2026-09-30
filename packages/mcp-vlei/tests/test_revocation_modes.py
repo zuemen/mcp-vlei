@@ -54,7 +54,7 @@ async def test_a_verifier_answer_that_does_not_name_its_credential_is_not_an_ans
     aid, presented = "E" + "h" * 43, "E" + "o" * 43
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"aid": aid, "lei": "984500ABCDEF12345678", "role": "r"})
+        return httpx.Response(200, json={"aid": aid, "lei": "984500DEMOSTAFF00178", "role": "r"})
 
     verifier = VleiVerifier("http://verifier", accepted_roots=["E" + "r" * 43],
                             client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
@@ -108,7 +108,7 @@ async def test_a_vlei_verifier_answer_does_not_claim_a_revocation_check():
     aid, said = "E" + "h" * 43, "E" + "s" * 43
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"aid": aid, "said": said, "lei": "984500ABCDEF12345678",
+        return httpx.Response(200, json={"aid": aid, "said": said, "lei": "984500DEMOSTAFF00178",
                                          "role": "r"})
 
     verifier = VleiVerifier("http://verifier", accepted_roots=["E" + "r" * 43],

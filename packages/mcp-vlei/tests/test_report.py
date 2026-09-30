@@ -57,11 +57,11 @@ def test_checks_before_the_failure_are_kept():
 def test_a_clean_run_is_allowed():
     report = VerificationReport(tool="register_member")
     run(report, *CHECK_ORDER)
-    report.lei, report.role = "984500ABCDEF12345678", "member-registration"
+    report.lei, report.role = "984500DEMOSTAFF00178", "member-registration"
 
     assert report.allowed is True
     text = report.as_text(color=False)
-    assert "ALLOWED" in text and "984500ABCDEF12345678" in text
+    assert "ALLOWED" in text and "984500DEMOSTAFF00178" in text
 
 
 def test_skipped_is_recorded_as_a_caveat():
@@ -84,7 +84,7 @@ def test_the_report_carries_no_credential_content():
     """An ECR names a natural person. The report carries identifiers, never the credential."""
     report = VerificationReport(tool="register_member")
     run(report, *CHECK_ORDER)
-    report.lei = "984500ABCDEF12345678"
+    report.lei = "984500DEMOSTAFF00178"
     report.role = "member-registration"
     report.credential_said = "EM3weUShBeSCTj7iyoWibnx5OTNq2QhEVsySsjA63qbJ"
     report.holder_aid = "EHLragWzyPdQ_JFPHAQXn3IqdeQaVRRqy_iDvMXYwqz4"

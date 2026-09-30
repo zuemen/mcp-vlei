@@ -30,7 +30,7 @@ QVI_SCHEMA = "EBfdlu8R27Fbx-ehrqwImnK-8Cm79sqbAQ4MmvEAYqao"
 LE_SCHEMA = "ENPXp1vQzRF6JwIuS-mp2U8Uf1MoADoP_GqQ62VsDZWY"
 ECR_SCHEMA = "EEy9PkikFcANV1l7EHukCeXqrzT1hNZjGlUk7wuMO5jw"
 
-LEI = "984500ABCDEF12345678"
+LEI = "984500DEMOSTAFF00178"
 
 
 def mint(schema: str, issuer: str, issuee: str, attributes: dict, edge: tuple[str, str] | None = None) -> str:
@@ -64,7 +64,7 @@ def chain_stream() -> str:
     le_said = json.loads(le)["d"]
     ecr = mint(
         ECR_SCHEMA, LE_AID, HOLDER,
-        {"LEI": LEI, "personLegalName": "Chen Wei-Ting", "engagementContextRole": "regulatory-filing"},
+        {"LEI": LEI, "personLegalName": "Wang Xiao-Ming", "engagementContextRole": "regulatory-filing"},
         edge=("le", le_said),
     )
     return qvi + le + ecr

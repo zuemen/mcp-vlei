@@ -682,6 +682,7 @@ async def load_scene(n: int, *, just_revoked: bool = False) -> None:
         STATE["request"]["name"] = "echo_identity"
         STATE["verification"]["outcome"] = _observed_outcome(STATE["observed"])
     STATE["evidence"] = ENV.evidence
+    STATE["fictional"] = "All identities are fictional. The root of trust is self-hosted for demonstration."
 
     # A scene that should allow but refuses because the credential is withdrawn needs a re-issue
     # before the take. Say so here rather than letting it be discovered mid-take.

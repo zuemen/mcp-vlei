@@ -32,7 +32,7 @@ REGISTRY = "EHsH7DfMGlfOsAVjTw1EZMhbHQJovsqmBYXHFYDgiz2K"
 HOLDER_AID = "EDq8WnPrK3xLm5ZvTcYbJi1RoUa9HgNsEf7QdMwXy2Vt"
 AGENT_AID = "EFn3RtYqXmLdW5oJbP2TvNcUiSpRyEg7ZhKa4QsMxVwB"
 CRED_SAID = "EBcd7TqLmN4pR2wXyZ1vHsJk8QgUeA3nCfDoI6t0PyWr"
-LEI = "984500ABCDEF12345678"
+LEI = "984500DEMOSTAFF00178"
 
 
 @pytest.fixture
@@ -88,7 +88,7 @@ def build_chain(role: str = "member-registration", root: str = ROOT_AID) -> tupl
     le = mint(LE_SCHEMA, QVI_AID, LE_AID, {"LEI": LEI}, edge=("qvi", json.loads(qvi)["d"]))
     ecr = mint(
         ECR_SCHEMA, LE_AID, HOLDER_AID,
-        {"LEI": LEI, "personLegalName": "Chen Wei-Ting", "engagementContextRole": role},
+        {"LEI": LEI, "personLegalName": "Wang Xiao-Ming", "engagementContextRole": role},
         edge=("le", json.loads(le)["d"]),
     )
     return qvi + le + ecr, json.loads(ecr)["d"]

@@ -173,7 +173,7 @@ async def test_1_register_member_with_credential(env):
         assert entitlement, entitlement.reason
 
         result = await session.call_tool(
-            "register_member", {"name": "Chen Wei-Ting", "email": "weiting@example.org"}
+            "register_member", {"name": "Wang Xiao-Ming", "email": "xiaoming@example.org"}
         )
         show_report(result)
         show("stage 6 — result", isError=result.is_error, text=_text(result)[:120])
@@ -262,7 +262,7 @@ async def test_3_revoked_credential_is_refused(env):
         await session.connect()
         await session.list_tools()
         result = await session.call_tool(
-            "register_member", {"name": "Chen Wei-Ting", "email": "weiting@example.org"}
+            "register_member", {"name": "Wang Xiao-Ming", "email": "xiaoming@example.org"}
         )
         show_report(result)
         show("refused", layer=_layer(result), text=_text(result)[:120])
@@ -279,7 +279,7 @@ async def test_3_revoked_credential_is_refused(env):
 async def test_4_tampered_arguments_are_refused(env):
     """Sign one set of arguments, send another — the gap the digest exists to close."""
     signer = agent_signer()
-    honest = {"name": "Chen Wei-Ting", "email": "weiting@example.org"}
+    honest = {"name": "Wang Xiao-Ming", "email": "xiaoming@example.org"}
     signature = sign_request(
         signer, "tools/call", {"name": "register_member", "arguments": honest}
     )

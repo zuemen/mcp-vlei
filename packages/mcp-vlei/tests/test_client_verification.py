@@ -70,7 +70,7 @@ async def test_a_server_presenting_its_le_credential_is_verified(world, tmp_path
 
     identity = await client.connect()
 
-    assert identity.lei == "984500ABCDEF12345678"
+    assert identity.lei == "984500DEMOSTAFF00178"
     assert identity.holder_aid == world.le.pre
 
 
@@ -163,7 +163,7 @@ async def test_a_rejected_attestation_does_not_discard_the_tool_result(world, tm
 # --------------------------------------------------------------------------------------------- #
 
 def test_an_attestation_from_a_multi_signature_attester_is_refused(world):
-    about = VerificationResult(aid=world.agent.pre, lei="984500ABCDEF12345678",
+    about = VerificationResult(aid=world.agent.pre, lei="984500DEMOSTAFF00178",
                                holder_aid=world.holder.pre, credential_said="E" + "c" * 43)
     one, two = Key("board:1"), Key("board:2")
     attestation = make_attestation(Signer.from_seed(world.le.pre, one.seed), about)
@@ -173,7 +173,7 @@ def test_an_attestation_from_a_multi_signature_attester_is_refused(world):
 
 
 def test_a_single_signature_attester_still_attests(world):
-    about = VerificationResult(aid=world.agent.pre, lei="984500ABCDEF12345678",
+    about = VerificationResult(aid=world.agent.pre, lei="984500DEMOSTAFF00178",
                                holder_aid=world.holder.pre, credential_said="E" + "c" * 43)
     one = Key("board:1")
     attestation = make_attestation(Signer.from_seed(world.le.pre, one.seed), about)

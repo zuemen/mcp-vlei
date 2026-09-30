@@ -7,7 +7,7 @@ bash scripts/bootstrap-credentials.sh
 ```
 
 ```
-self-configured root  →  QVI  →  LE (the association)  →  ECR (labor-insurance-filing)  →  delegated agent AID
+self-configured root  →  QVI  →  LE (Demo Staffing Co., fictional)  →  ECR (labor-insurance-filing)  →  delegated agent AID
 ```
 
 ## What is real and what is ours
@@ -53,7 +53,7 @@ party actually has is whether a withdrawal of authority propagates.
 
 ```
 credentials/
-├── le.cesr       the association's Legal Entity credential (chained)
+├── le.cesr       the legal entity's credential (Demo Staffing Co., fictional) (chained)
 ├── ecr.cesr      the employee's Engagement Context Role credential (chained)
 ├── env.json      AIDs, SAIDs, LEI, role, accepted roots — read by the examples
 └── _work/        intermediate data files, kept for inspection
@@ -113,10 +113,10 @@ Override from the environment:
 
 | Variable | Default |
 |---|---|
-| `LE_NAME` | Taiwan Blockchain Enthusiasts Association |
-| `LE_LEI` | `984500ABCDEF12345678` (a test value — the association holds no real LEI) |
+| `LE_NAME` | Demo Staffing Co., Ltd. (fictional) |
+| `LE_LEI` | `984500DEMOSTAFF00178` (a test value, not in GLEIF's index) |
 | `ECR_ROLE` | `labor-insurance-filing` |
-| `ECR_PERSON` | Chen Wei-Ting |
+| `ECR_PERSON` | Wang Xiao-Ming (fictional) |
 | `SCHEMA_QVI` / `SCHEMA_LE` / `SCHEMA_ECR` | published WebOfTrust/vLEI schema SAIDs |
 
 ## Status, 2026-09-23

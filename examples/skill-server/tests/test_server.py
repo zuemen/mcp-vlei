@@ -39,7 +39,7 @@ EXT = skill_server.EXTENSION_ID
 ROLE = "regulatory-filing"
 WITNESS_URL = "http://witness.test"
 ARGS = {"form": "CAP-1", "period": "2026-Q3", "payload": {"tier1Capital": 1250000, "currency": "EUR"}}
-PERSON = "Chen Wei-Ting"  # the natural person World puts in the ECR; must never leak into a report
+PERSON = "Wang Xiao-Ming"  # the natural person World puts in the ECR; must never leak into a report
 
 
 @pytest.fixture
