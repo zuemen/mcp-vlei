@@ -1,0 +1,81 @@
+/*
+  Gateway evidence (/evidence) — the v11 system of app.css, laid out for half a 1920 screen: the
+  presenter records Claude on the left and this page on the right. One column, nothing under 16 px,
+  identifiers in mono and shortened (the full value in the title attribute).
+*/
+
+body.evidence { min-width: 0; }
+.evidence .top { grid-template-columns: auto 1fr auto; gap: 16px 24px; }
+.evidence .top .status { grid-column: 1 / -1; order: 5; }
+.evidence a.tab { text-decoration: none; color: var(--muted); display: inline-block; }
+.evidence a.tab[aria-current="page"] { color: var(--ink); border-bottom: 3px solid var(--navy); }
+
+.live { display: inline-flex; align-items: center; gap: 8px; font-size: 15px; color: var(--muted); }
+.live .dot { width: 9px; height: 9px; background: var(--pass); display: inline-block; }
+.live.pinned .dot { background: var(--gold); }
+.live button { border: 1px solid var(--ink); background: var(--panel); padding: 4px 10px; font-size: 15px; }
+
+.ev { padding: 18px 32px 8px; max-width: 1000px; }
+.ev .empty { font-size: 18px; color: var(--muted); padding: 24px 0; }
+.ev .error { color: var(--fail); font-weight: 600; }
+
+.ev .head { display: grid; grid-template-columns: auto 1fr auto; gap: 6px 16px; align-items: baseline;
+  padding: 14px 18px; background: var(--panel); border: 1px solid var(--rule); border-left: 6px solid var(--navy); }
+.ev .head[data-decision="allow"] { border-left-color: var(--pass); }
+.ev .head[data-decision="deny"] { border-left-color: var(--fail); }
+.ev .head .when { font-family: var(--mono); font-size: 17px; color: var(--muted); }
+.ev .head .tool { font-family: var(--mono); font-size: 20px; font-weight: 700; color: var(--ink); }
+.ev .head .verdict { font-size: 19px; font-weight: 700; }
+.ev .head[data-decision="allow"] .verdict { color: var(--pass); }
+.ev .head[data-decision="deny"] .verdict { color: var(--fail); }
+.ev .head .via { grid-column: 1 / -1; font-size: 16px; color: var(--body); }
+
+.ev section.step { margin-top: 18px; }
+.ev h3 { margin: 0 0 8px; font-size: 18px; color: var(--ink); }
+.ev .hint { color: var(--muted); font-size: 15px; margin: 0 0 8px; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 8px; }
+.chip { font-size: 16px; padding: 4px 10px; border: 1px solid var(--rule); background: var(--panel); }
+.chip.yes { border-color: var(--navy); color: var(--navy); font-weight: 600; }
+.chip.no { color: var(--faint); text-decoration: line-through; }
+.args { font-family: var(--mono); font-size: 16px; color: var(--body); }
+
+.ev .checks { list-style: none; margin: 0; padding: 0; }
+.ev .checks li { display: grid; grid-template-columns: 26px 1fr auto; gap: 2px 10px; padding: 6px 0;
+  border-bottom: 1px solid var(--rule); font-size: 16px; }
+.ev .checks .mark { font-weight: 700; }
+.ev .checks li[data-state="pass"] .mark { color: var(--pass); }
+.ev .checks li[data-state="fail"] .mark { color: var(--fail); }
+.ev .checks li[data-state="fail"] .name { color: var(--fail); font-weight: 700; }
+.ev .checks li[data-state="skipped"], .ev .checks li[data-state="pending"] { color: var(--faint); }
+.ev .checks .ms { font-family: var(--mono); color: var(--muted); font-size: 15px; }
+.ev .checks .detail { grid-column: 2 / -1; color: var(--muted); font-size: 15px; word-break: break-word; }
+
+.reads, .records, .schemas { width: 100%; border-collapse: collapse; font-size: 16px; }
+.reads td, .records td, .schemas td { padding: 6px 8px 6px 0; border-bottom: 1px solid var(--rule); vertical-align: top; }
+.id { font-family: var(--mono); font-size: 15px; color: var(--ink); white-space: nowrap; }
+.muted { color: var(--muted); }
+.ok { color: var(--pass); font-weight: 600; }
+.bad { color: var(--fail); font-weight: 600; }
+.note { color: var(--gold); font-weight: 600; font-size: 16px; margin: 8px 0 0; }
+
+.outcome-box { padding: 12px 16px; background: var(--panel); border: 1px solid var(--rule); font-size: 17px; }
+.outcome-box .reason { margin-top: 8px; font-family: var(--mono); font-size: 15px; color: var(--fail);
+  word-break: break-word; }
+
+.ev-list { padding: 8px 32px 24px; max-width: 1000px; }
+.ev-list table { width: 100%; border-collapse: collapse; font-size: 16px; }
+.ev-list th { text-align: left; font-size: 14px; color: var(--muted); padding: 6px 8px 6px 0;
+  border-bottom: 1px solid var(--ink); }
+.ev-list td { padding: 7px 8px 7px 0; border-bottom: 1px solid var(--rule); }
+.ev-list tr { cursor: pointer; }
+.ev-list tr:hover { background: var(--hover); }
+.ev-list tr[aria-selected="true"] { background: var(--hover); outline: 2px solid var(--navy); outline-offset: -2px; }
+.ev-list .allow { color: var(--pass); font-weight: 600; }
+.ev-list .deny { color: var(--fail); font-weight: 600; }
+
+@media (max-width: 760px) {
+  .evidence .top { grid-template-columns: 1fr; }
+  .ev, .ev-list { padding-left: 16px; padding-right: 16px; }
+  .reads td:nth-child(3) { display: none; }
+}

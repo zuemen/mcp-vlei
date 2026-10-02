@@ -86,3 +86,21 @@ should.
 
 Nothing on screen is a credential. The cards show the first eight characters of the LEI, the role
 and the status — `spec/SPEC.md` §Security Considerations, and an ECR names a natural person.
+
+## The interactive page — `/app`
+
+`http://localhost:8800/app` is the page a visitor operates: 中文 / English, a guided tour, one-click
+scenarios, and a call you build yourself (tool, arguments, an attack). Every result is the same real
+verification as the recording page — the gateway's report, read back, never decided by the page.
+
+| Group | Scenario | Refused at |
+|---|---|---|
+| The problem | impersonation — a plain MCP server trusts a self-reported name | — (granted) |
+| Allowed | enrol on the start date · list the insured | — |
+| Refused by the rules | a filer adjusts a salary · filing fifteen days ahead | 8 authority |
+| Attacks | no credential · replayed signature · tampered after signing · another key | 1 · 2 · 3 · 4 |
+| Revocation | revoke (for real), send again · re-issue | 7 revocation |
+
+`python scripts/try-app.py --out <dir> [--revoke]` operates the page in a browser and checks every
+scenario in both languages. With `VLEI_PUBLIC=1` the page refuses revoke and re-issue: they change
+the credential every visitor shares.

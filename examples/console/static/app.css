@@ -1,0 +1,198 @@
+/*
+  Trust Console — the interactive page (/app).
+
+  The v11 system: paper, ink, navy for what this extension adds; green passed, red refused,
+  goldInk for honest caveats. Square, no shadows; lines and alignment carry the hierarchy.
+  Anything to be read is at least 16 px. Buttons look like buttons.
+*/
+
+:root {
+  --bg: #F7F6F1; --panel: #FFFFFF; --ink: #1B2330; --body: #374151; --muted: #5B6472;
+  --faint: #8A909A; --rule: #DAD6CC; --navy: #2E5D89; --pass: #2E7C6A; --fail: #C0392B;
+  --gold: #8A6100; --hover: #EFEDE6;
+  --mono: Consolas, "Cascadia Mono", ui-monospace, Menlo, monospace;
+  --sans: "Segoe UI", "Microsoft JhengHei", "PingFang TC", system-ui, -apple-system, Roboto, sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.5 var(--sans); }
+h1, h2, h3 { margin: 0; font-weight: 700; }
+h2 { font-size: 14px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink);
+     padding-bottom: 6px; border-bottom: 1px solid var(--ink); margin-bottom: 8px; }
+:lang(zh-Hant) h2 { text-transform: none; letter-spacing: 0.02em; font-size: 15px; }
+.hint { color: var(--muted); font-size: 16px; margin: 0 0 12px; }
+.hint.small { font-size: 14px; margin-top: 4px; }
+button { font: inherit; cursor: pointer; }
+button:focus-visible, input:focus-visible, select:focus-visible, .scenario:focus-visible {
+  outline: 3px solid var(--navy); outline-offset: 2px; }
+
+/* ---------------------------------------------------------------------------------- header */
+.top { display: grid; grid-template-columns: auto 1fr auto auto; gap: 24px; align-items: center;
+       padding: 16px 32px; border-bottom: 1px solid var(--rule); background: var(--bg); }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 700; white-space: nowrap; }
+.brand .mark { width: 14px; height: 14px; background: var(--navy); }
+.titles h1 { font-size: 22px; }
+.titles p { margin: 2px 0 0; color: var(--body); font-size: 16px; }
+.status { display: flex; flex-direction: column; gap: 2px; font-size: 15px; text-align: right; }
+.status b.issued { color: var(--pass); }
+.status b.revoked { color: var(--fail); }
+.lang { display: flex; border: 1px solid var(--ink); }
+.lang button { border: 0; background: var(--panel); padding: 8px 14px; color: var(--ink); }
+.lang button + button { border-left: 1px solid var(--ink); }
+.lang button[aria-pressed="true"] { background: var(--ink); color: #fff; }
+.banner { margin: 0; padding: 10px 32px; color: var(--gold); font-weight: 600; font-size: 15px;
+          border-bottom: 1px solid var(--rule); }
+
+/* ------------------------------------------------------------------------------------ tabs */
+.tabs { display: flex; gap: 0; padding: 0 32px; border-bottom: 1px solid var(--rule); }
+.tab { border: 0; background: transparent; padding: 14px 20px 12px; font-size: 17px; font-weight: 600;
+       color: var(--muted); border-bottom: 3px solid transparent; }
+.tab[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--navy); }
+.tab:hover { color: var(--ink); }
+a.tab { text-decoration: none; display: inline-block; }  /* Evidence: its own page, /evidence */
+
+/* ---------------------------------------------------------------------------------- layout */
+.layout { display: grid; grid-template-columns: minmax(320px, 1fr) minmax(360px, 1.1fr) minmax(340px, 1fr);
+          gap: 0; align-items: start; }
+.layout > section { padding: 24px 32px; border-right: 1px solid var(--rule); min-width: 0; }
+.layout > section:last-child { border-right: 0; }
+@media (min-width: 1181px) {
+  /* The result and the request stay in view while the list on the left scrolls. */
+  .layout > section.result, .layout > section.middle { position: sticky; top: 0; max-height: 100vh; overflow-y: auto; }
+}
+@media (max-width: 1180px) {
+  .lang { justify-self: start; }
+  .layout { grid-template-columns: 1fr; }
+  .layout > section { border-right: 0; border-bottom: 1px solid var(--rule); }
+  .top { grid-template-columns: 1fr; text-align: left; }
+  .status { text-align: left; }
+}
+
+/* ------------------------------------------------------------------------------- scenarios */
+.group { margin-top: 18px; }
+.group:first-child { margin-top: 0; }
+.group h3 { font-size: 14px; color: var(--muted); font-weight: 700; margin-bottom: 6px; }
+.scenario { display: block; width: 100%; text-align: left; background: var(--panel);
+            border: 1px solid var(--rule); border-left: 4px solid var(--rule); padding: 10px 14px;
+            margin-bottom: 8px; color: var(--ink); }
+.scenario:hover { background: var(--hover); }
+.scenario[aria-current="true"] { border-color: var(--ink); border-left-color: var(--navy); }
+.scenario .name { font-weight: 700; font-size: 17px; }
+.scenario .what { color: var(--body); font-size: 16px; margin-top: 2px; }
+.scenario .expect { color: var(--muted); font-size: 15px; margin-top: 4px; }
+.revocation-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 8px; }
+
+.primary, .secondary { border: 1px solid var(--ink); padding: 10px 16px; font-weight: 600; }
+.primary { background: var(--navy); border-color: var(--navy); color: #fff; }
+.primary:hover { background: #244B70; }
+.secondary { background: var(--panel); color: var(--ink); }
+.secondary:hover { background: var(--hover); }
+.danger { border-color: var(--fail); color: var(--fail); }
+button:disabled { opacity: 0.5; cursor: default; }
+.busy { color: var(--gold); font-size: 15px; margin: 6px 0; }
+
+/* ----------------------------------------------------------------------------------- build */
+.field { display: grid; gap: 4px; margin-bottom: 14px; }
+.field label { font-weight: 600; font-size: 15px; }
+.field input, .field select { font: inherit; padding: 8px 10px; border: 1px solid var(--muted);
+                               background: var(--panel); color: var(--ink); border-radius: 0; }
+.field .note { color: var(--muted); font-size: 14px; }
+.error { color: var(--fail); font-size: 15px; margin: 8px 0; }
+
+/* ------------------------------------------------------------------------------------ tour */
+.tour .count { color: var(--muted); font-size: 14px; margin-bottom: 6px; }
+.tour h3 { font-size: 20px; margin-bottom: 8px; }
+.tour p { font-size: 17px; color: var(--body); margin: 0 0 16px; }
+.tour .controls { display: flex; flex-wrap: wrap; gap: 8px; }
+.tour .dots { display: flex; gap: 6px; margin: 16px 0 0; }
+.tour .dots span { width: 28px; height: 4px; background: var(--rule); }
+.tour .dots span.on { background: var(--navy); }
+
+/* ------------------------------------------------------------------------------------- who */
+.who { margin-top: 24px; padding-top: 12px; border-top: 1px solid var(--ink); }
+.who dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 8px 0; }
+.who dt { color: var(--muted); font-size: 14px; padding-top: 2px; }
+.who dd { margin: 0; font-size: 16px; overflow-wrap: anywhere; }
+.who dd.mono { font-family: var(--mono); font-size: 15px; }
+.who .note { color: var(--body); font-size: 15px; }
+
+/* ---------------------------------------------------------------------------------- request */
+.json { margin: 0; padding: 14px 16px; background: var(--panel); border: 1px solid var(--rule);
+        font: 15px/1.55 var(--mono); color: var(--body); white-space: pre-wrap; overflow-wrap: anywhere; }
+.json .k { color: var(--muted); }
+.json .x { color: var(--navy); font-weight: 700; }
+.json .s { color: var(--ink); }
+.json .n { color: var(--ink); }
+.json .changed { background: #F6DAD6; color: var(--fail); font-weight: 700; }
+.tampered { color: var(--fail); font-weight: 600; margin: 0 0 10px; }
+.placeholder { color: var(--muted); }
+
+/* ----------------------------------------------------------------------------------- checks */
+.checks { list-style: none; margin: 0 0 16px; padding: 0; }
+.checks li { display: grid; grid-template-columns: 26px 1fr auto; gap: 2px 10px; padding: 9px 0;
+             border-bottom: 1px solid var(--rule); color: var(--faint); }
+.checks .mark { font: 700 18px "Segoe UI Symbol", "Segoe UI", "Apple Symbols", sans-serif; text-align: center; }
+.checks .label { font-weight: 600; font-size: 17px; }
+.checks .ms { font: 14px var(--mono); color: var(--muted); }
+.checks .source, .checks .why { grid-column: 2 / -1; font-size: 15px; }
+.checks .why { color: var(--body); display: none; }
+.checks li[data-state="pass"] { color: var(--ink); }
+.checks li[data-state="pass"] .mark { color: var(--pass); }
+.checks li[data-state="fail"] { color: var(--fail); }
+.checks li[data-state="fail"] .why { display: block; color: var(--fail); }
+.checks li[data-state="skipped"] { color: #8F8A7E; }
+.checks li .source { color: inherit; opacity: 0.85; }
+
+/* ---------------------------------------------------------------------------------- outcome */
+.outcome { border-left: 6px solid var(--rule); padding: 8px 0 8px 16px; min-height: 64px; }
+.outcome .word { font-size: 30px; font-weight: 800; letter-spacing: 0.01em; }
+.outcome .at { font-size: 16px; font-weight: 600; margin-top: 2px; }
+.outcome .plain { font-size: 17px; margin-top: 6px; color: var(--ink); }
+.outcome .raw { font: 14px/1.5 var(--mono); color: var(--muted); margin-top: 8px; overflow-wrap: anywhere; }
+.outcome .raw b { font-family: var(--sans); font-weight: 600; color: var(--muted); }
+.outcome[data-status="allowed"] { border-left-color: var(--pass); }
+.outcome[data-status="allowed"] .word { color: var(--pass); }
+.outcome[data-status="refused"] { border-left-color: var(--fail); }
+.outcome[data-status="refused"] .word { color: var(--fail); }
+.outcome[data-status="unavailable"], .outcome[data-status="self-asserted"] { border-left-color: var(--gold); }
+.outcome[data-status="unavailable"] .word, .outcome[data-status="self-asserted"] .word { color: var(--gold); }
+.outcome[data-status="sending"] .word { color: var(--muted); font-size: 22px; }
+
+.server { margin-top: 18px; }
+.server h3 { font-size: 15px; margin-bottom: 6px; }
+.server p { margin: 0 0 6px; font-size: 16px; color: var(--body); }
+.server dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 6px 0; font-size: 15px; }
+.server dt { color: var(--muted); }
+.server dd { margin: 0; font-family: var(--mono); overflow-wrap: anywhere; }
+
+/* -------------------------------------------------------------------------------------- log */
+.log { padding: 24px 32px; border-top: 1px solid var(--rule); }
+.log table { width: 100%; border-collapse: collapse; font-size: 15px; }
+.log th { text-align: left; font-size: 14px; color: var(--ink); border-bottom: 1px solid var(--ink); padding: 6px 12px 6px 0; }
+.log td { border-bottom: 1px solid var(--rule); padding: 7px 12px 7px 0; vertical-align: top; }
+.log td.allowed { color: var(--pass); font-weight: 600; }
+.log td.refused { color: var(--fail); font-weight: 600; }
+.log td.mono { font-family: var(--mono); font-size: 14px; }
+
+.foot { padding: 18px 32px 32px; color: var(--muted); font-size: 14px; border-top: 1px solid var(--rule); }
+.foot p { margin: 0 0 4px; }
+
+.server .records { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 4px; }
+.server .records th { text-align: left; border-bottom: 1px solid var(--ink); padding: 4px 8px 4px 0; }
+.server .records td { border-bottom: 1px solid var(--rule); padding: 5px 8px 5px 0; vertical-align: top;
+                      font-family: var(--mono); overflow-wrap: anywhere; }
+.server dd .aid, .server .records .aid { color: var(--muted); font-size: 13px; }
+.log td.more { color: var(--muted); font-size: 14px; }
+.server .records td.nowrap { white-space: nowrap; font-family: var(--mono); }
+
+.checks-title { margin-top: 22px; }
+.status .down { color: var(--fail); font-weight: 600; }
+.who dd.nowrap { white-space: nowrap; }
+.field.invalid input { border-color: var(--fail); border-width: 2px; }
+.field-error { color: var(--fail); font-size: 15px; font-weight: 600; }
+.outcome[data-status="error"] { border-left-color: var(--fail); }
+.outcome[data-status="error"] .plain { color: var(--fail); }
+.outcome .without { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--rule); color: var(--muted); font-size: 15px; }
+.outcome[data-status="empty"] { min-height: 0; }
+.outcome[data-status="business"] { border-left-color: var(--ink); }
+.outcome[data-status="business"] .word { color: var(--ink); font-size: 26px; }
+.log td.business { color: var(--ink); font-weight: 600; }

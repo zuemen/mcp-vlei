@@ -107,6 +107,36 @@ runs it and reloads. `--install-root` exists because a recreated verifier starts
 database and trusts no root: `reset-demo.sh --keep-credentials` calls it, and before it did, the
 first presentation after that reset — the re-issue between takes — was rejected.
 
+## A forged chain (expected refusal: `unknown_root`)
+
+```bash
+bash scripts/bootstrap-forged.sh           # a second, self-made chain beside the real one (~3 min)
+bash scripts/bootstrap-forged.sh --check   # present it to the gateway; exit 0 only on unknown_root
+```
+
+Anyone can run keripy and issue credentials that look exactly like vLEI credentials. This script
+does that.
+
+- **The chain.** A second root, a QVI delegated from it, and an LE for 某大型半導體公司（虛構）/
+  Large Semiconductor Corp. (fictional), LEI `984500LARGESEMI00061`. That LEI has valid check
+  digits and is not in GLEIF's index.
+- **The ECR.** An ECR for Zhang San (fictional) with the same role, `labor-insurance-filing`, and
+  an agent AID delegated by that holder.
+- **Where it lives.** The identifiers are incepted on the same witnesses. Output goes to
+  `credentials/forged/` and the keystores are named `forged-*`.
+- **What it does not touch.** The main chain, `credentials/env.json`, and the verifier's root of
+  trust are left alone.
+- **Before export.** The script refuses to continue if the forged root is ever found among the
+  accepted roots.
+
+Through the gateway, checks 1–5 pass: the signature verifies under the forged agent's key log, and
+the delegation is in the forged holder's log. Check 6, chain, then fails with `unknown_root`:
+
+> the chain ends at the QVI credential, issued by the forged root, which is not an accepted root.
+
+The in-process equivalent is
+`examples/regulator/tests/test_gateway_client.py::test_a_chain_from_a_root_nobody_accepted_is_unknown_root`.
+
 ## Configuration
 
 Override from the environment:

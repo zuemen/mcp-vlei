@@ -13,5 +13,13 @@ This project builds on, and does not vendor, work by others:
     This project does not modify the core schema; it adds types in the fields
     that specification already reserves for extensions.
 
+One set of files is included from another project:
+
+  - examples/regulator/vlei-authz/envoy_authz/proto/ — the ext_authz protocol
+    buffers, copied unchanged from agentgateway v1.5.0 (crates/protos/proto;
+    Apache License 2.0), themselves derived from Envoy's API definitions
+    (envoyproxy/envoy; Apache License 2.0). The *_pb2*.py files beside them are
+    generated from these with grpcio-tools. See envoy_authz/README.md.
+
 The root of trust in this repository's demonstration environment is
 self-configured. In production it would be GLEIF's.

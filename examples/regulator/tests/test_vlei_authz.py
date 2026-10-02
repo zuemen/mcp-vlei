@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import json
+from datetime import date, timedelta
 
 import httpx
 import pytest
@@ -335,3 +336,91 @@ async def test_an_enrolment_filed_more_than_ten_days_ahead_is_refused(world, tmp
     assert "start_date" in body["message"]
     authority = next(c for c in body["report"]["checks"] if c["name"] == "authority")
     assert authority["passed"] is False and authority["layer"] == "scope_exceeded"
+
+
+# ------------------------------------------------------------------------------------------- #
+# What the audit record shows (the console's evidence panel reads it) — and what it never holds
+# ------------------------------------------------------------------------------------------- #
+
+def last_record(tmp_path) -> dict:
+    lines = (tmp_path / "audit" / "decisions.jsonl").read_text(encoding="utf-8").splitlines()
+    return json.loads(lines[-1])
+
+
+def recorded_witness(world):
+    """The world's witness, through the client vlei-authz uses — reads recorded."""
+    return httpx.AsyncClient(transport=httpx.MockTransport(world.witness_handler),
+                             event_hooks=authz.WITNESS_HOOKS)
+
+
+async def test_the_record_says_what_arrived_but_never_a_value(world, tmp_path):
+    app = authz_app(world, tmp_path, client=recorded_witness(world))
+    # Three days out, and a person reference used nowhere else: today's date is in every timestamp.
+    args = {**ARGS, "person_ref": "EMP-4242",
+            "start_date": (date.today() + timedelta(days=3)).isoformat()}
+    meta = signed_meta(world, arguments=args)
+    assert (await ask(app, rpc("enroll_employee", args, meta))).status_code == 200
+    record = last_record(tmp_path)
+
+    assert record["metaKeys"] == sorted(meta) and record["argumentNames"] == sorted(args)
+    assert record["via"] == "local" and record["wire"] == "http"
+    assert [c["name"] for c in record["report"]["checks"] if c["passed"]][-1] == "authority"
+    line = (tmp_path / "audit" / "decisions.jsonl").read_text(encoding="utf-8").splitlines()[-1]
+    for value in (args["person_ref"], args["start_date"], world.ecr_stream[:60],
+                  meta["org.gleif.vlei/signature"]["sig"] if isinstance(meta["org.gleif.vlei/signature"], dict) else ""):
+        assert not value or value not in line, value[:40]
+
+
+async def test_the_record_names_whose_logs_were_read_and_the_anchors_that_decide_revocation(
+        world, tmp_path):
+    """Revocation is read from the issuer's own key event log: it anchors each issuance (sn 0) and
+    revocation (sn 1). The record keeps whose logs were read and the anchors each carried."""
+    app = authz_app(world, tmp_path, client=recorded_witness(world))
+    assert (await ask(app, rpc("enroll_employee", ARGS, signed_meta(world)))).status_code == 200
+    kels = {r["aid"]: r for r in last_record(tmp_path)["witnessReads"] if r["typ"] == "kel"}
+    assert world.agent.pre in kels and world.holder.pre in kels and world.le.pre in kels
+    assert [world.ecr_credential.said, "0"] in kels[world.le.pre]["anchors"]
+    assert [world.ecr_credential.said, "1"] not in kels[world.le.pre]["anchors"]
+
+    world.le_registry.revoke(world.ecr_credential.said)
+    refused(await ask(app, rpc("enroll_employee", ARGS, signed_meta(world))), "revoked")
+    kels = {r["aid"]: r for r in last_record(tmp_path)["witnessReads"] if r["typ"] == "kel"}
+    assert [world.ecr_credential.said, "1"] in kels[world.le.pre]["anchors"]
+
+
+async def test_the_record_lists_the_presented_chain_by_schema(world, tmp_path):
+    from mcp_vlei.chain import VLEI_SCHEMAS
+
+    app = authz_app(world, tmp_path, client=recorded_witness(world))
+    await ask(app, rpc("enroll_employee", ARGS, signed_meta(world)))
+    schemas = {s["type"]: s["schema"] for s in last_record(tmp_path)["schemas"]}
+    assert schemas == {t: VLEI_SCHEMAS[t] for t in ("ECR", "LE", "QVI")}
+
+
+async def test_a_call_through_the_tunnel_is_marked_public(world, tmp_path):
+    app = authz_app(world, tmp_path)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://vlei-authz",
+                                 headers={"cf-connecting-ip": "203.0.113.9"}) as client:
+        await client.post("/auth/mcp", content=rpc("list_insured", {}))
+    record = last_record(tmp_path)
+    assert record["via"] == "public" and record["layer"] == "missing_credential"
+    assert record["metaKeys"] == [] and record["schemas"] == [] and record["witnessReads"] == []
+    assert "203.0.113.9" not in json.dumps(record)  # whether it was public, never who
+
+
+async def test_the_record_keeps_the_chains_anchors_however_long_the_issuers_log(world, tmp_path):
+    """An issuer that has issued many credentials has a long log. The record keeps the anchors of the
+    presented chain, wherever they sit in it, and drops everyone else's."""
+    from mcp_vlei.testing import ECR_SCHEMA
+
+    for n in range(100):  # a busy legal entity: a hundred other credentials, issued before this one
+        world.issue(world.le_registry, ECR_SCHEMA, world.holder.pre,
+                    {"LEI": LEI, "personLegalName": f"Other {n}", "engagementContextRole": "other"},
+                    edge=("le", world.le_credential))
+    world.reissue_ecr("2026-10-01T00:00:00.000000+00:00")
+    app = authz_app(world, tmp_path, client=recorded_witness(world))
+    assert (await ask(app, rpc("enroll_employee", ARGS, signed_meta(world)))).status_code == 200
+    kels = {r["aid"]: r for r in last_record(tmp_path)["witnessReads"] if r["typ"] == "kel"}
+    chain = {s["said"] for s in last_record(tmp_path)["schemas"]}
+    assert [world.ecr_credential.said, "0"] in kels[world.le.pre]["anchors"]
+    assert all(said in chain for r in kels.values() for said, _ in r.get("anchors", []))

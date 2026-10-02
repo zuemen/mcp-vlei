@@ -700,4 +700,7 @@ main() {
   note "in production it would be GLEIF's."
 }
 
-main "$@"
+# Run when executed; when sourced (scripts/bootstrap-forged.sh), only define the functions.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

@@ -11,13 +11,48 @@ binds:
     listeners:
       - name: mcp
         routes:
+          # ------------------------------------------------------------------------------------ #
+          # Who operates this endpoint — public, and deliberately outside the extAuthz route.
+          # ------------------------------------------------------------------------------------ #
+          # The operator's LE credential at the RFC 8615 location, so a caller can verify who it is
+          # talking to before presenting anything (mode (a); docs/GOVERNMENT.md, Stage 1). It
+          # asserts nothing about the caller, so there is nothing to authorize; served by the
+          # simulator, which publishes the file and does not parse it.
+          - name: well-known
+            matches:
+              - path:
+                  exact: /.well-known/vlei
+            policies:
+              # -------------------------------------------------------------------------------- #
+              # Rate limits — public callers share one small bucket; local ones never see it.
+              # -------------------------------------------------------------------------------- #
+              # v1.5.0's local limit is one token bucket per entry, not per client. Traffic through the
+              # Cloudflare tunnel always carries cf-connecting-ip (Cloudflare sets it; a caller cannot
+              # remove it), so the public gets its own bucket and a flood from outside drains only that
+              # one: the console, the credential proxy and the tests on this machine keep theirs. A
+              # refused request answers 429. Per-client limits need a remote rate-limit service.
+              localRateLimit: &rate-limits
+                conditional:
+                  - condition: '"cf-connecting-ip" in request.headers'
+                    maxTokens: 60
+                    tokensPerFill: 60
+                    fillInterval: 60s
+                  - maxTokens: 600
+                    tokensPerFill: 600
+                    fillInterval: 60s
+            backends:
+              - host: labor-insurance-sim:8081
+
           - name: labor-insurance
             policies:
+              # The same limits as the well-known route (and the same buckets' sizes).
+              localRateLimit: *rate-limits
+
               # ---------------------------------------------------------------------------- #
               # External authorization — vlei-authz decides before the backend is reached.
               # ---------------------------------------------------------------------------- #
               extAuthz:
-                host: vlei-authz:9000
+                host: vlei-authz:9001
 
                 # agentgateway gives an authorizer 2s by default. vlei-authz reads the signer's
                 # key event log and every issuer's TEL from a witness, and bounds each read at
@@ -32,11 +67,17 @@ binds:
                 # must reach the authorizer. The default cap is 8192 bytes, and a chained CESR
                 # ACDC exceeds that comfortably.
                 #
+                # 262144, not 65536: the exported stream carries the issuers' key event logs, which
+                # grow with every issuance and revocation. On 2026-09-30, after a few re-issues, an
+                # ECR stream reached 66 KB and every call was refused with 413 at a 64 KB cap. (The
+                # lasting fix is to present the ACDC without the logs — the verifier reads them from
+                # the witnesses anyway.)
+                #
                 # allowPartialMessage stays false deliberately: a truncated credential is not a
                 # smaller credential, it is an unverifiable one, and silently authorizing against
                 # a fragment would be worse than failing.
                 includeRequestBody:
-                  maxRequestBytes: 65536
+                  maxRequestBytes: 262144
                   allowPartialMessage: false
 
                 # Default is already `deny`; stated explicitly because it is a security property
@@ -44,44 +85,42 @@ binds:
                 # unreachable, requests are refused rather than waved through.
                 failureMode: deny
 
-                # HTTP, not gRPC (the schema's default). vlei-authz is a plain HTTP service: it
-                # reads the forwarded body, answers 200 to allow, and anything else is the denial
-                # returned to the caller — a 403 whose JSON body names the failure layer.
+                # gRPC (Envoy's ext_authz Check API), the schema's default, and the only wire on
+                # which a refusal can be answered the way MCP clients show it to the model.
+                #
+                # Over HTTP ext-authz, v1.5.0 allows on any 2xx and returns any other answer as it
+                # is, so a refused tools/call could only be a 403. The claude.ai connector shows a 403
+                # as a bare "the connector's server returned an error": Claude never learned the
+                # reason, and told the user the server was broken.
+                #
+                # Over gRPC, a refusal is a non-OK CheckResponse carrying its own HTTP response, and
+                # the backend is never called. vlei-authz answers a refused call with HTTP 200 and
+                # the call's own JSON-RPC answer — an MCP tool error whose first line is the failure
+                # layer (`missing_credential: ...`). A body with no call in it is still a 403. See
+                # examples/regulator/vlei-authz/grpc_check.py.
+                #
+                # On allow, the CheckResponse removes all six x-vlei-* headers and sets the
+                # established ones, so a value a client sent under one of those names never
+                # reaches the labor-insurance simulator. (The HTTP service on :9000 keeps the old
+                # contract for gateways that speak only HTTP ext-authz.)
                 protocol:
-                  http:
-                    # A CEL expression, hence the inner quotes.
-                    path: '"/auth/mcp"'
-                    # Copied onto the backend request when the authorizer returns 200. vlei-authz
-                    # sends all six on every 200 (empty when nothing was established), so a value
-                    # a client sent under one of these names never reaches the labor-insurance simulator.
-                    includeResponseHeaders:
-                      - x-vlei-lei
-                      - x-vlei-role
-                      - x-vlei-holder-aid
-                      - x-vlei-delegate-aid
-                      - x-vlei-report
-                      - x-vlei-namespace
+                  grpc: {}
 
-              # ---------------------------------------------------------------------------- #
-              # MCP authorization — the tool boundary.
-              # ---------------------------------------------------------------------------- #
-              mcpAuthorization:
-                # The role check is enforced in vlei-authz, which parses the credential, knows the
-                # tool, and denies with a named failure layer first. This policy contributes a
-                # closed list of reachable tools, so a tool added to the backend is not exposed by
-                # accident; vlei-authz's policy.json is closed the same way.
-                rules:
-                  - 'mcp.tool.name == "list_insured"'
-                  - 'mcp.tool.name == "enroll_employee"'
-                  - 'mcp.tool.name == "withdraw_employee"'
-                  - 'mcp.tool.name == "adjust_insured_salary"'
-
+            # The backend is plain HTTP: agentgateway authorizes and forwards, and the MCP server's
+            # responses reach the client byte for byte.
+            #
+            # It was an `mcp:` backend until 2026-10-01. With the 2026-07-28 per-request envelope,
+            # v1.5.0's MCP layer re-frames what the server answers: a JSON response becomes a
+            # text/event-stream, and the tools/list result loses its
+            # `_meta["io.modelcontextprotocol/serverInfo"]`. The official SDK client accepts that.
+            # The claude.ai connector listed no tools at all — the same connector that listed and
+            # called tools on the observatory, an SDK server it reached directly.
+            #
+            # What the MCP layer contributed is kept elsewhere:
+            #   - The closed list of reachable tools is vlei-authz's policy.json, which refuses an
+            #     unlisted tool rather than treating it as public. mcpAuthorization repeated it.
+            #   - Tool names were never prefixed (prefixMode: never), so nothing changes there.
+            #   - Every check, the rate limits and the identity headers are HTTP-level policies
+            #     above, unchanged.
             backends:
-              - mcp:
-                  # Names are never prefixed, so the tool name a client sends is the name
-                  # vlei-authz checked and the name labor-insurance-sim executes.
-                  prefixMode: never
-                  targets:
-                    - name: labor-insurance-sim
-                      mcp:
-                        host: http://labor-insurance-sim:8081/mcp
+              - host: labor-insurance-sim:8081

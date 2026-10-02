@@ -32,3 +32,7 @@ recordings/
 *.mp4
 *.mov
 *.pptx
+
+# Credential proxy: one line per relayed call (tool, result, layer). Local evidence, like the
+# gateway's audit log; never the credential or the arguments, but still not for the repository.
+examples/credential-proxy/relay.log

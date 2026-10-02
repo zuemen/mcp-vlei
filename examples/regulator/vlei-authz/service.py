@@ -45,11 +45,14 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
+import time
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, AsyncIterator, Mapping
+from typing import Any, AsyncIterator, Callable, Mapping
 
 import httpx
 from fastapi import FastAPI, Request, Response
@@ -58,6 +61,8 @@ from mcp.types import CallToolRequestParams
 from pydantic import ValidationError
 
 from mcp_vlei import VerificationReport, VleiIdentity
+from mcp_vlei import __version__ as PACKAGE_VERSION
+from mcp_vlei.chain import VLEI_SCHEMAS, parse_stream
 from mcp_vlei.namespace import keys as namespace_keys
 from mcp_vlei.signing import argument_rules_problem, parse_utc_offset, today_at
 from mcp_vlei.errors import VleiError
@@ -140,7 +145,8 @@ class Settings:
             verifier_url=self.verifier_url,
             # Bounded, so an unreachable witness is named (`invalid_signature ... not established`)
             # before the gateway gives up on this service and answers with a generic denial.
-            witness_client=httpx.AsyncClient(timeout=httpx.Timeout(self.witness_timeout)),
+            witness_client=httpx.AsyncClient(timeout=httpx.Timeout(self.witness_timeout),
+                                             event_hooks=WITNESS_HOOKS),
             today=self.today,
         )
 
@@ -240,6 +246,142 @@ class _Refused(Exception):
     """A body this service will not pass on. Not a vLEI layer: nothing was presented to check."""
 
 
+# ------------------------------------------------------------------------------------------- #
+# Evidence: what arrived, which logs were read, which schemas were presented
+# ------------------------------------------------------------------------------------------- #
+#
+# Written into each audit record for the console's evidence panel. Names and identifiers only: the
+# keys a call carried but not their values, the argument names but not the arguments, whose key
+# event log was read but not the key, whether the call came through the public tunnel but not
+# from where.
+
+#: The witness reads made while deciding the current request. Set per decision; the hooks on the
+#: witness client append to it, so the record lists exactly the reads this decision caused.
+_READS: ContextVar[list[dict[str, Any]] | None] = ContextVar("vlei_authz_reads", default=None)
+_TEL_STATE = (("revoked", re.compile(r'"t"\s*:\s*"(rev|brv)"')),
+              ("issued", re.compile(r'"t"\s*:\s*"(iss|bis)"')))
+#: A seal in a key event: ``{"i": <credential or registry>, "s": <its event's sn>, "d": <digest>}``.
+#: Revocation is decided from these — an issuer's own log anchors each issuance (sn 0) and
+#: revocation (sn 1) of the credentials it issued — so the record keeps the (i, s) pairs it saw.
+_SEAL = re.compile(r'\{"i":"([A-Za-z0-9_-]{44})","s":"([0-9a-f]+)","d":"[A-Za-z0-9_-]{44}"\}')
+_VLEI_TYPE = {said: name for name, said in VLEI_SCHEMAS.items()}
+
+
+async def _read_started(request: httpx.Request) -> None:
+    request.extensions["vlei_authz_started"] = time.perf_counter()
+
+
+async def _read_finished(response: httpx.Response) -> None:
+    reads = _READS.get()
+    if reads is None:
+        return
+    request = response.request
+    params = request.url.params
+    started = request.extensions.get("vlei_authz_started")
+    entry: dict[str, Any] = {
+        "typ": params.get("typ"),
+        "witness": f"{request.url.host}:{request.url.port}" if request.url.port else request.url.host,
+        "status": response.status_code,
+        "ms": round((time.perf_counter() - started) * 1000, 1) if started else None,
+    }
+    if entry["typ"] == "kel":
+        entry["aid"] = params.get("pre")
+        text = (await response.aread()).decode("utf-8", "replace")
+        entry["events"] = text.count('"t":"')
+        # Every anchor for now; the record keeps only the presented chain's (see decide()). A busy
+        # issuer's log holds hundreds, and a cap here once dropped exactly the newest one.
+        entry["anchors"] = [[i, s] for i, s in dict.fromkeys(_SEAL.findall(text))]
+    elif entry["typ"] == "tel":
+        entry["said"] = params.get("vcid")
+        text = (await response.aread()).decode("utf-8", "replace")
+        entry["state"] = next((state for state, pattern in _TEL_STATE if pattern.search(text)), "none")
+    reads.append(entry)
+
+
+#: Event hooks for the witness client: each key-event-log and transaction-event-log read is recorded
+#: against the decision that caused it.
+WITNESS_HOOKS = {"request": [_read_started], "response": [_read_finished]}
+
+
+def _via(headers: Mapping[str, str] | None) -> str:
+    """"public" when the request came through the Cloudflare tunnel, which always sets this header."""
+    return "public" if headers and any(k.lower() == "cf-connecting-ip" for k in headers) else "local"
+
+
+def _what_arrived(params: Mapping[str, Any]) -> dict[str, Any]:
+    meta = params.get("_meta") if isinstance(params.get("_meta"), Mapping) else {}
+    arguments = params.get("arguments") if isinstance(params.get("arguments"), Mapping) else {}
+    return {
+        "metaKeys": sorted(str(k) for k in meta)[:20],
+        "argumentNames": sorted(str(k) for k in arguments)[:20],
+        "schemas": _schemas(meta.get(namespace_keys().credential)),
+    }
+
+
+def _schemas(credential: Any) -> list[dict[str, Any]]:
+    """The schema of every credential in the presented stream, named when it is a vLEI schema."""
+    if not isinstance(credential, str):
+        return []
+    try:
+        acdcs = parse_stream(credential)
+    except Exception:  # noqa: BLE001 - a stream that cannot be parsed has nothing to show
+        return []
+    return [{"said": a.said, "schema": a.schema, "type": _VLEI_TYPE.get(a.schema)}
+            for a in list(acdcs.values())[:8]]
+
+
+@dataclass
+class Decision:
+    """What this service decided about one request, before it is put on either wire.
+
+    ``call`` is set when a ``tools/call`` was refused: that call has an id, so the refusal can be
+    its answer. A refusal without ``call`` is a body with nothing in it to answer.
+    """
+
+    allowed: bool
+    headers: dict[str, str] = field(default_factory=dict)
+    call: Mapping[str, Any] | None = None
+    layer: str | None = None
+    message: str = ""
+    report: dict[str, Any] | None = None
+
+
+#: In a 2026-07-28 request's ``_meta``: the per-request envelope, whose results describe themselves.
+MODERN_VERSION_KEY = "io.modelcontextprotocol/protocolVersion"
+SERVER_INFO_KEY = "io.modelcontextprotocol/serverInfo"
+
+
+def tool_error(decision: Decision) -> dict[str, Any]:
+    """A refused ``tools/call`` as the call's own JSON-RPC answer: an MCP tool error.
+
+    This is how MCP reports a tool failure to the model (``isError``), so a client such as the
+    claude.ai connector hands the reason to Claude instead of showing "the server returned an
+    error". The first line of the text is ``<layer>: <message>``, the same line clients printed from
+    the 403 body; ``_meta`` carries the layer and the report for clients that read them.
+    """
+    call = decision.call or {}
+    keys = namespace_keys()
+    params = call.get("params") if isinstance(call.get("params"), Mapping) else {}
+    request_meta = params.get("_meta") if isinstance(params.get("_meta"), Mapping) else {}
+    meta: dict[str, Any] = {keys.failure: {"layer": decision.layer, "message": decision.message}}
+    if decision.report is not None:
+        meta[keys.report] = decision.report
+    result: dict[str, Any] = {
+        "content": [{"type": "text", "text": (
+            f"{decision.layer or 'refused'}: {decision.message}\n"
+            "Refused by the gateway's vLEI verification before the labour-insurance system was "
+            "reached; nothing was filed.")}],
+        "isError": True,
+    }
+    if MODERN_VERSION_KEY in request_meta:
+        # Every 2026-07-28 result says it is complete and who produced it. This one was produced by
+        # the gateway, and says so rather than borrowing the backend's name.
+        result["resultType"] = "complete"
+        meta[SERVER_INFO_KEY] = {"name": "vlei-authz", "version": PACKAGE_VERSION}
+    result["_meta"] = meta
+    return {"jsonrpc": "2.0", "id": call.get("id"), "result": result}
+
+
 def _tool_calls(body: bytes) -> list[dict[str, Any]]:
     """The ``tools/call`` messages in a request body. Empty for everything else.
 
@@ -272,10 +414,109 @@ def create_app(
     policy: dict[str, dict[str, Any] | None] | None = None,
     settings: Settings | None = None,
     audit: Audit | None = None,
+    grpc_port: int | None = None,
 ) -> FastAPI:
-    """Build the service. Anything not given is read from the environment at startup."""
+    """Build the service. Anything not given is read from the environment at startup.
+
+    ``grpc_port`` (or ``VLEI_AUTHZ_GRPC_PORT``) also serves the same decisions over gRPC ext-authz,
+    from the same process and state; see ``grpc_check.py`` for why.
+    """
     state: dict[str, Any] = {"identity": identity, "policy": policy, "settings": settings}
-    record = audit or Audit()
+    record = audit_record = audit or Audit()
+    if grpc_port is None:
+        grpc_port = int(os.environ.get("VLEI_AUTHZ_GRPC_PORT", "0") or 0)
+
+    async def decide(body: bytes, headers: Mapping[str, str] | None = None,
+                     wire: str = "http") -> Decision:
+        """The decision for one request body: every check, recorded once, whichever wire asked."""
+        reads: list[dict[str, Any]] = []
+        token = _READS.set(reads)
+        seen: dict[str, Any] = {"via": _via(headers), "wire": wire, "metaKeys": [],
+                                "argumentNames": [], "schemas": [], "witnessReads": reads}
+
+        def record(**fields: Any) -> None:
+            # Of the anchors each log carried, only the presented chain's: the ones that decide
+            # this call's revocation. Everyone else's credentials are not this record's business.
+            chain = {s["said"] for s in seen["schemas"]}
+            for read in reads:
+                if "anchors" in read:
+                    read["anchors"] = [a for a in read["anchors"] if a[0] in chain]
+            audit_record(**seen, **fields)
+
+        try:
+            return await _decide(body, seen, record)
+        finally:
+            _READS.reset(token)
+
+    async def _decide(body: bytes, seen: dict[str, Any], record: Callable[..., None]) -> Decision:
+        try:
+            calls = _tool_calls(body)
+        except _Refused as exc:
+            record(decision="deny", tool=None, layer=None, message=str(exc))
+            return Decision(False, message=str(exc))
+
+        # initialize, tools/list, notifications, the SSE GET and the session DELETE carry no
+        # credential and assert nothing. Refusing them would break discovery for every client,
+        # including the ones about to present a perfectly good credential.
+        if not calls:
+            return Decision(True)
+
+        raw = calls[0].get("params")
+        if not isinstance(raw, dict) or not isinstance(raw.get("name"), str):
+            message = "tools/call without a tool name"
+            record(decision="deny", tool=None, layer=None, message=message)
+            return Decision(False, message=message)
+        tool = raw["name"]
+        seen.update(_what_arrived(raw))
+
+        tools: dict[str, dict[str, Any] | None] = state["policy"]
+        if tool not in tools:
+            message = (
+                f"tool {tool!r} is not in this gateway's policy; the list of reachable tools is "
+                "closed, so an unlisted tool is refused rather than treated as public"
+            )
+            record(decision="deny", tool=tool, layer=None, message=message)
+            return Decision(False, call=calls[0], message=message)
+
+        requirement = tools[tool]
+        if not requirement:
+            record(decision="allow", tool=tool, note="public tool")
+            return Decision(True)
+
+        try:
+            params = CallToolRequestParams.model_validate(raw)
+        except ValidationError as exc:
+            message = f"tools/call params do not validate ({exc.error_count()} errors)"
+            record(decision="deny", tool=tool, layer=None, message=message)
+            return Decision(False, call=calls[0], message=message)
+
+        report = VerificationReport(tool=tool)
+        try:
+            result = await state["identity"].verify_call(params, requirement, report=report)
+        except VleiError as exc:
+            record(
+                decision="deny", tool=tool, layer=exc.layer.value, message=exc.message,
+                aid=exc.aid, report=report.as_dict(),
+                revocationChecked=report.revocation_established,
+            )
+            return Decision(False, call=calls[0], layer=exc.layer.value, message=exc.message,
+                            report=report.as_dict())
+
+        facts = report.as_dict()
+        record(
+            decision="allow",
+            tool=tool,
+            lei=result.lei,
+            role=result.role,
+            holderAid=result.holder_aid,
+            delegateAid=result.aid if result.aid != result.holder_aid else None,
+            credentialSaid=result.credential_said,
+            revocationChecked=bool(result.revocation_checked),
+            report=facts,
+        )
+        # Hand the backend the established facts and nothing else. The simulator reads these
+        # headers and contains no identity code.
+        return Decision(True, headers={**result.to_headers(), REPORT_HEADER: encode_report(facts)})
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -288,79 +529,32 @@ def create_app(
                 state["policy"] = load_policy(cfg.policy_path)
             if state["identity"] is None:
                 state["identity"] = cfg.identity()
+        server = None
+        if grpc_port:
+            import sys
+
+            sys.path.insert(0, str(HERE))
+            from grpc_check import serve_grpc
+
+            server = await serve_grpc(grpc_port, decide)
         yield
+        if server is not None:
+            await server.stop(grace=2)
 
     app = FastAPI(title="vlei-authz", lifespan=lifespan)
     app.state.audit = record
 
     @app.api_route("/auth/mcp", methods=ALL_METHODS)
     async def authorize(request: Request) -> Response:
-        body = await request.body()
-        try:
-            calls = _tool_calls(body)
-        except _Refused as exc:
-            record(decision="deny", tool=None, layer=None, message=str(exc))
-            return _deny(None, str(exc))
+        """HTTP ext-authz: 200 allows, with the facts as headers; a refusal is a 403 naming the layer.
 
-        # initialize, tools/list, notifications, the SSE GET and the session DELETE carry no
-        # credential and assert nothing. Refusing them would break discovery for every client,
-        # including the ones about to present a perfectly good credential.
-        if not calls:
-            return _allow()
-
-        raw = calls[0].get("params")
-        if not isinstance(raw, dict) or not isinstance(raw.get("name"), str):
-            message = "tools/call without a tool name"
-            record(decision="deny", tool=None, layer=None, message=message)
-            return _deny(None, message)
-        tool = raw["name"]
-
-        tools: dict[str, dict[str, Any] | None] = state["policy"]
-        if tool not in tools:
-            message = (
-                f"tool {tool!r} is not in this gateway's policy; the list of reachable tools is "
-                "closed, so an unlisted tool is refused rather than treated as public"
-            )
-            record(decision="deny", tool=tool, layer=None, message=message)
-            return _deny(None, message)
-
-        requirement = tools[tool]
-        if not requirement:
-            record(decision="allow", tool=tool, note="public tool")
-            return _allow()
-
-        try:
-            params = CallToolRequestParams.model_validate(raw)
-        except ValidationError as exc:
-            message = f"tools/call params do not validate ({exc.error_count()} errors)"
-            record(decision="deny", tool=tool, layer=None, message=message)
-            return _deny(None, message)
-
-        report = VerificationReport(tool=tool)
-        try:
-            result = await state["identity"].verify_call(params, requirement, report=report)
-        except VleiError as exc:
-            record(
-                decision="deny", tool=tool, layer=exc.layer.value, message=exc.message,
-                aid=exc.aid, report=report.as_dict(),
-                revocationChecked=report.revocation_established,
-            )
-            return _deny(exc.layer.value, exc.message, report.as_dict())
-
-        facts = report.as_dict()
-        record(
-            decision="allow",
-            tool=tool,
-            lei=result.lei,
-            role=result.role,
-            holderAid=result.holder_aid,
-            delegateAid=result.aid if result.aid != result.holder_aid else None,
-            credentialSaid=result.credential_said,
-            revocationChecked=bool(result.revocation_checked),
-        )
-        # Hand the backend the established facts and nothing else. The simulator reads these
-        # headers and contains no identity code.
-        return _allow({**result.to_headers(), REPORT_HEADER: encode_report(facts)})
+        agentgateway's HTTP ext-authz allows on any 2xx, so over this wire a refusal can only be a
+        4xx — the gRPC wire is the one that can answer a refused call as a tool error.
+        """
+        decision = await decide(await request.body(), request.headers, "http")
+        if decision.allowed:
+            return _allow(decision.headers)
+        return _deny(decision.layer, decision.message, decision.report)
 
     @app.get("/health")
     async def health() -> dict[str, Any]:

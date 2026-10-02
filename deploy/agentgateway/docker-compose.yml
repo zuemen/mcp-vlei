@@ -60,6 +60,8 @@ services:
     command: python examples/regulator/vlei-authz/service.py
     environment:
       - PORT=9000
+      # gRPC ext-authz for agentgateway (config.yaml); :9000 keeps the HTTP contract.
+      - VLEI_AUTHZ_GRPC_PORT=9001
       - VLEI_LE_CREDENTIAL=/run/vlei/le.cesr
       - VLEI_ACCEPTED_ROOTS=${VLEI_ACCEPTED_ROOTS:-}
       - VLEI_WITNESS_URL=${VLEI_GATEWAY_WITNESS_URL:-http://witness-demo:5642}
@@ -79,6 +81,7 @@ services:
       - ./audit:/audit
     expose:
       - "9000"
+      - "9001"
     networks:
       - default
       - mcp-vlei_default

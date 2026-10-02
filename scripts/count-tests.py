@@ -25,6 +25,7 @@ SUITES = {
     "regulator": "examples/regulator/tests",
     "skill-server": "examples/skill-server/tests",
     "observatory": "examples/observatory/tests",
+    "credential-proxy": "examples/credential-proxy/tests",
 }
 
 #: (file, pattern whose one group is the count, suite)
@@ -36,6 +37,7 @@ TARGETS = [
     ("examples/README.md", r"`skill-server/tests/` — (\d+) tests", "skill-server"),
     ("examples/README.md", r"`console/tests/` — (\d+) tests", "console"),
     ("examples/README.md", r"`observatory/tests/` — (\d+) tests", "observatory"),
+    ("examples/README.md", r"`credential-proxy/tests/` — (\d+) tests", "credential-proxy"),
     ("examples/skill-server/README.md", r"`tests/test_server.py` — (\d+) tests", "skill-server"),
 ]
 

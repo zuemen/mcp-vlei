@@ -178,3 +178,39 @@ def test_the_simulator_imports_nothing_that_could_verify():
 def test_every_tool_says_it_is_a_simulation():
     for tool in labor.mcp._tool_manager.list_tools():
         assert "Simulated" in (tool.description or ""), tool.name
+
+
+async def test_a_refusal_by_the_system_carries_the_gateways_report():
+    """Verification passed and the system said no. The gateway's report travels with the refusal, so
+    a caller can show that the identity was verified and the business rule refused — not a blank."""
+    async with connected(HEADERS) as client:
+        result = await client.call_tool("withdraw_employee",
+                                        {"person_ref": "EMP-0999", "end_date": date.today().isoformat()})
+    assert result.is_error is True and "not enrolled" in result.content[0].text
+    assert (result.meta or {}).get("org.gleif.vlei/report") == REPORT
+
+
+async def test_each_tool_publishes_the_requirement_the_gateway_enforces(monkeypatch):
+    """docs/GOVERNMENT.md, Stage 2: a caller can tell before calling whether it is entitled. The
+    requirement is the gateway's own policy, published with the tool: read here, enforced there."""
+    from conftest import load
+
+    monkeypatch.setenv("MCP_VLEI_NAMESPACE", "org.gleif.vlei")
+    sim = load("regulator_labor_insurance_sim_published",
+               REGULATOR / "labor-insurance-sim" / "server.py")
+    policy = json.loads((REGULATOR / "vlei-authz" / "policy.json").read_text(encoding="utf-8"))
+    tools = {tool.name: tool for tool in await sim.mcp.list_tools()}
+
+    assert set(tools) == set(policy["tools"])
+    for name, requirement in policy["tools"].items():
+        assert (tools[name].meta or {}).get("org.gleif.vlei/requires") == requirement, name
+
+
+async def test_without_a_namespace_no_requirement_is_published(monkeypatch):
+    """A requirement under a name nobody reads would look like a public tool. No namespace, no claim."""
+    from conftest import load
+
+    monkeypatch.setenv("MCP_VLEI_NAMESPACE", "")
+    sim = load("regulator_labor_insurance_sim_unnamed",
+               REGULATOR / "labor-insurance-sim" / "server.py")
+    assert all(not (tool.meta or {}) for tool in await sim.mcp.list_tools())

@@ -12,53 +12,11 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-import httpx
-from conftest import ARGS, authz_app, labor, serve, signed_meta
-from starlette.applications import Starlette
-from starlette.background import BackgroundTask
-from starlette.requests import Request
-from starlette.responses import Response, StreamingResponse
-from starlette.routing import Route
+from conftest import ARGS, authz_app, labor, serve, signed_meta, stand_in_gateway
 
 import gateway_client
 from mcp_vlei import Signer
 from mcp_vlei.testing import LEI
-
-INCLUDE_RESPONSE_HEADERS = (
-    "x-vlei-lei", "x-vlei-role", "x-vlei-holder-aid", "x-vlei-delegate-aid", "x-vlei-report",
-    "x-vlei-namespace",
-)
-
-
-def stand_in_gateway(authz, upstream: str) -> Starlette:
-    decide = httpx.AsyncClient(transport=httpx.ASGITransport(app=authz), base_url="http://vlei-authz")
-    forward = httpx.AsyncClient(base_url=upstream, timeout=30)
-
-    async def route(request: Request) -> Response:
-        body = await request.body()
-        decision = await decide.request(request.method, "/auth/mcp", content=body)
-        if decision.status_code != 200:
-            keep = {k: decision.headers[k] for k in ("content-type", "x-vlei-failure") if k in decision.headers}
-            return Response(decision.content, status_code=decision.status_code, headers=keep)
-        headers = [
-            (k, v) for k, v in request.headers.items()
-            if k not in ("host", "content-length", *INCLUDE_RESPONSE_HEADERS)
-        ]
-        headers += [(k, decision.headers.get(k, "")) for k in INCLUDE_RESPONSE_HEADERS]
-        response = await forward.send(
-            forward.build_request(request.method, "/mcp", headers=headers, content=body), stream=True
-        )
-        passed = {
-            k: v for k, v in response.headers.items()
-            if k in ("content-type", "mcp-session-id", "cache-control")
-        }
-        return StreamingResponse(
-            response.aiter_raw(), status_code=response.status_code, headers=passed,
-            background=BackgroundTask(response.aclose),
-        )
-
-    return Starlette(routes=[Route("/mcp", route, methods=["GET", "POST", "DELETE"])])
-
 
 @asynccontextmanager
 async def gateway(world, tmp_path) -> AsyncIterator[str]:
@@ -139,6 +97,30 @@ async def test_someone_elses_credential_is_refused_through_the_gateway(world, tm
         out = await gateway_client.call_through_gateway(url, "enroll_employee", ARGS, meta)
 
     assert out["allowed"] is False and out["layer"] == "invalid_signature"
+
+
+async def test_a_chain_from_a_root_nobody_accepted_is_unknown_root(world, tmp_path):
+    """scripts/bootstrap-forged.sh in miniature: a second, self-made root issues a delegated QVI, an
+    LE and an ECR with the same role, and its agent signs exactly as the real one does. Every key
+    event log is on the witness, so the request verifies; only the root at the end differs."""
+    from mcp_vlei.testing import World
+
+    forged = World(role="labor-insurance-filing", label="forged")
+    for controller in forged.controllers.values():
+        world.enrol(controller)
+    for registry in forged.registries:
+        world.enrol_registry(registry)
+    async with gateway(world, tmp_path) as url:
+        out = await gateway_client.call_through_gateway(
+            url, "enroll_employee", ARGS, signed_meta(forged)
+        )
+
+    assert out["allowed"] is False and out["layer"] == "unknown_root", out["text"]
+    assert out["text"].startswith("unknown_root: ")
+    checks = {c["name"]: c["passed"] for c in out["report"]["checks"]}
+    assert checks["signature"] is True and checks["delegation"] is True
+    assert checks["chain"] is False
+    assert labor.INSURED == {}  # never reached
 
 
 async def test_nothing_presented_is_missing_credential_for_every_tool(world, tmp_path):

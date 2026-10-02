@@ -15,7 +15,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 COPY packages/mcp-vlei /app/packages/mcp-vlei
-RUN pip install "mcp==2.2.0" /app/packages/mcp-vlei "fastapi==0.141.1" "uvicorn==0.53.0"
+# grpcio and protobuf: vlei-authz's gRPC ext-authz (stubs generated with grpcio-tools 1.73.1).
+RUN pip install "mcp==2.2.0" /app/packages/mcp-vlei "fastapi==0.141.1" "uvicorn==0.53.0" \
+    "grpcio==1.73.1" "protobuf>=6.31.0,<7"
 
 COPY examples/regulator /app/examples/regulator
 

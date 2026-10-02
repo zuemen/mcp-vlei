@@ -66,6 +66,24 @@ NAMESPACE = os.environ.get("MCP_VLEI_NAMESPACE", "").strip()
 if NAMESPACE and not _NAMESPACE_SHAPE.fullmatch(NAMESPACE):
     NAMESPACE = ""
 
+#: What each tool requires, exactly as the gateway enforces it: the gateway's own policy, published
+#: with the tools so a caller can tell before calling whether it is entitled (docs/GOVERNMENT.md,
+#: Stage 2). Read and repeated here, never enforced — the gateway decides before this server is
+#: reached. One file, so what is published and what is enforced cannot drift apart.
+POLICY = Path(os.environ.get("VLEI_AUTHZ_POLICY", HERE.parent / "vlei-authz" / "policy.json"))
+
+
+def _published(tool: str) -> dict[str, Any] | None:
+    """``{"<namespace>/requires": requirement}`` for a tool's ``_meta``, or nothing.
+
+    Nothing without a namespace: a requirement under a name no caller reads would make the tool look
+    public, which is worse than saying nothing.
+    """
+    if not NAMESPACE or not POLICY.is_file():
+        return None
+    requirement = json.loads(POLICY.read_text(encoding="utf-8")).get("tools", {}).get(tool)
+    return {f"{NAMESPACE}/requires": requirement} if requirement else None
+
 #: LEI -> the unified business number its LEI record names in `registeredAs`. Test values.
 REGISTERED_AS: dict[str, str] = {
     lei: entry["registeredAs"]
@@ -183,6 +201,21 @@ def _receipt(caller: dict[str, str], body: dict[str, Any]) -> CallToolResult:
     )
 
 
+def _refused(caller: dict[str, str], message: str) -> CallToolResult:
+    """The system's own refusal, after the gateway verified the caller. The gateway's report travels
+    with it, as it does with a receipt: a caller can then show that the identity was verified and a
+    business rule said no — instead of an error with no verification behind it."""
+    report = _report(caller[REPORT_HEADER])
+    namespace = caller.get(NAMESPACE_HEADER)
+    if namespace and not _NAMESPACE_SHAPE.fullmatch(namespace):
+        namespace = None
+    return CallToolResult(
+        content=[TextContent(type="text", text=message)],
+        is_error=True,
+        meta={f"{namespace}/report": report} if report is not None and namespace else None,
+    )
+
+
 @mcp.custom_route("/.well-known/vlei", methods=["GET"])
 async def well_known(request: Request) -> JSONResponse:
     """Who operates this endpoint, fetchable without a session."""
@@ -201,66 +234,78 @@ async def well_known(request: Request) -> JSONResponse:
     )
 
 
-@mcp.tool()
+@mcp.tool(meta=_published("list_insured"))
 def list_insured(ctx: Context) -> CallToolResult:
     """List the people the caller's employer has enrolled. Simulated — not connected to the Bureau
     of Labor Insurance. Only the caller's own employer's records: which employer is the caller's
     verified legal entity, not an argument."""
     caller = _caller(ctx)
-    ubn = _employer(caller)
-    return _receipt(caller, {
-        "employer": {"lei": caller["x-vlei-lei"], "unifiedBusinessNumber": ubn,
-                     "linkedBy": "LEI record registeredAs (test value)"},
-        "insured": sorted(INSURED.get(ubn, {}).values(), key=lambda r: r["personRef"]),
-    })
+    try:
+        ubn = _employer(caller)
+        return _receipt(caller, {
+            "employer": {"lei": caller["x-vlei-lei"], "unifiedBusinessNumber": ubn,
+                         "linkedBy": "LEI record registeredAs (test value)"},
+            "insured": sorted(INSURED.get(ubn, {}).values(), key=lambda r: r["personRef"]),
+        })
+    except Refused as exc:
+        return _refused(caller, str(exc))
 
 
-@mcp.tool()
+@mcp.tool(meta=_published("enroll_employee"))
 def enroll_employee(person_ref: str, start_date: str, salary_grade: int,
                     ctx: Context) -> CallToolResult:
     """Enrol an employee (加保) from their start date. Simulated — not connected to the Bureau of
     Labor Insurance. The gateway admits a start date from today to ten days ahead."""
     caller = _caller(ctx)
-    ubn = _employer(caller)
-    record = {
-        "personRef": _person(person_ref),
-        "startDate": _date("start_date", start_date),
-        "salaryGrade": _grade(salary_grade),
-        "status": "insured",
-        "filedOn": date.today().isoformat(),
-        "filedBy": _filed_by(caller),
-    }
-    again = person_ref in INSURED.get(ubn, {})
-    INSURED.setdefault(ubn, {})[person_ref] = record
-    return _receipt(caller, {"action": "enrol", "employer": ubn, "record": record,
-                             "note": "already enrolled; record replaced" if again else None})
+    try:
+        ubn = _employer(caller)
+        record = {
+            "personRef": _person(person_ref),
+            "startDate": _date("start_date", start_date),
+            "salaryGrade": _grade(salary_grade),
+            "status": "insured",
+            "filedOn": date.today().isoformat(),
+            "filedBy": _filed_by(caller),
+        }
+        again = person_ref in INSURED.get(ubn, {})
+        INSURED.setdefault(ubn, {})[person_ref] = record
+        return _receipt(caller, {"action": "enrol", "employer": ubn, "record": record,
+                                 "note": "already enrolled; record replaced" if again else None})
+    except Refused as exc:
+        return _refused(caller, str(exc))
 
 
-@mcp.tool()
+@mcp.tool(meta=_published("withdraw_employee"))
 def withdraw_employee(person_ref: str, end_date: str, ctx: Context) -> CallToolResult:
     """Withdraw an employee (退保) on their last day. Simulated — not connected to the Bureau of
     Labor Insurance. The gateway admits an end date from today to ten days ahead."""
     caller = _caller(ctx)
-    ubn = _employer(caller)
-    record = INSURED.get(ubn, {}).get(_person(person_ref))
-    if not record or record["status"] != "insured":
-        raise Refused(f"{person_ref} is not enrolled by employer {ubn}")
-    record.update(status="withdrawn", endDate=_date("end_date", end_date),
-                  withdrawnBy=_filed_by(caller))
-    return _receipt(caller, {"action": "withdraw", "employer": ubn, "record": record})
+    try:
+        ubn = _employer(caller)
+        record = INSURED.get(ubn, {}).get(_person(person_ref))
+        if not record or record["status"] != "insured":
+            raise Refused(f"{person_ref} is not enrolled by employer {ubn}")
+        record.update(status="withdrawn", endDate=_date("end_date", end_date),
+                      withdrawnBy=_filed_by(caller))
+        return _receipt(caller, {"action": "withdraw", "employer": ubn, "record": record})
+    except Refused as exc:
+        return _refused(caller, str(exc))
 
 
-@mcp.tool()
+@mcp.tool(meta=_published("adjust_insured_salary"))
 def adjust_insured_salary(person_ref: str, salary_grade: int, ctx: Context) -> CallToolResult:
     """Adjust an enrolled employee's insured salary grade. Simulated — not connected to the Bureau
     of Labor Insurance. The gateway admits only the payroll role."""
     caller = _caller(ctx)
-    ubn = _employer(caller)
-    record = INSURED.get(ubn, {}).get(_person(person_ref))
-    if not record or record["status"] != "insured":
-        raise Refused(f"{person_ref} is not enrolled by employer {ubn}")
-    record.update(salaryGrade=_grade(salary_grade), adjustedBy=_filed_by(caller))
-    return _receipt(caller, {"action": "adjust", "employer": ubn, "record": record})
+    try:
+        ubn = _employer(caller)
+        record = INSURED.get(ubn, {}).get(_person(person_ref))
+        if not record or record["status"] != "insured":
+            raise Refused(f"{person_ref} is not enrolled by employer {ubn}")
+        record.update(salaryGrade=_grade(salary_grade), adjustedBy=_filed_by(caller))
+        return _receipt(caller, {"action": "adjust", "employer": ubn, "record": record})
+    except Refused as exc:
+        return _refused(caller, str(exc))
 
 
 def create_app(*, host: str | None = None) -> Starlette:

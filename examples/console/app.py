@@ -735,8 +735,16 @@ async def state() -> JSONResponse:
     return JSONResponse(STATE)
 
 
+#: VLEI_PUBLIC=1: a public site. The recording page's controls change what every visitor sees, and
+#: revocation changes the credential they all share: each refuses.
+PUBLIC = os.environ.get("VLEI_PUBLIC") == "1"
+_PUBLIC_REFUSAL = {"error": "on the public site only the presenter controls scenes and revocation"}
+
+
 @app.post("/scene/{n}")
 async def scene(n: int) -> JSONResponse:
+    if PUBLIC:
+        return JSONResponse(_PUBLIC_REFUSAL, status_code=403)
     if n not in SCENES:
         return JSONResponse({"error": f"scene {n} does not exist"}, status_code=404)
     await load_scene(n)
@@ -747,6 +755,8 @@ async def scene(n: int) -> JSONResponse:
 async def scene_0_mode(mode: str) -> JSONResponse:
     """Scene 0 has two modes: `measured` (the in-process impersonation server) and `observed`
     (the observatory's records of a real client and a replay)."""
+    if PUBLIC:
+        return JSONResponse(_PUBLIC_REFUSAL, status_code=403)
     if mode not in ("measured", "observed"):
         return JSONResponse({"error": f"scene 0 has no mode {mode!r}"}, status_code=404)
     STATE["sceneMode"] = mode
@@ -764,6 +774,8 @@ async def revoke() -> JSONResponse:
     anything: the next verification finds the revocation or it does not.
     """
     global _revoked_at
+    if PUBLIC:
+        return JSONResponse(_PUBLIC_REFUSAL, status_code=403)
     try:
         await ENV.revoke()
     except RuntimeError as exc:
@@ -786,6 +798,8 @@ async def revoke() -> JSONResponse:
 async def reissue() -> JSONResponse:
     """Issue a fresh ECR after the revocation scene, so the next take has a credential to present."""
     global _revoked_at
+    if PUBLIC:
+        return JSONResponse(_PUBLIC_REFUSAL, status_code=403)
     try:
         await ENV.reissue()
     except RuntimeError as exc:
@@ -799,6 +813,8 @@ async def reissue() -> JSONResponse:
 
 @app.post("/reset")
 async def reset() -> JSONResponse:
+    if PUBLIC:
+        return JSONResponse(_PUBLIC_REFUSAL, status_code=403)
     STATE["log"] = []
     await load_scene(0)
     return JSONResponse({"ok": True})
@@ -828,6 +844,174 @@ async def events() -> StreamingResponse:
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
+
+# ------------------------------------------------------------------------------------------- #
+# The interactive page (/app): the same signing, gateway and revocation, driven by a visitor
+# ------------------------------------------------------------------------------------------- #
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import interactive  # noqa: E402  (beside this file)
+
+
+def _as_scene(tool: str) -> dict[str, Any]:
+    return {"title": tool, "mode": "vlei", "tool": tool}
+
+
+def _sign_as_agent(tool: str, arguments: dict[str, Any], *, ts: str | None = None,
+                   signer: Any = None) -> dict[str, Any]:
+    """The request `_meta` the agent sends: its credential, and its signature over this call."""
+    signature = sign_request(signer or ENV.signer(), "tools/call",
+                             {"name": tool, "arguments": arguments}, ts=ts)
+    meta = {KEYS.credential: ENV.chain, KEYS.credential_said: ENV.said, KEYS.signature: signature}
+    if ENV.delegate != ENV.holder:
+        meta[KEYS.delegated_aid] = ENV.delegate
+    return meta
+
+
+def _fresh_signer() -> Any:
+    """A signer that claims the agent's identifier with a key that is not in the agent's key log."""
+    return Signer.from_seed(ENV.delegate, os.urandom(32))
+
+
+#: The last verification's word on the credential: a call refused at revocation says revoked, one
+#: allowed says it is not — whoever revoked it, this page or another.
+_observed_revoked = False
+
+
+async def _send(tool: str, arguments: dict[str, Any],
+                meta: dict[str, Any] | None) -> dict[str, Any]:
+    global _observed_revoked
+    scene = _as_scene(tool)
+    target = _target(scene)
+    run = (await _remote(scene, meta or {}, arguments) if target == "gateway"
+           else await _in_process(scene, meta, arguments))
+    run = dict(run, target=target)
+    said = interactive.outcome(run)
+    if said["layer"] == "revoked":
+        _observed_revoked = True
+    elif said["status"] == "allowed":
+        _observed_revoked = False
+    return run
+
+
+def _page_checks(report: dict[str, Any] | None) -> list[dict[str, Any]]:
+    return _checks(report, _as_scene(""))
+
+
+def _identity() -> dict[str, Any]:
+    return {"lei": ENV.lei, "role": ENV.role, "agent": ENV.delegate, "holder": ENV.holder,
+            "ubn": _unified_business_number()}
+
+
+async def _gateway_reachable() -> bool:
+    """Whether anything answers at the gateway's address: any HTTP answer counts."""
+    try:
+        async with httpx.AsyncClient(timeout=1.5) as client:
+            await client.get(GATEWAY_URL)
+        return True
+    except httpx.HTTPError:
+        return False
+
+
+async def _page_status() -> dict[str, Any]:
+    target = _target(_as_scene("enroll_employee"))
+    revoked = bool(_revoked_at) or _observed_revoked
+    return {"credential": "revoked" if revoked else "issued", "revokedAt": _revoked_at,
+            "target": target, "gateway": GATEWAY_URL if target == "gateway" else None,
+            "gatewayReachable": (await _gateway_reachable()) if target == "gateway" else None,
+            "live": ENV.live, "simulated": SIMULATED, "identity": _identity(),
+            "namespace": KEYS.namespace}
+
+
+async def _page_revoke() -> bool:
+    """Revoke the ECR for real, then wait until a verification reads the revocation back — at most
+    thirty seconds, and not at all if the gateway does not answer. Returns whether it was read."""
+    global _revoked_at
+    if _revoked_at or _observed_revoked:
+        return True  # already revoked: a second press changes nothing
+    await ENV.revoke()
+    _revoked_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    _log("ECR revoked from the interactive page")
+    arguments = interactive.resolve(interactive.SCENARIOS_BY_ID["enroll-today"]["arguments"],
+                                    _today())
+    deadline = asyncio.get_running_loop().time() + 30
+    while asyncio.get_running_loop().time() < deadline:
+        said = interactive.outcome(await _send("enroll_employee", arguments,
+                                                _sign_as_agent("enroll_employee", arguments)))
+        if said["layer"] == "revoked":
+            return True
+        if said["status"] == "unavailable":
+            return False
+        await asyncio.sleep(1.5)
+    return False
+
+
+async def _page_reissue() -> None:
+    global _revoked_at, _observed_revoked
+    await ENV.reissue()
+    _revoked_at = None
+    _observed_revoked = False
+    _log("a fresh ECR was issued from the interactive page")
+
+
+async def _page_impersonation() -> dict[str, Any]:
+    scene = SCENES[0]
+    await _run_impersonation()
+    said = _outcome({}, scene)
+    return {"time": datetime.now().strftime("%H:%M:%S"), "tool": scene["tool"], "variant": "none",
+            "request": json.loads(_request_json(scene, None, {})), "tampered": None,
+            "checks": _checks(None, scene),
+            "outcome": {"status": said["status"], "check": None, "layer": None,
+                        "detail": said["note"]},
+            "measured": _impersonation_result, "server": None,
+            "caller": {"clientInfo": dict(IMPERSONATION_CLAIM)}, "verified": None,
+            "target": "impersonation", "url": None}
+
+
+app.include_router(interactive.router(interactive.Backend(
+    policy_tools=_policy, today=_today, sign=_sign_as_agent, fresh_signer=_fresh_signer,
+    send=_send, checks=_page_checks, identity=_identity, status=_page_status,
+    revoke=_page_revoke, reissue=_page_reissue, impersonation=_page_impersonation,
+)))
+
+_PAGE_ASSETS = {"app.css": "text/css", "app.js": "application/javascript",
+                "i18n.json": "application/json", "evidence.css": "text/css",
+                "evidence.js": "application/javascript"}
+
+
+@app.get("/app")
+async def interactive_page() -> FileResponse:
+    return FileResponse(STATIC / "app.html")
+
+
+@app.get("/app/{name}")
+async def interactive_asset(name: str) -> Any:
+    if name not in _PAGE_ASSETS:
+        return JSONResponse({"error": f"no {name} here"}, status_code=404)
+    return FileResponse(STATIC / name, media_type=_PAGE_ASSETS[name])
+
+
+# ------------------------------------------------------------------------------------------- #
+# Evidence: every tools/call the gateway decided, from whichever client, as vlei-authz recorded it
+# ------------------------------------------------------------------------------------------- #
+import evidence  # noqa: E402  (examples/console/evidence.py; sys.path set above for interactive)
+
+
+@app.get("/evidence")
+async def evidence_page() -> FileResponse:
+    return FileResponse(STATIC / "evidence.html")
+
+
+@app.get("/api/evidence")
+async def evidence_data(limit: int = 40) -> JSONResponse:
+    """The newest decisions, allow-listed field by field (evidence.py), and the schema SAIDs GLEIF
+    publishes, to compare the presented ones against."""
+    return JSONResponse({
+        "records": evidence.read_evidence(limit=max(1, min(limit, 200))),
+        "officialSchemas": evidence.official_schemas(),
+        "log": "deploy/agentgateway/audit/decisions.jsonl",
+        "fictional": STATE.get("fictional"),
+    })
 
 if __name__ == "__main__":
     import uvicorn

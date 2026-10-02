@@ -96,6 +96,12 @@ else
   ok "chain issued, six acceptance checks passed, credential re-issued at the end"
 fi
 
+step "The gateway operator's own LE (what answers at /.well-known/vlei)"
+# Kept when it still chains to the current QVI, re-issued when the chain was just replaced.
+bash "${HERE}/bootstrap-regulator.sh" >> "${ROOT}/reset.log" 2>&1 \
+  || die "could not issue the operator's LE; see reset.log"
+ok "Simulated Labour Insurance Office (fictional), LEI 984500LABORSIM000054"
+
 # Relative, from the repository: on Windows, Python cannot open a Git Bash path like /c/Users/….
 ROOT_AID="$(cd "$ROOT" && python -c "import json;print(json.load(open('credentials/env.json'))['acceptedRoots'][0])" 2>/dev/null)"
 [[ -n "$ROOT_AID" ]] || die "credentials/env.json has no accepted root; run without --keep-credentials"
@@ -107,6 +113,7 @@ ROOT_AID="$(cd "$ROOT" && python -c "import json;print(json.load(open('credentia
 step "Starting the gateway and the labour-insurance simulator (scenes 1-4)"
 # Recreated, because the root it trusts is the one the chain was just issued under.
 ( cd "$ROOT" && VLEI_ACCEPTED_ROOTS="$ROOT_AID" \
+  VLEI_LE_CREDENTIAL_FILE=../../credentials/regulator/le.cesr \
   docker compose -f deploy/agentgateway/docker-compose.yml up -d --build --force-recreate --remove-orphans \
   > "${ROOT}/gateway.log" 2>&1 ) || die "the gateway did not start; see gateway.log"
 for i in $(seq 1 60); do
@@ -114,16 +121,18 @@ for i in $(seq 1 60); do
   sleep 2
   [[ $i -eq 60 ]] && die "the gateway did not answer on :3000; see gateway.log"
 done
-ok "gateway on http://localhost:3000/mcp, trusting ${ROOT_AID}"
+ok "gateway on http://localhost:3000/mcp, trusting ${ROOT_AID}, publishing the operator's LE"
 
 step "Starting the console"
 # Dates counted as the gateway counts them (deploy/agentgateway/docker-compose.yml: +08:00).
 ( cd "$ROOT" && PYTHONPATH="packages/mcp-vlei/src" VLEI_POLICY_UTC_OFFSET="${VLEI_POLICY_UTC_OFFSET:-+08:00}" \
   python examples/console/app.py > "${ROOT}/console.log" 2>&1 & ) </dev/null >/dev/null 2>&1
-for i in $(seq 1 30); do
+# 90 s, not 30: right after the containers are recreated, the console's first `docker compose exec`
+# (the live signer reads its key state through kli) has been seen to take over half a minute.
+for i in $(seq 1 90); do
   curl -fsS "${CONSOLE}/state" >/dev/null 2>&1 && break
   sleep 1
-  [[ $i -eq 30 ]] && die "the console did not start; see console.log"
+  [[ $i -eq 90 ]] && die "the console did not start; see console.log"
 done
 ok "console on ${CONSOLE}"
 

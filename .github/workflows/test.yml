@@ -39,7 +39,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install
-        run: pip install -e "packages/mcp-vlei[dev]" fastapi anyio uvicorn
+        run: pip install -e "packages/mcp-vlei[dev]" fastapi anyio uvicorn "grpcio==1.73.1" "protobuf>=6.31.0,<7"
       - name: Every example and script parses
         run: python -m compileall -q examples scripts packages
       - name: Console
@@ -50,6 +50,8 @@ jobs:
         run: pytest examples/skill-server/tests -q
       - name: Observatory (real client vs replay)
         run: pytest examples/observatory/tests -q
+      - name: Credential proxy (Claude's side of the gateway)
+        run: pytest examples/credential-proxy/tests -q
       - name: Every stated test count matches pytest
         run: python scripts/count-tests.py --check
       - name: The talk states the upstream issue's status as docs/upstream/status.json does

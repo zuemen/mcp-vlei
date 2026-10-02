@@ -159,3 +159,56 @@ async def serve(app: Any) -> AsyncIterator[str]:
     finally:
         server.should_exit = True
         await asyncio.wait_for(task, timeout=10)
+
+# ------------------------------------------------------------------------------------------- #
+# A stand-in for agentgateway — also used by examples/credential-proxy/tests
+# ------------------------------------------------------------------------------------------- #
+
+from starlette.applications import Starlette  # noqa: E402
+from starlette.background import BackgroundTask  # noqa: E402
+from starlette.requests import Request  # noqa: E402
+from starlette.responses import JSONResponse, Response, StreamingResponse  # noqa: E402
+from starlette.routing import Route  # noqa: E402
+
+INCLUDE_RESPONSE_HEADERS = (
+    "x-vlei-lei", "x-vlei-role", "x-vlei-holder-aid", "x-vlei-delegate-aid", "x-vlei-report",
+    "x-vlei-namespace",
+)
+
+
+def stand_in_gateway(authz, upstream: str, published: dict | None = None) -> Starlette:
+    """agentgateway's extAuthz flow, as deploy/agentgateway/config.yaml sets it up. With
+    ``published``, also its public ``/.well-known/vlei`` route, which no authorizer sees."""
+    decide = httpx.AsyncClient(transport=httpx.ASGITransport(app=authz), base_url="http://vlei-authz")
+    forward = httpx.AsyncClient(base_url=upstream, timeout=30)
+
+    async def route(request: Request) -> Response:
+        body = await request.body()
+        decision = await decide.request(request.method, "/auth/mcp", content=body)
+        if decision.status_code != 200:
+            keep = {k: decision.headers[k] for k in ("content-type", "x-vlei-failure") if k in decision.headers}
+            return Response(decision.content, status_code=decision.status_code, headers=keep)
+        headers = [
+            (k, v) for k, v in request.headers.items()
+            if k not in ("host", "content-length", *INCLUDE_RESPONSE_HEADERS)
+        ]
+        headers += [(k, decision.headers.get(k, "")) for k in INCLUDE_RESPONSE_HEADERS]
+        response = await forward.send(
+            forward.build_request(request.method, "/mcp", headers=headers, content=body), stream=True
+        )
+        passed = {
+            k: v for k, v in response.headers.items()
+            if k in ("content-type", "mcp-session-id", "cache-control")
+        }
+        return StreamingResponse(
+            response.aiter_raw(), status_code=response.status_code, headers=passed,
+            background=BackgroundTask(response.aclose),
+        )
+
+    async def well_known(_: Request) -> Response:
+        return JSONResponse(published)
+
+    routes = [Route("/mcp", route, methods=["GET", "POST", "DELETE"])]
+    if published is not None:
+        routes.append(Route("/.well-known/vlei", well_known, methods=["GET"]))
+    return Starlette(routes=routes)

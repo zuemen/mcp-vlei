@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MCP × vLEI — gateway evidence</title>
+<link rel="stylesheet" href="/app/app.css">
+<link rel="stylesheet" href="/app/evidence.css">
+</head>
+<body class="evidence">
+<header class="top">
+  <div class="brand"><span class="mark" aria-hidden="true"></span><span>MCP × vLEI</span></div>
+  <div class="titles">
+    <h1 data-t="ev.title"></h1>
+    <p data-t="ev.subtitle"></p>
+  </div>
+  <div class="status" id="live" aria-live="polite"></div>
+  <div class="lang" id="lang" role="group" aria-label="Language">
+    <button type="button" data-lang="zh">中文</button>
+    <button type="button" data-lang="en">English</button>
+  </div>
+</header>
+<p class="banner" data-t="ev.banner"></p>
+
+<nav class="tabs">
+  <a class="tab" href="/app?tab=tour" data-t="tab.tour"></a>
+  <a class="tab" href="/app?tab=scenarios" data-t="tab.scenarios"></a>
+  <a class="tab" href="/app?tab=build" data-t="tab.build"></a>
+  <a class="tab" href="/evidence" aria-current="page" data-t="tab.evidence"></a>
+</nav>
+
+<main class="ev" id="ev" aria-live="polite"></main>
+
+<section class="ev-list">
+  <h2 data-t="ev.list"></h2>
+  <table>
+    <thead><tr><th data-t="ev.list.time"></th><th data-t="ev.list.from"></th>
+      <th data-t="ev.list.tool"></th><th data-t="ev.list.result"></th></tr></thead>
+    <tbody id="list"></tbody>
+  </table>
+</section>
+
+<footer class="foot">
+  <p data-t="footer.namespace"></p>
+  <p id="fictional"></p>
+</footer>
+<script src="/app/evidence.js"></script>
+</body>
+</html>

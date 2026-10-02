@@ -44,9 +44,12 @@ adopting this does not ask its counterparties to rewrite their agents.
 All three were checked against agentgateway's published configuration JSON schema
 (`schema/config.json` in `agentgateway/agentgateway`), not against prose examples.
 
-**1. `maxRequestBytes` is raised to 65536.** The credential and signature live in the JSON-RPC
+**1. `maxRequestBytes` is raised to 262144.** The credential and signature live in the JSON-RPC
 body's `_meta`, so the body must reach the authorizer — `extAuthz.includeRequestBody`. The default
-cap is 8192 bytes, which a chained CESR ACDC exceeds.
+cap is 8192 bytes, which a chained CESR ACDC exceeds. It was 65536 until 2026-09-30, when an ECR
+stream grew past it after a few re-issues — the exported stream carries the issuers' key event logs,
+which grow with every issuance and revocation — and every call was refused with 413. The lasting
+fix is to present the ACDC without the logs; the verifier reads them from the witnesses anyway.
 
 `allowPartialMessage` stays `false` on purpose. A truncated credential is not a smaller credential;
 it is an unverifiable one, and authorizing against a fragment would be worse than failing.
@@ -55,22 +58,120 @@ it is an unverifiable one, and authorizing against a fragment would be worse tha
 security property, and a reader should not have to know the default to know that an unreachable
 authorizer refuses requests rather than waving them through.
 
-**3. The role check is in `vlei-authz`, not in the CEL rule.** The CEL variables available to
-`mcpAuthorization` at request time are `mcp.tool.*` and `jwt.*`. Headers produced by external
-authorization are not addressable there, so `role == "labor-insurance-filing"` cannot be expressed
-at that layer.
+**3. Every decision is in `vlei-authz`, and the MCP backend is plain HTTP.** Until 2026-10-01 the
+route used an `mcp:` backend with an `mcpAuthorization` rule listing the four tools.
 
-Role enforcement therefore lives in `vlei-authz`, which parses the credential, knows the tool, and
-denies with a named failure layer before the request reaches the MCP policy. What `mcpAuthorization`
-contributes is a closed list of reachable tools, so a tool added to the backend is not exposed by
-accident. If a release adds ext-authz response headers to the CEL environment, the role check
-belongs in both places, and the two layers then agree by construction.
+Two reasons led to the change.
+
+- **The role check never fitted the CEL rule.** The CEL variables available to `mcpAuthorization`
+  are `mcp.tool.*` and `jwt.*`. Headers produced by external authorization are not addressable
+  there, so `role == "labor-insurance-filing"` cannot be expressed at that layer.
+- **The MCP layer re-frames 2026-07-28 responses.** With the per-request envelope, v1.5.0 turns
+  the server's JSON response into a `text/event-stream`. It also rebuilds the `tools/list` result
+  without the server's `_meta["io.modelcontextprotocol/serverInfo"]`.
+
+  The official SDK client accepts that. The claude.ai connector, connected to this gateway through
+  the public tunnel, reported "This connector has no tools available". The same connector had
+  listed and called tools on the observatory, an SDK server it reached directly.
+
+  With a plain backend, the server's responses pass through byte for byte. claude.ai's sequence
+  (`server/discover`, `tools/list` with no session) then gets exactly what the server sent: JSON,
+  four tools, `serverInfo`.
+
+Nothing that mattered was lost:
+
+- The closed list of reachable tools is `vlei-authz`'s `policy.json`, which refuses an unlisted
+  tool rather than treating it as public. `mcpAuthorization` only repeated it.
+- Tool names were never prefixed.
+- Every check, the rate limits and the identity headers are HTTP-level policies, unchanged.
+- One thing does change: the gateway's own log no longer names the MCP method of each request.
+  `vlei-authz`'s audit log still records every tool call.
 
 The filing window lives in `vlei-authz` too, as an `arguments` rule in `policy.json`
 (`start_date` / `end_date`: `dateWithinDays: [0, 10]` — the day itself, or up to ten days ahead). A
 call outside it is refused as `scope_exceeded` before it reaches the simulator. The window is a
 simplification: the published e-service rule also moves a deadline that falls on a holiday to the
 next working day, which a fixed day count does not model.
+
+## How a refusal reaches the model: gRPC ext-authz
+
+`vlei-authz` is called over gRPC (Envoy's ext_authz `Check` API, on :9001), not over HTTP (:9000).
+The reason is what each wire can say when a `tools/call` is refused.
+
+- **HTTP ext-authz.** agentgateway v1.5.0 allows on any 2xx and returns anything else as it is, so
+  a refusal can only be a 4xx.
+
+  On 2026-10-01 the claude.ai connector showed that 403 as "The connector's server returned an
+  error". Claude never saw `missing_credential`, called it a server fault, and offered to try again.
+
+  A refusal sent as 203 was no answer either: agentgateway treated it as an allow, and the call
+  reached the simulator.
+- **gRPC ext-authz.** A refusal is a non-OK `CheckResponse` carrying its own HTTP response, and
+  agentgateway returns it without calling the backend (`crates/agentgateway/src/http/ext_authz.rs`).
+
+  `vlei-authz` answers a refused call with HTTP 200 and the call's own JSON-RPC answer: an MCP
+  tool error (`isError: true`) whose first line is the layer, for example
+  `missing_credential: this tool requires an ECR credential…`. A 2026-07-28 request also gets
+  `resultType: complete`, and `serverInfo` naming `vlei-authz`, the component that answered.
+
+  A body with no call in it to answer — unreadable, a batch, a call without a name — is still a
+  403.
+
+When a call is allowed, the `CheckResponse` first removes all six `x-vlei-*` headers and then sets
+the ones established. A value a client sends under one of those names never reaches the simulator;
+this was checked live on 2026-10-01 with forged `x-vlei-lei`, `x-vlei-role` and
+`x-vlei-delegate-aid`.
+
+The HTTP service keeps its contract (200 or 403) for gateways that speak only HTTP ext-authz. Both
+wires share one decision function, one policy and one audit log.
+
+The protocol buffers are agentgateway's own (`vlei-authz/envoy_authz/proto/`), compiled with
+grpcio-tools 1.73.1.
+
+## Rate limits, for when the gateway is public
+
+Both routes carry the same conditional `localRateLimit`:
+
+- **Public callers.** Requests with `cf-connecting-ip` share one bucket of 60 per minute. Cloudflare
+  sets that header on everything through the tunnel, and a caller cannot remove it.
+- **Everything else.** The console, the credential proxy and the tests share another bucket, of 600
+  per minute.
+- **Over the limit.** A request over the limit is answered with 429.
+
+This matters because in v1.5.0 a local limit is one token bucket per entry, not one per client. A
+single bucket would let a flood from outside stall the local demonstration; two buckets keep it
+contained.
+
+Per-client limits need a remote rate-limit service. Checked on 2026-10-01: 70 requests with the
+header gave 60 × 200 then 10 × 429, and 70 without it gave 70 × 200.
+
+## Who operates the gateway, and what each tool requires
+
+A caller can establish both before presenting anything, with no authorization involved.
+
+**The operator's LE at `/.well-known/vlei`.** The `well-known` route in `config.yaml` sends that
+one path to the simulator, outside the `extAuthz` route. The simulator publishes the file it is
+given (`VLEI_LE_CREDENTIAL_FILE`) and does not parse it.
+
+That LE belongs to the operator: *Simulated Labour Insurance Office (fictional)*, LEI
+`984500LABORSIM000054`. `scripts/bootstrap-regulator.sh` issues it from the same QVI, and
+`scripts/reset-demo.sh` starts the gateway with it:
+
+```bash
+VLEI_LE_CREDENTIAL_FILE=../../credentials/regulator/le.cesr \
+  docker compose -f deploy/agentgateway/docker-compose.yml up -d
+```
+
+Without that variable the gateway publishes `credentials/le.cesr`, the employer's LE. That
+answers "who operates this gateway?" with the wrong party.
+
+**Each tool's requirement in its `_meta`.** The simulator copies
+`org.gleif.vlei/requires` onto each tool from `vlei-authz/policy.json`, the same file the gateway
+enforces, so what is published and what is enforced cannot drift apart. The backend is plain HTTP
+(detail 3 above), so tool `_meta` reaches the caller exactly as the simulator wrote it.
+
+The credential proxy (`examples/credential-proxy/`) relies on both. It refuses to list a tool
+until the published LE verifies.
 
 ## Audit log
 
