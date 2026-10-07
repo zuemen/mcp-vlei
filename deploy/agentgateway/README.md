@@ -22,14 +22,21 @@ agent ──▶ agentgateway :3000 ──▶ labor-insurance-sim :8081
 
 ## Running it
 
-```bash
-docker compose -f scripts/docker-compose.yml up -d        # witnesses, schemas, verifier
-bash scripts/bootstrap-credentials.sh                      # credentials/
-docker compose -f deploy/agentgateway/docker-compose.yml up -d
+The tested way to bring the whole v0.3 stack up on one machine (Docker Desktop, Git Bash on
+Windows, Python 3.10+) is `scripts/v03-stack.sh`. It runs its own Docker projects on ports shifted
+by 30000, so it does not collide with anything on the usual ports, and it issues every credential
+itself — all identities are fictional and the root of trust is self-hosted.
 
-MCP_SERVER_URL=http://localhost:3000/mcp \
-  python examples/my-agent/agent.py "enrol EMP-0001 in labour insurance from today, salary grade 3"
+```bash
+bash scripts/v03-stack.sh up          # witnesses, schema server, verifier, keri-cli
+bash scripts/v03-stack.sh bootstrap   # the credential chain and the operator's LE (10–20 minutes)
+bash scripts/v03-stack.sh gateway     # the gateway's signing AID, then agentgateway, vlei-authz, vlei-pop
+bash scripts/demo-parallel.sh         # the Trust Console: open http://localhost:38800/story
 ```
+
+The usual-ports layout (`scripts/reset-demo.sh`, gateway on :3000) is the author's long-running
+demo. After a full `reset-demo.sh`, run `scripts/bootstrap-gateway-signer.sh` (the variables it needs
+are at its top), or every proof of possession fails.
 
 ## Acceptance
 
