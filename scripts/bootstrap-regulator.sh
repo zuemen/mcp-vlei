@@ -27,7 +27,7 @@ REGULATOR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${REGULATOR_HERE}/bootstrap-credentials.sh" --library
 
 MAIN_WORK="$WORK"
-OUT="${ROOT_DIR}/credentials/regulator"
+OUT="${VLEI_BOOTSTRAP_CREDENTIALS:-${ROOT_DIR}/credentials}/regulator"
 WORK="${OUT}/_work"
 CWORK="/credentials/regulator/_work"
 

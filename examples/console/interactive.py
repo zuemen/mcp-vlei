@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
 
+import anyio
 from fastapi import APIRouter, Body
 from fastapi.responses import JSONResponse
 
@@ -103,6 +104,9 @@ class Backend:
     revoke: Callable[[], Awaitable[bool]]
     reissue: Callable[[], Awaitable[None]]
     impersonation: Callable[[], Awaitable[dict[str, Any]]]
+    #: The console's one signing turn, shared with every other place it signs (`app._SIGNING`);
+    #: ``None`` only for a backend that signs nothing slow or shared.
+    signing: anyio.CapacityLimiter | None = None
 
 
 def resolve(arguments: dict[str, Any], today: date) -> dict[str, Any]:
@@ -238,6 +242,14 @@ def _replay_ts() -> str:
     return moment.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+async def _off_loop(limiter: anyio.CapacityLimiter | None, sign: Callable[..., Any], *args: Any,
+                    **kwargs: Any) -> Any:
+    """``backend.sign`` blocks — it may read the gateway's document over HTTP and ask `kli` to
+    sign — so it runs in a worker thread, never on the event loop the page is served from, and in
+    the console's one signing turn (``limiter``, ``Backend.signing``)."""
+    return await anyio.to_thread.run_sync(lambda: sign(*args, **kwargs), limiter=limiter)
+
+
 async def run_call(backend: Backend, tool: str, arguments: dict[str, Any],
                    variant: str) -> dict[str, Any]:
     """Sign the call as the agent — or as the attack does — send it, and report what came back."""
@@ -248,11 +260,12 @@ async def run_call(backend: Backend, tool: str, arguments: dict[str, Any],
     if variant == "strip":
         meta = None
     elif variant == "replay":
-        meta = backend.sign(tool, signed, ts=_replay_ts())
+        meta = await _off_loop(backend.signing, backend.sign, tool, signed, ts=_replay_ts())
     elif variant == "wrong_key":
-        meta = backend.sign(tool, signed, signer=backend.fresh_signer())
+        meta = await _off_loop(backend.signing, backend.sign, tool, signed,
+                               signer=backend.fresh_signer())
     else:
-        meta = backend.sign(tool, signed)
+        meta = await _off_loop(backend.signing, backend.sign, tool, signed)
         if variant == "tamper":
             sent, change = tampered(signed)
     run = await backend.send(tool, sent, meta)

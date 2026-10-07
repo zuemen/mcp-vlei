@@ -1,0 +1,23 @@
+# The parallel v0.3 gateway — an overlay on deploy/agentgateway/docker-compose.yml:
+#
+#   docker compose -p mcp-vlei-v03p-regulator -f deploy/agentgateway/docker-compose.yml \
+#                  -f deploy/v03/parallel.regulator.yml …
+#
+# Containers are named by the project (mcp-vlei-v03p-regulator-*), the gateway listens on 33000,
+# the "before" simulator on 127.0.0.1:38090, and the services join the parallel witness network.
+# VLEI_AUDIENCE_URLS, VLEI_ACCEPTED_ROOTS and VLEI_LE_CREDENTIAL_FILE come from scripts/v03-stack.sh.
+name: mcp-vlei-v03p-regulator
+
+services:
+  labor-insurance-before:
+    ports: !override
+      - "127.0.0.1:38090:8081"
+
+  agentgateway:
+    ports: !override
+      - "33000:3000"
+
+networks:
+  mcp-vlei_default:
+    name: mcp-vlei-v03p_default
+    external: true

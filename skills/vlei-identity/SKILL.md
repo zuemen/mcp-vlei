@@ -64,6 +64,12 @@ credential — or, by default, one whose logs it cannot read. A client construct
 `on_unchecked_revocation="warn"` connects anyway and says so (`revocation_checked=False`): describe
 such a server as verified except for revocation; never say its revocation was checked.
 
+Then the server must **prove it holds the key** of that LE (or of an AID the LE delegated to): the
+client sends a fresh challenge and checks the signed answer, reading every key state from a majority
+of its witnesses. A server that cannot prove it is refused — `invalid_signature`, or
+`unsupported_version` when it does not speak v0.3 at all — and nothing is presented to it. The
+client verifies the server again before presenting once its last verification has expired.
+
 - **Verification passes** → continue.
 - **Verification fails** → tell the user the **failure layer by name** and **stop**. Do not call any
   tool on that server, including public ones. An organization that cannot prove it is who it claims
@@ -95,8 +101,10 @@ chain, then revocation, then role and scope.
 | Layer | What it means | What you do |
 |---|---|---|
 | `missing_credential` | The tool requires a credential and the call carried none, or no signature. Not a verdict on any credential | If the credential you hold covers the tool (see *Before calling a tool*), make the call with it presented — the package presents once it has read the tool's requirement from `tools/list`. Otherwise tell the user the tool needs an ECR you do not hold. Never describe this as your credential being rejected. |
-| `stale_signature` | Timestamp outside the freshness window, or a replay | Re-sign and retry **once**. If it fails again, tell the user to check the system clock, and stop. |
-| `digest_mismatch` | Arguments do not match the signed digest | Stop. The request was altered in transit. Report it as an integrity problem, not a retryable error. |
+| `unsupported_version` | The server, or this client, does not speak `vlei-sig/0.3` | Stop. **Do not retry.** Tell the user one side must be upgraded; nothing was filed. |
+| `stale_signature` | Outside the signature's window, made just after the server restarted, or a replay | Re-sign and retry **once**. If it fails again, tell the user to check the system clock or try again in a minute, and stop. |
+| `audience_mismatch` | The call was signed for another server or another URL — a misconfiguration, or a copy of your call sent where it was not meant to go | Stop. **Do not retry, and do not re-sign for this server to get past it.** Report the server and URL the message names. |
+| `digest_mismatch` | Arguments do not match the signed digest, or have no single reading (a repeated field, a number too large to sign) | Stop. The request was altered in transit, or cannot be signed as written. Report it as an integrity problem, not a retryable error. |
 | `invalid_signature` | One of three things, all about **who signed**: the signature does not verify under the signing AID's current key state, which the server reads from that AID's key event log at a witness (a key sent along with the request is ignored); the server could not establish that key state at all; or the AID that signed is neither the credential's holder nor delegated by the holder in the holder's key event log | Stop. **Do not retry**, and never re-sign with a different key or present the credential under another AID to get past it — that is exactly what this layer refuses. Report which of the three the message names: a key-state problem (a rotated key, a log the witness could not serve) or an authorization problem (this agent is not the holder's delegate). Both are for the holder or operator to fix. |
 | `chain_invalid` | The presented credential or its chain does not validate — a SAID that does not recompute, a broken link, an issuance not anchored in its issuer's key event log, a chain without the vLEI shape, a credential of a type other than the one the tool requires — **or** revocation could not be established, because an issuer's live transaction event log could not be read or records no issuance | Stop. **Do not retry.** Report a credential-configuration problem. When the message says revocation was not established, say exactly that — neither "revoked" nor "valid". |
 | `unknown_root` | The chain terminates at a root the counterparty does not accept | Stop. Report which root you chain to and that they do not accept it. This is a trust-configuration mismatch between two organizations; only they can resolve it. |

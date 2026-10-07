@@ -460,7 +460,7 @@ class World:
         )
         attributes: dict[str, Any] = {
             "LEI": LEI,
-            "personLegalName": "Wang Xiao-Ming",
+            "personLegalName": "Bob",
             "engagementContextRole": self.role,
         }
         if self.scope:
@@ -509,6 +509,13 @@ class World:
         if controller.delegator:
             self.enrol(controller.delegator)
         return controller
+
+    def delegate(self, label: str, delegator: Controller, *, approve: bool = True) -> Controller:
+        """An identifier delegated by ``delegator`` — a gateway's signing AID under its operator's
+        LE, say — witnessed like the rest and served by the witness. ``approve=False`` leaves the
+        delegation unanchored in the delegator's log, which a verifier must refuse."""
+        return self.enrol(Controller(f"{self.label}:{label}", witnesses=self.witnesses, toad=2,
+                                     delegator=delegator, approve=approve))
 
     def enrol_registry(self, registry: Registry) -> Registry:
         self.registries.append(registry)

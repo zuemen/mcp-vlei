@@ -39,7 +39,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install
-        run: pip install -e "packages/mcp-vlei[dev]" fastapi anyio uvicorn "grpcio==1.73.1" "protobuf>=6.31.0,<7"
+        run: pip install -e "packages/mcp-vlei[dev]" fastapi anyio uvicorn pyyaml "grpcio==1.73.1" "protobuf>=6.31.0,<7"
       - name: Every example and script parses
         run: python -m compileall -q examples scripts packages
       - name: Console

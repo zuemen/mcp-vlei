@@ -64,7 +64,7 @@ def chain_stream() -> str:
     le_said = json.loads(le)["d"]
     ecr = mint(
         ECR_SCHEMA, LE_AID, HOLDER,
-        {"LEI": LEI, "personLegalName": "Wang Xiao-Ming", "engagementContextRole": "regulatory-filing"},
+        {"LEI": LEI, "personLegalName": "Bob", "engagementContextRole": "regulatory-filing"},
         edge=("le", le_said),
     )
     return qvi + le + ecr

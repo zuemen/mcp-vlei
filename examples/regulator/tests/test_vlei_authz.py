@@ -424,3 +424,17 @@ async def test_the_record_keeps_the_chains_anchors_however_long_the_issuers_log(
     chain = {s["said"] for s in last_record(tmp_path)["schemas"]}
     assert [world.ecr_credential.said, "0"] in kels[world.le.pre]["anchors"]
     assert all(said in chain for r in kels.values() for said, _ in r.get("anchors", []))
+
+
+async def test_the_record_keeps_the_name_the_client_gave_itself(world, tmp_path):
+    """A 2026-07-28 request names its client on every call. The record keeps that name beside what
+    was verified: the comparison the demonstration makes is between those two."""
+    app = authz_app(world, tmp_path)
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+        "name": "list_insured", "_meta": {
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientInfo": {"name": "Anthropic/Toolbox", "version": "1.0.0"}}}}).encode()
+    await ask(app, body)
+    assert last_record(tmp_path)["declaredClient"] == "Anthropic/Toolbox 1.0.0"
+    await ask(app, rpc("list_insured", {}))   # a legacy call names its client at initialize, not here
+    assert last_record(tmp_path)["declaredClient"] is None

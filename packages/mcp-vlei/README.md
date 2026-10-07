@@ -68,7 +68,10 @@ audit log.
 |---|---|
 | `extension.py` | `VleiIdentity(Extension)` — `settings()`, `tools()` (`vlei_whoami`), `intercept_tool_call()`; reads `Tool._meta` requirements and enforces role and scope |
 | `client.py` | `VleiClient` — verifies the server's LE (from `discover` or `/.well-known/vlei`), signs each call, verifies an attestation before believing it |
-| `signing.py` | RFC 8785 canonicalization, digest, Ed25519 signing and verification, replay cache, scope comparison |
+| `signing.py` | RFC 8785 canonicalization over I-JSON, digest, the `vlei-sig/0.3` statement, Ed25519 signing and verification, scope comparison |
+| `audience.py` | Who a call is for: `Audience` (client), `Recipient` (verifier), endpoint normalisation |
+| `replay.py` | `MemoryReplayStore`, `SqliteReplayStore`: each nonce claimed once, and where the memory begins |
+| `pop.py` | Proof of possession: `PopResponder` (server), `prove_server` (client) |
 | `chain.py` | Reads an ACDC chain, recomputes every SAID, walks the edges to an accepted root — no service required |
 | `verifier.py` | `OfflineVerifier` for a counterparty's credential; a thin adapter over GLEIF-IT/vlei-verifier for revocation |
 | `revocation.py` | Three selectable revocation sources, and a refusal when the log cannot be read |
@@ -87,8 +90,10 @@ not decide what "valid" means.
 | Layer | Means | Retry? |
 |---|---|---|
 | `missing_credential` | Nothing was presented. Not a failure to verify — a failure to present | no; attach one |
-| `stale_signature` | Outside the freshness window, or a replay | **once** |
-| `digest_mismatch` | Arguments do not match the signed digest — altered after signing | no |
+| `unsupported_version` | Not `vlei-sig/0.3` — one side must be upgraded | no |
+| `stale_signature` | Outside the signature's window, before the replay memory began, or a replay | **once** |
+| `audience_mismatch` | Signed for another server or URL | no |
+| `digest_mismatch` | Arguments do not match the signed digest — altered after signing — or have no canonical form | no |
 | `invalid_signature` | Does not verify under the signing AID's key state | no |
 | `chain_invalid` | A SAID does not recompute, a link is broken, or a log could not be read | no |
 | `revoked` | Withdrawn in the issuer's transaction event log | no; a new credential must be issued |
@@ -96,7 +101,7 @@ not decide what "valid" means.
 | `role_mismatch` | The ECR role does not satisfy the tool's requirement | no |
 | `scope_exceeded` | The request exceeds the tool's declared scope | no; ask before retrying in scope |
 
-Nine layers, and exactly one — `stale_signature` — is worth retrying.
+Eleven layers, and exactly one — `stale_signature` — is worth retrying.
 
 ## Settings
 
@@ -107,7 +112,11 @@ Nine layers, and exactly one — `stale_signature` — is worth retrying.
 | `witness_url` | — | **Required.** Every caller's current key state is read from its key event log here — never from the request — and `revocation_source="tel"` reads the issuers' transaction event logs here too |
 | `witness_urls` | — | Several witnesses: each caller's key event log is read from all of them and compared; a log they disagree about (duplicity) is refused, and fewer answers than a majority is *not established* |
 | `verifier_url` | — | Required by `revocation_source="verifier"`; choosing that source without one raises |
-| `freshness_seconds` | 60 | Signature freshness window, paired with a replay cache that retains for twice as long |
+| `audience_urls` | — | **Required.** Every URL callers send calls to; a signature for any other — or for another LE — is `audience_mismatch` |
+| `replay_store` | in memory | Where nonces are claimed. A `SqliteReplayStore` survives restarts; in memory, calls are refused for `freshness_seconds` after each start |
+| `freshness_seconds` | 60 | How far a signer's clock may be from this one's |
+| `max_lifetime_seconds` | 60 | The longest `exp − ts` accepted |
+| `pop_signer` | — | Answers proof-of-possession challenges (`pop_response`); without one a v0.3 client presents nothing to this server |
 | `ttl_ms` | 30000 | How long a verification result may be cached. **Set to 0 for high-value tools** — a revocation takes effect no later than cache expiry |
 
 Two of these are security critical and worth stating plainly: **`accepted_roots` must never be
@@ -124,7 +133,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-310 tests, no containers required. They cover every failure layer, RFC 8785 canonicalization, replay,
+572 tests, no containers required. They cover every failure layer, RFC 8785 canonicalization, replay,
 check ordering, key event log verification, issuance anchoring, the vLEI chain shape, the report's
 contents, and the attacks the first version let through — someone else's credential signed with your
 own key, a key sent along with the request, a delegate of the wrong person, a credential its issuer

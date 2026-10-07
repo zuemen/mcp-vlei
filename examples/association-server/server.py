@@ -18,6 +18,7 @@ Two things this file demonstrates by what it does *not* contain:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from datetime import date, datetime, timezone
@@ -28,7 +29,11 @@ from mcp.server.mcpserver import MCPServer
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from mcp_vlei import VleiIdentity
+import sys
+
+import anyio
+
+from mcp_vlei import SqliteReplayStore, VleiIdentity
 
 ROOT = Path(__file__).resolve().parents[2]
 CREDENTIALS = ROOT / "credentials"
@@ -47,6 +52,12 @@ VERIFIER_URL = os.environ.get("VLEI_VERIFIER_URL", ENV.get("verifierUrl", "http:
 ACCEPTED_ROOTS = ENV.get("acceptedRoots") or [os.environ["VLEI_ROOT_AID"]]
 PUBLIC_URL = os.environ.get("PUBLIC_URL", "http://localhost:8080")
 WITNESS_URL = os.environ.get("VLEI_WITNESS_URL", "http://localhost:5642")
+#: The nonces of calls already accepted, kept across restarts. The very first start refuses calls
+#: for a minute (nothing could have been accepted before, but the server cannot know that).
+REPLAY_DB = Path(os.environ.get("VLEI_REPLAY_DB", str(Path(__file__).parent / ".state" / "replay.sqlite3")))
+
+sys.path.insert(0, str(ROOT / "examples" / "my-agent"))
+from kli_signer import LazyKeystoreSigner  # noqa: E402  - the LE's key stays in its KERI keystore
 
 # ------------------------------------------------------------------------------------------- #
 # In-memory state. A real deployment would have a database; the point here is the identity path.
@@ -91,6 +102,11 @@ vlei = VleiIdentity(
     witness_urls=_witness_urls(),
     well_known=f"{PUBLIC_URL}/.well-known/vlei",
     on_decision=record,
+    # v0.3: calls are signed for this server at this URL, each once; and it proves, when a client
+    # challenges it, that it holds the LE's key — signed in the `le` keystore with `kli sign`.
+    audience_urls=[f"{PUBLIC_URL}/mcp"],
+    replay_store=SqliteReplayStore(REPLAY_DB),
+    pop_signer=LazyKeystoreSigner("le", "le"),
 )
 
 mcp = MCPServer(name="association-server", version="0.1.0", extensions=[vlei])
@@ -142,6 +158,79 @@ async def well_known(request: Request) -> JSONResponse:
     *before* connecting to it.
     """
     return JSONResponse(vlei.well_known_document())
+
+
+#: Unauthenticated and internet-facing, and each challenge answered ends in a `kli sign` subprocess
+#: (seconds, through LazyKeystoreSigner/Docker) — the same two limits
+#: examples/regulator/vlei-pop/service.py uses, for the same reason. This file stays self-contained
+#: rather than importing from it.
+#: A challenge is a handful of short fields; nothing legitimate is anywhere near this large. Bounds
+#: both a reported Content-Length and a chunked body that carries none.
+MAX_POP_BODY_BYTES = 4096
+_TOO_LARGE_MESSAGE = f"a challenge is at most {MAX_POP_BODY_BYTES} bytes"
+#: An oversize body is read and discarded up to this much, so a sender that sent a little too much
+#: reads its 413 rather than a reset; beyond it nothing more is read. Either way the 413 says
+#: ``Connection: close``: no unread remainder is left on a connection the next request would share.
+_MAX_DRAIN_BYTES = 64 * 1024
+#: Challenges are signed one at a time; a short queue beyond that is 503 rather than a pile of
+#: requests waiting on a lock no one is told about.
+_POP_GATE = asyncio.Semaphore(1)
+_POP_WAITING = {"n": 0}
+_POP_MAX_WAITING = 4
+
+
+async def _read_pop_challenge(request: Request) -> tuple[Any, JSONResponse | None]:
+    """The parsed body, or the refusal for it: oversize (413 — a reported ``Content-Length``
+    checked up front, a chunked body with none bounded as it is read; drained up to
+    ``_MAX_DRAIN_BYTES``, and the connection closed) or not JSON, including JSON nested deep enough
+    to exhaust the recursion limit (400, the same refusal as any other malformed challenge — never
+    an unhandled crash)."""
+    too_large = JSONResponse({"layer": None, "message": _TOO_LARGE_MESSAGE}, status_code=413,
+                             headers={"Connection": "close"})
+    content_length = request.headers.get("content-length", "").strip()
+    declared = int(content_length) if content_length.isdigit() else None
+    if declared is not None and declared > _MAX_DRAIN_BYTES:
+        return None, too_large  # not worth reading; closed with the answer
+    oversize = declared is not None and declared > MAX_POP_BODY_BYTES
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        oversize = oversize or total > MAX_POP_BODY_BYTES
+        if oversize:
+            if total > _MAX_DRAIN_BYTES:
+                break  # stop reading: the connection closes with the 413
+            continue  # drained, not kept
+        chunks.append(chunk)
+    if oversize:
+        return None, too_large
+    try:
+        return json.loads(b"".join(chunks)), None
+    except (ValueError, RecursionError):
+        return None, JSONResponse({"layer": None, "message": "a challenge is JSON"}, status_code=400)
+
+
+@mcp.custom_route("/.well-known/vlei/pop", methods=["POST"])
+async def proof_of_possession(request: Request) -> JSONResponse:
+    """A client's challenge, answered with this server's LE key (`mcp_vlei.pop`).
+
+    A slot is claimed before anything that can await — including reading the body — so a client
+    cannot hold one open merely by sending slowly; signing itself is serialised, one challenge at
+    a time, since it runs through a single keystore.
+    """
+    if _POP_WAITING["n"] >= _POP_MAX_WAITING:
+        return JSONResponse({"layer": None, "message": "busy: try again in a few seconds"},
+                            status_code=503)
+    _POP_WAITING["n"] += 1
+    try:
+        body, refusal = await _read_pop_challenge(request)
+        if refusal is not None:
+            return refusal
+        async with _POP_GATE:
+            status, payload = await anyio.to_thread.run_sync(vlei.pop_response, body)
+        return JSONResponse(payload, status_code=status)
+    finally:
+        _POP_WAITING["n"] -= 1
 
 
 @mcp.custom_route("/api/audit", methods=["GET"])

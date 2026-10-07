@@ -10,8 +10,8 @@ verification service that is slow or down degrades exactly one line of this repo
 of it:
 
 1. ``credential_present`` — something was presented at all
-2. ``freshness`` — the signature is recent and not a replay
-3. ``digest`` — the arguments match what was signed
+2. ``freshness`` — the signature is inside its window and not a replay
+3. ``digest`` — it was signed for this server, and the arguments match
 4. ``signature`` — the signature verifies under the signing key
 5. ``delegation`` — the acting AID is the holder's, or delegated by them
 6. ``chain`` — every SAID recomputes, the links are continuous, the root is accepted
@@ -49,8 +49,8 @@ CHECK_ORDER: tuple[CheckName, ...] = (
 
 _LABEL = {
     "credential_present": "credential presented",
-    "freshness": "signature is fresh",
-    "digest": "arguments match the signed digest",
+    "freshness": "signature is fresh, unexpired and not a replay",
+    "digest": "signed for this server, with these arguments",
     "signature": "signature verifies",
     "delegation": "acting identifier is authorized",
     "chain": "credential chain reaches an accepted root",

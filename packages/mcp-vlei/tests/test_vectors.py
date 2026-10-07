@@ -1,8 +1,8 @@
 """The published test vectors in spec/examples/digest-vectors.json, held against this package.
 
-A second implementer needs to know exactly which bytes the digest covers — the skill-generated
-server had to guess (examples/skill-server/REPORT.md, gap 11). The vectors settle it, and this test
-keeps the package and the vectors from drifting apart.
+A second implementer needs to know exactly which bytes the digest and the signature cover — the
+skill-generated server had to guess (examples/skill-server/REPORT.md, gap 11). The vectors settle
+it, and this test keeps the package and the vectors from drifting apart.
 """
 
 from __future__ import annotations
@@ -15,13 +15,14 @@ from pathlib import Path
 import pytest
 
 from mcp_vlei import Signer
+from mcp_vlei.audience import Recipient
 from mcp_vlei.errors import InvalidSignature
 from mcp_vlei.namespace import DEFAULT, keys
 from mcp_vlei.signing import (
     arguments_satisfied,
     canonicalize,
     digest_params,
-    signed_payload,
+    statement,
     verify_request,
 )
 
@@ -31,6 +32,10 @@ pytestmark = pytest.mark.skipif(not VECTORS.is_file(), reason="needs the reposit
 
 def vectors() -> dict:
     return json.loads(VECTORS.read_text(encoding="utf-8"))
+
+
+def _at(ts: str) -> datetime:
+    return datetime.fromisoformat(ts.replace("Z", "+00:00"))
 
 
 @pytest.mark.parametrize("vector", vectors()["digests"] if VECTORS.is_file() else [],
@@ -44,14 +49,23 @@ def test_digest_vectors(vector):
 
 def test_signature_vector():
     v = vectors()["signature"]
-    signer = Signer.from_seed("E" + "A" * 43, bytes.fromhex(v["seedHex"]))
+    st = v["statement"]
+    signer = Signer.from_seed(st["aid"], bytes.fromhex(v["seedHex"]))
 
     assert signer.verkey == v["verkey"]
-    assert signed_payload(v["method"], v["ts"], v["digest"]).decode("utf-8") == v["payload"]
-    assert signer.sign(v["payload"].encode("utf-8")) == v["sig"]  # Ed25519 is deterministic
+    rebuilt = statement(aid=st["aid"], aud=st["aud"], cred=st["cred"], digest=st["digest"],
+                        ts=st["ts"], exp=st["exp"], nonce=st["nonce"], method=st["method"])
+    assert rebuilt == st
+    assert canonicalize(st).decode("ascii") == v["canonical"]
+    assert signer.sign(v["canonical"].encode("ascii")) == v["sig"]  # Ed25519 is deterministic
+
     params = vectors()["digests"][0]["params"]
-    signature = {"aid": signer.aid, "ts": v["ts"], "digest": v["digest"], "sig": v["sig"]}
-    verify_request(signature, v["method"], params, v["verkey"], freshness_seconds=10**9)
+    assert digest_params(params) == st["digest"]
+    signature = {"v": st["v"], "aid": st["aid"], "aud": st["aud"], "ts": st["ts"],
+                 "exp": st["exp"], "nonce": st["nonce"], "digest": st["digest"], "sig": v["sig"]}
+    verify_request(signature, st["method"], params, v["verkey"],
+                   recipient=Recipient(st["aud"]["aid"], (st["aud"]["url"],)),
+                   credential_said=st["cred"], now=_at(st["ts"]))
 
 
 def example(name: str) -> dict:
@@ -60,9 +74,9 @@ def example(name: str) -> dict:
 
 def test_the_tools_call_example_is_a_labour_insurance_enrolment_that_verifies():
     """`tools-call-request.json` calls the tool `tool-with-requirement.json` defines, with arguments
-    that tool accepts, a digest this package computes, and a signature that verifies against the
-    published test key above — so anyone can check it. The credential, its SAID and the delegated
-    AID are illustrative: no key event log stands behind them, and the example does not claim one.
+    that tool accepts, a digest this package computes, and a v0.3 signature that verifies against
+    the published test key above — so anyone can check it. The credential, its SAID, the delegated
+    AID and the recipient AID are illustrative: no key event log stands behind them.
     """
     call = example("tools-call-request.json")
     tools = {t["name"]: t for t in example("tool-with-requirement.json")["result"]["tools"]}
@@ -79,19 +93,55 @@ def test_the_tools_call_example_is_a_labour_insurance_enrolment_that_verifies():
 
     meta = params["_meta"]
     signature = meta[k.signature]
+    assert signature["v"] == "vlei-sig/0.3"
     assert signature["aid"] == meta[k.delegated_aid]
     assert signature["digest"] == digest_params(params)
+    recipient = Recipient(signature["aud"]["aid"], (signature["aud"]["url"],))
     verify_request(signature, call["method"], params, vectors()["signature"]["verkey"],
-                   freshness_seconds=10**9)
+                   recipient=recipient, credential_said=meta[k.credential_said],
+                   now=_at(signature["ts"]))
     # ...and only against that key: it is the published test key, not a key of the illustrative AID.
     other = Signer.from_seed(signature["aid"], bytes(range(1, 33))).verkey
     with pytest.raises(InvalidSignature):
-        verify_request(signature, call["method"], params, other, freshness_seconds=10**9)
+        verify_request(signature, call["method"], params, other, recipient=recipient,
+                       credential_said=meta[k.credential_said], now=_at(signature["ts"]))
 
     # The tool's argument rule holds on the day the call was signed, counted as the
     # demonstration's gateway counts days (+08:00).
     rules = tools["enroll_employee"]["_meta"][k.requires]["arguments"]
-    signed = datetime.fromisoformat(signature["ts"].replace("Z", "+00:00"))
+    signed = _at(signature["ts"])
     ok, reason = arguments_satisfied(
         rules, arguments, today=signed.astimezone(timezone(timedelta(hours=8))).date())
     assert ok, reason
+
+
+def test_the_pop_example_verifies_under_the_published_test_key():
+    """`pop-exchange.json`: the answer is signed over the JCS statement, under the test key."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+    from mcp_vlei.pop import pop_statement
+    from mcp_vlei.signing import cesr_decode_signature, cesr_decode_verkey
+
+    exchange = example("pop-exchange.json")
+    sent, answer = exchange["request"]["body"], exchange["response"]["body"]
+    assert (answer["nonce"], answer["url"], answer["v"]) == (sent["nonce"], sent["url"], "vlei-pop/0.3")
+    statement = pop_statement(aid=answer["aid"], nonce=answer["nonce"], url=answer["url"],
+                              ts=answer["ts"], exp=answer["exp"])
+    key = Ed25519PublicKey.from_public_bytes(cesr_decode_verkey(vectors()["signature"]["verkey"]))
+    key.verify(cesr_decode_signature(answer["sig"]), canonicalize(statement))  # raises if not
+    assert exchange["refusedForAnotherUrl"]["body"]["layer"] == "audience_mismatch"
+
+
+def test_the_error_examples_name_every_layer_in_check_order():
+    from mcp_vlei.errors import FailureLayer
+
+    layers = [entry["layer"] for entry in example("error-responses.json")["layers"]]
+    assert sorted(layers) == sorted(layer.value for layer in FailureLayer)
+    assert layers.index("unsupported_version") < layers.index("stale_signature")         < layers.index("audience_mismatch") < layers.index("digest_mismatch")
+
+
+def test_the_discover_example_declares_the_format_and_the_proof():
+    capability = example("discover-response.json")["result"]["capabilities"]["extensions"][
+        "org.gleif.vlei/identity"]
+    assert capability["signatureFormats"] == ["vlei-sig/0.3"]
+    assert capability["pop"] == "/.well-known/vlei/pop"

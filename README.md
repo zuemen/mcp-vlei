@@ -2,11 +2,11 @@
 
 [![tests](https://github.com/zuemen/mcp-vlei/actions/workflows/test.yml/badge.svg)](https://github.com/zuemen/mcp-vlei/actions/workflows/test.yml)
 
-**Reference design · v0.2 · root of trust self-configured**
+**Reference design · v0.3 · root of trust self-configured**
 
 > **All identities are fictional. The root of trust is self-hosted for demonstration.** The legal entity (Demo Staffing Co., Ltd.), its LEI
 > (`984500DEMOSTAFF00178`, a test value), its 統一編號 (`00000000`) and the handler
-> (Wang Xiao-Ming) are all invented; none is a real company or person.
+> (Bob) are all invented; none is a real company or person.
 
 > **Namespace.** This draft uses `org.gleif.vlei/identity` as a provisional, demonstration
 > namespace. It has not been reviewed or endorsed by GLEIF. Reverse-domain prefixes conventionally
@@ -49,7 +49,9 @@ extension mechanism. The MCP core schema is not modified.
 
 - A server presents a **Legal Entity (LE)** credential; a client verifies it before calling anything.
 - An agent presents an **Engagement Context Role (ECR)** credential plus a delegated AID and a
-  single-pass signature over the request.
+  single-pass signature over the request — bound to its recipient, its credential, a 30-second
+  expiry and a one-time nonce (`vlei-sig/0.3`).
+- The client has the server prove it holds its legal entity's key before presenting anything.
 - A tool declares its permission requirement in `Tool._meta` (`org.gleif.vlei/requires`), so an agent
   can determine **before calling** whether it is entitled to call.
 - Two verification modes: passive verification from a public location, and signed attestation between
@@ -65,7 +67,7 @@ extension mechanism. The MCP core schema is not modified.
 | 1 — Schema extension | `spec/` |
 | 2 — Skills and workflow | `skills/implementing-vlei/` (development) · `skills/vlei-identity/` (execution) |
 | 3 — Credential environment | `scripts/` — **all six acceptance checks pass** |
-| 4 — Python package | `packages/mcp-vlei/` — 310 tests, against the real SDK types and real KERI event logs |
+| 4 — Python package | `packages/mcp-vlei/` — 572 tests, against the real SDK types and real KERI event logs |
 | 5 — Reference implementation | runs on SDK 2.2.0 at protocol 2026-07-28; acceptance tests green — see `examples/README.md` |
 | 6A — Government adoption path | `docs/GOVERNMENT.md` |
 | 6B — Government gateway | `examples/regulator/`, `deploy/agentgateway/` |

@@ -12,33 +12,37 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-from conftest import ARGS, authz_app, labor, serve, signed_meta, stand_in_gateway
+from conftest import ARGS, answer_at, authz_app, labor, serve, signed_meta, stand_in_gateway
 
 import gateway_client
 from mcp_vlei import Signer
+from mcp_vlei.audience import Audience
 from mcp_vlei.testing import LEI
 
 @asynccontextmanager
 async def gateway(world, tmp_path) -> AsyncIterator[str]:
     labor.INSURED.clear()
+    authz = authz_app(world, tmp_path)
     async with serve(labor.create_app()) as upstream:
-        async with serve(stand_in_gateway(authz_app(world, tmp_path), upstream)) as base:
+        async with serve(stand_in_gateway(authz, upstream)) as base:
+            answer_at(authz, f"{base}/mcp")
             yield f"{base}/mcp"
 
 
-def agent_meta(world, tool="enroll_employee", arguments=ARGS):
+def agent_meta(world, url, tool="enroll_employee", arguments=ARGS):
     """Built with the helper the console will use, not the test harness's own."""
     return gateway_client.signed_meta(
         credential=world.ecr_stream,
         signer=Signer.from_seed(world.agent.pre, world.agent.seed),
-        tool=tool, arguments=arguments,
+        tool=tool, arguments=arguments, audience=Audience(world.le.pre, url),
         delegated_aid=world.agent.pre, credential_said=world.ecr_credential.said,
     )
 
 
 async def test_an_allowed_call_reaches_the_server_and_brings_back_the_report(world, tmp_path):
     async with gateway(world, tmp_path) as url:
-        out = await gateway_client.call_through_gateway(url, "enroll_employee", ARGS, agent_meta(world))
+        out = await gateway_client.call_through_gateway(url, "enroll_employee", ARGS,
+                                                        agent_meta(world, url))
 
     assert set(out) == {"allowed", "layer", "text", "report", "identity"}
     assert out["allowed"] is True and out["layer"] is None, out["text"]
@@ -64,9 +68,9 @@ async def test_an_allowed_call_reaches_the_server_and_brings_back_the_report(wor
 
 
 async def test_a_refusal_names_its_layer_and_carries_the_report(world, tmp_path):
-    meta = agent_meta(world)
     tampered = {**ARGS, "payload": {"totalAssets": 1}}
     async with gateway(world, tmp_path) as url:
+        meta = agent_meta(world, url)
         out = await gateway_client.call_through_gateway(url, "enroll_employee", tampered, meta)
 
     assert out["allowed"] is False
@@ -81,7 +85,8 @@ async def test_a_refusal_names_its_layer_and_carries_the_report(world, tmp_path)
 async def test_a_revoked_credential_is_refused_through_the_gateway(world, tmp_path):
     world.le_registry.revoke(world.ecr_credential.said)
     async with gateway(world, tmp_path) as url:
-        out = await gateway_client.call_through_gateway(url, "enroll_employee", ARGS, agent_meta(world))
+        out = await gateway_client.call_through_gateway(url, "enroll_employee", ARGS,
+                                                        agent_meta(world, url))
 
     assert out["allowed"] is False and out["layer"] == "revoked"
 
@@ -92,8 +97,8 @@ async def test_someone_elses_credential_is_refused_through_the_gateway(world, tm
     from mcp_vlei.testing import Controller
 
     mallory = world.enrol(Controller("mallory", witnesses=world.witnesses, toad=2))
-    meta = signed_meta(world, signer=signer_for(mallory), delegated=None)
     async with gateway(world, tmp_path) as url:
+        meta = signed_meta(world, signer=signer_for(mallory), delegated=None, url=url)
         out = await gateway_client.call_through_gateway(url, "enroll_employee", ARGS, meta)
 
     assert out["allowed"] is False and out["layer"] == "invalid_signature"
@@ -111,8 +116,10 @@ async def test_a_chain_from_a_root_nobody_accepted_is_unknown_root(world, tmp_pa
     for registry in forged.registries:
         world.enrol_registry(registry)
     async with gateway(world, tmp_path) as url:
+        # The forger signs for the gateway it attacks: the operator's LE, at its URL.
         out = await gateway_client.call_through_gateway(
-            url, "enroll_employee", ARGS, signed_meta(forged)
+            url, "enroll_employee", ARGS,
+            signed_meta(forged, audience=Audience(world.le.pre, url)),
         )
 
     assert out["allowed"] is False and out["layer"] == "unknown_root", out["text"]

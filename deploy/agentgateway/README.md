@@ -10,7 +10,8 @@ test unified business number, and knows people only by fictitious references (`E
 ```
 agent ──▶ agentgateway :3000 ──▶ labor-insurance-sim :8081
                │
-               └── extAuthz ──▶ vlei-authz :9000 ──▶ vlei-verifier :7676
+               ├── extAuthz ──▶ vlei-authz :9001 ──▶ witnesses (key states, revocation)
+               └── /.well-known/vlei, /.well-known/vlei/pop ──▶ vlei-pop :9100 (kli sign, own keystore)
 ```
 
 | Component | vLEI code it contains |
@@ -130,13 +131,17 @@ grpcio-tools 1.73.1.
 
 ## Rate limits, for when the gateway is public
 
-Both routes carry the same conditional `localRateLimit`:
+The `/.well-known/vlei` and labor-insurance routes carry the same conditional `localRateLimit`:
 
 - **Public callers.** Requests with `cf-connecting-ip` share one bucket of 60 per minute. Cloudflare
   sets that header on everything through the tunnel, and a caller cannot remove it.
 - **Everything else.** The console, the credential proxy and the tests share another bucket, of 600
   per minute.
 - **Over the limit.** A request over the limit is answered with 429.
+- **The proof of possession** (`/.well-known/vlei/pop`) has its own public bucket of 5 per minute
+  (local callers keep 600). vlei-pop signs one challenge at a time, 2–3 s each, with four waiting;
+  at 60 a minute one public caller at one request a second keeps that queue full, and the
+  credential proxy's connect and re-check get 503.
 
 This matters because in v1.5.0 a local limit is one token bucket per entry, not one per client. A
 single bucket would let a flood from outside stall the local demonstration; two buckets keep it
@@ -150,8 +155,20 @@ header gave 60 × 200 then 10 × 429, and 70 without it gave 70 × 200.
 A caller can establish both before presenting anything, with no authorization involved.
 
 **The operator's LE at `/.well-known/vlei`.** The `well-known` route in `config.yaml` sends that
-one path to the simulator, outside the `extAuthz` route. The simulator publishes the file it is
-given (`VLEI_LE_CREDENTIAL_FILE`) and does not parse it.
+one path to `vlei-pop`, outside the `extAuthz` route. It publishes the file it is given
+(`VLEI_LE_CREDENTIAL_FILE`), the signature format the gateway verifies (`vlei-sig/0.3`), where to
+challenge it, and `ttlMs`.
+
+**The proof that the operator holds its key, at `/.well-known/vlei/pop` (v0.3).** A client's
+challenge is answered by `vlei-pop` with a statement signed by the `gateway` AID — delegated by the
+operator's LE (`scripts/bootstrap-gateway-signer.sh`), its key only in `vlei-pop`'s own keystore
+volume, signing with `kli sign`. It signs only for the URLs in `VLEI_AUDIENCE_URLS`. The credential
+proxy presents nothing until this proof verifies.
+
+**The recipient and the replay store (v0.3).** `vlei-authz` refuses a call signed for another LE or
+another URL than those in `VLEI_AUDIENCE_URLS` (`audience_mismatch`), and claims each signature's
+nonce once in `VLEI_REPLAY_DB`, a SQLite file on the `vlei-authz-state` volume, so a restart forgets
+nothing. With a fresh volume, calls are refused for its first minute.
 
 That LE belongs to the operator: *Simulated Labour Insurance Office (fictional)*, LEI
 `984500LABORSIM000054`. `scripts/bootstrap-regulator.sh` issues it from the same QVI, and

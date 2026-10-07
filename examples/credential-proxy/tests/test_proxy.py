@@ -209,7 +209,8 @@ async def test_every_call_carries_the_four_keys_signed_by_the_delegated_agent(tm
     assert not result.is_error, first_line(result)
     (_, _, meta), = gateway.sent
     assert set(meta) == {K.credential, K.credential_said, K.delegated_aid, K.signature}
-    assert meta[K.credential] == world.ecr_stream
+    # As the profile holds it: the stand-in's gateway AID was delegated after it was written.
+    assert meta[K.credential] == profile.credential.read_text(encoding="utf-8").strip()
     assert meta[K.credential_said] == world.ecr_credential.said
     assert meta[K.delegated_aid] == world.agent.pre and meta[K.signature]["aid"] == world.agent.pre
 
@@ -324,7 +325,78 @@ def test_docker_can_find_its_compose_plugin_under_a_small_environment(monkeypatc
     monkeypatch.setattr(proxy.os, "name", "nt")
     env = {"SYSTEMDRIVE": "D:"}
     proxy.docker_can_find_compose(env)
-    assert env["ProgramFiles"] == "D:\Program Files"
-    kept = {"ProgramFiles": "E:\Apps"}
+    assert env["ProgramFiles"] == r"D:\Program Files"
+    kept = {"ProgramFiles": r"E:\Apps"}
     proxy.docker_can_find_compose(kept)
-    assert kept["ProgramFiles"] == "E:\Apps"
+    assert kept["ProgramFiles"] == r"E:\Apps"
+
+
+def test_kli_never_reads_the_stdin_the_mcp_client_writes_to(monkeypatch):
+    # The proxy's stdin is the MCP channel. `docker compose exec` forwards stdin into the
+    # container by default, so a kli started with the inherited stdin swallows whatever the client
+    # sent meanwhile — Claude Desktop's initialize, and it times out waiting for the answer.
+    import subprocess
+
+    import kli_signer
+
+    seen: list[dict] = []
+
+    def fake_run(args, **kwargs):
+        seen.append(kwargs)
+        return subprocess.CompletedProcess(args, 0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr(kli_signer.subprocess, "run", fake_run)
+    kli_signer._run(["kli", "aid", "--name", "x", "--alias", "x"])
+    assert seen and seen[0].get("stdin") is subprocess.DEVNULL
+
+
+def test_the_keystore_is_read_when_something_is_signed_not_at_startup():
+    # Each kli run goes through Docker: seconds on a busy machine. Read at startup, they kept the
+    # proxy from answering initialize in time, and Claude gave up on it ("Request timed out").
+    from types import SimpleNamespace
+
+    import kli_signer
+
+    made: list[tuple[str, str]] = []
+
+    def make(keystore: str, alias: str) -> SimpleNamespace:
+        made.append((keystore, alias))
+        return SimpleNamespace(aid="EAID", verkey="DKEY", sign=lambda payload: "SIG")
+
+    signer = kli_signer.LazyKeystoreSigner("agent", "agent", make=make)
+    assert made == []
+    assert signer.sign(b"x") == "SIG" and signer.aid == "EAID" and signer.verkey == "DKEY"
+    assert made == [("agent", "agent")]
+
+
+# ------------------------------------------------------------------------------------------- #
+# VLEI_PROFILE=plain: MCP as it is today, for the before half of the comparison
+# ------------------------------------------------------------------------------------------- #
+
+async def test_plain_relays_with_nothing_attached_and_the_server_learns_only_a_name(tmp_path, monkeypatch):
+    """Claude Desktop through the plain profile: the call reaches a before-mode server carrying no
+    credential and no signature, and the only thing the server records is the name Claude gave."""
+    import httpx2
+    from mcp.types import Implementation
+
+    from conftest import ROOT as _root  # noqa: F401  (the harness is already loaded)
+
+    monkeypatch.setenv("LABOR_SIM_MODE", "before")
+    sim = harness.load("proxy_before_sim", ROOT / "examples/regulator/labor-insurance-sim/server.py")
+    sim.FILINGS.clear()
+    async with harness.serve(sim.create_app()) as base:
+        relay = proxy.PlainRelay(proxy.Gateway(f"{base}/mcp"),
+                                 log=proxy.RelayLog(tmp_path / "relay.log", stream=io.StringIO()))
+        assert await relay.connect()
+        async with Client(proxy.build_server(relay),
+                          client_info=Implementation(name="Claude Desktop", version="0.9")) as claude:
+            names = {t.name for t in (await claude.list_tools()).tools}
+            result = await claude.call_tool("enroll_employee", enrol())
+            assert "verified" not in (claude.instructions or "").lower() or "nothing is verified" in (claude.instructions or "")
+        async with httpx2.AsyncClient() as http:
+            ledger = (await http.get(f"{base}/ledger")).json()
+
+    assert names == set(POLICY) and not result.is_error
+    assert ledger["filings"][-1]["filedBy"] == {"declaredClient": "Claude Desktop 0.9", "verified": False}
+    line = (tmp_path / "relay.log").read_text(encoding="utf-8").splitlines()[-1]
+    assert line.endswith("profile=plain tool=enroll_employee result=allowed reason=-")

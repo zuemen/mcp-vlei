@@ -1,0 +1,35 @@
+# Applies to Dockerfile.pop, whose build context is the repository root (see Dockerfile.python.dockerignore
+# for why BuildKit reads this file). Only the two keri-config files the image bakes in are let through
+# from scripts/.
+
+# Secrets: issued credentials, key stores, local environment files.
+credentials/
+**/credentials/
+**/keys/
+**/*.key
+**/*.pem
+**/.env
+**/.env.*
+
+# Local state that has no business in an image.
+.git/
+**/.venv/
+**/venv/
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/node_modules/
+*.log
+**/audit/
+
+# Not used by the services this image runs.
+docs/
+skills/
+spec/
+scripts/
+!scripts/keri-config/incept-witnesses.json
+!scripts/keri-config/keri/
+examples/console/
+examples/my-agent/
+examples/association-server/
+examples/impersonation/

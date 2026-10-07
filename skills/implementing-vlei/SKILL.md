@@ -81,7 +81,7 @@ Three things to know about that surface, because each costs an afternoon to disc
   `CallToolRequestParams`, so `params.meta` is the request `_meta` as a plain dict.
 - Results use pydantic field names: `CallToolResult(is_error=True, meta={...})`, not `isError`.
 
-Five things, in this order.
+Six things, in this order.
 
 ### 1. Declare the capability
 
@@ -93,7 +93,9 @@ Five things, in this order.
       "requires": "ECR",
       "acceptedRoots": ["E..."],
       "signatureAlgs": ["Ed25519"],
-      "ttlMs": 3600000,
+      "signatureFormats": ["vlei-sig/0.3"],
+      "pop": "/.well-known/vlei/pop",
+      "ttlMs": 300000,
       "discovery": { "wellKnown": "https://host/.well-known/vlei" }
     }
   }
@@ -104,9 +106,17 @@ Five things, in this order.
 set as "accept any root" — raise at construction instead. It is the entire trust decision, and an
 empty list read as "anything" would accept every forged chain while passing every other check.
 
-Field shapes, since the asymmetry is real and not a typo: `presents` and `signatureAlgs` are
-**lists**, `requires` is a **single string** — a party requires one credential type, and may be
-able to present several. `discovery` currently carries only `wellKnown`.
+Field shapes, since the asymmetry is real and not a typo: `presents`, `signatureAlgs` and
+`signatureFormats` are **lists**, `requires` is a **single string** — a party requires one
+credential type, and may be able to present several. `discovery` currently carries only
+`wellKnown`.
+
+`signatureFormats` names the request-signature format you verify, `["vlei-sig/0.3"]`; `pop` is where
+you answer a proof-of-possession challenge (step 3) — a path resolved against the origin of your MCP
+endpoint, or an absolute URL. A v0.3 client refuses a server that declares no `vlei-sig/0.3` or no
+`pop` as `unsupported_version`, before presenting anything. `ttlMs` is how long a client may rely on
+its verification of you before it verifies you again — chain, revocation, proof; the reference
+client re-checks after 300 s at most.
 
 ### 2. Present your own credential
 
@@ -118,7 +128,10 @@ Publish the LE credential at `discovery.wellKnown` — a plain `GET /.well-known
   "extension":     "org.gleif.vlei/identity",
   "credential":    "<CESR stream: the LE credential and its chain>",
   "acceptedRoots": ["EM-uSa3-ZH6ynbMtqUE0aOce0memXiuXHDOVNQia8x6n"],
-  "signatureAlgs": ["Ed25519"]
+  "signatureAlgs": ["Ed25519"],
+  "signatureFormats": ["vlei-sig/0.3"],
+  "pop": "/.well-known/vlei/pop",
+  "ttlMs": 300000
 }
 ```
 
@@ -134,7 +147,35 @@ falls back to it when the discover result carries no credential.
 There is no third option. `Implementation` — the type of `serverInfo` — has no `_meta`, which is
 the structural gap this extension exists to work around.
 
-### 3. Declare requirements per tool
+### 3. Answer proof-of-possession challenges
+
+Your LE credential is public; anyone can publish a copy of it. So before presenting anything, a
+v0.3 client challenges you to prove you hold its key (`spec/SPEC.md`, *Proof of possession*).
+Answer at the `pop` you declared — conventionally `/.well-known/vlei/pop`, reachable without a
+session, like the well-known document:
+
+```
+POST /.well-known/vlei/pop   {"v": "vlei-pop/0.3", "nonce": "<22-64 chars of base64url>", "url": "<endpoint URL>"}
+200   {"v": "vlei-pop/0.3", "aid", "nonce", "url", "ts", "exp", "sig"}
+      sig over UTF-8(JCS({"aid", "exp", "nonce", "ts", "url", "v"}))
+```
+
+- **Sign with the LE's issuee, or with an AID it delegated to** — one whose `dip` names the LE's
+  issuee in `di` and is anchored in the LE's key event log. A delegate lets the LE's own key stay
+  offline; the client reads the signer's key state from witnesses and checks both.
+- **Echo the challenge's nonce and URL, and sign only for URLs you are reached at.** Any other URL
+  is `403` naming `audience_mismatch`, without listing your URLs, so a relay at another address
+  cannot obtain a proof for the URL its victim dialled.
+- `ts` now, `exp` shortly after: 60 s in the reference; a client refuses more than 120 s.
+- A malformed challenge is `400`; a keystore that cannot sign is `503`. The client then reports the
+  proof as not established and presents nothing.
+
+`spec/examples/pop-exchange.json` has a real exchange. In Python, `mcp_vlei.pop.PopResponder(signer,
+recipient).respond(body)` returns `(status, JSON body)` — `signer` is anything with `.aid` and
+`.sign(bytes)`, such as a `CommandSigner` over `kli sign` — and `VleiIdentity(pop_signer=…)`
+declares `pop` and answers through `pop_response(body)`; route the `POST` to it.
+
+### 4. Declare requirements per tool
 
 ```jsonc
 {
@@ -171,17 +212,17 @@ security decision and it belongs in the specification rather than in each implem
 The specification fixes *where* scope lives and *that* it is checked. It does not impose a universal
 algebra, so a deployment with different semantics replaces the comparison — but not this default.
 
-### 4. Verify, in this order
+### 5. Verify, in this order
 
 Stop at the first failure and report its layer.
 
 | # | Check | Failure layer |
 |---|---|---|
-| 0 | A credential and a signature were presented at all | `missing_credential` |
-| 1 | `ts` within the freshness window | `stale_signature` |
-| 2 | `digest` matches the received parameters | `digest_mismatch` |
-| 3 | Signature verifies under the **signing AID's current key state, read from its key event log at a witness** — never under a key the request carries | `invalid_signature` |
-| 4 | Signature not seen before — recorded **only after** check 3 passed | `stale_signature` |
+| 0 | A credential, a signature and a `credentialSaid` were presented at all; the signature is `vlei-sig/0.3` | `missing_credential`; `unsupported_version` |
+| 1 | `ts`/`exp` inside the window (`exp > ts`, `exp − ts` ≤ 60 s, `ts ≤ now + skew`, `now ≤ exp + skew`), and `ts ≥ memory_since + skew` | `stale_signature` |
+| 2 | `aud.aid` is your own LE's issuee and `aud.url` one of your endpoint URLs; `digest` matches the received parameters | `audience_mismatch`; `digest_mismatch` |
+| 3 | The rebuilt statement verifies under the **signing AID's current key state, read from its key event log at a quorum of witnesses** — never under a key the request carries | `invalid_signature` |
+| 4 | `(aid, nonce)` claimed atomically — **only after** check 3 passed | `stale_signature` |
 | 5 | The signing AID **is** the credential's issuee, or is **delegated by** the issuee in the issuee's own key event log | `invalid_signature` |
 | 6 | Every credential hashes to its own SAID, and each link's issuer is the previous link's issuee | `chain_invalid` |
 | 7 | The chain terminates at a root you accept | `unknown_root` |
@@ -191,8 +232,8 @@ Stop at the first failure and report its layer.
 | 11 | For **every** credential in the chain, the issuer's live transaction event log records its issuance and no revocation | `revoked` (`chain_invalid` if the log has no issuance) |
 | 12 | The credential's role is the tool's `role`; the credential's `scope` covers the tool's declared `scope` | `role_mismatch` / `scope_exceeded` |
 
-**Decide from the request first, then ask.** Checks 1 and 2 need nothing but the request, so a
-stale or altered call is refused without a round trip; check 3 onwards needs the signer's key
+**Decide from the request first, then ask.** Checks 1 and 2 need nothing but the request and
+your own configuration, so a stale, misdirected or altered call is refused without a round trip; check 3 onwards needs the signer's key
 event log. Ordering matters for the report as much as for cost: a tampered-arguments test must
 report `digest_mismatch`, not a connection error to a witness.
 
@@ -265,7 +306,7 @@ Note what check 6 buys you without any key at all. The SAID is a digest over the
 content, so altering any field breaks it. A relying party can detect tampering before it has
 established anything about who issued what.
 
-### 5. Report failures by layer
+### 6. Report failures by layer
 
 - Client never declared the extension, but the tool requires it →
   JSON-RPC error **`-32021`**. `data.requiredCapabilities` is a **`ClientCapabilities` object**,
@@ -293,11 +334,12 @@ established anything about who issued what.
   parse JSON. Do **not** reuse `org.gleif.vlei/attestation` for this — that key carries a third
   party's signed verification of someone else, which is a different statement entirely.
 
-There are **nine** layers. Eight are verification failures — `invalid_signature`,
-`stale_signature`, `digest_mismatch`, `chain_invalid`, `revoked`, `role_mismatch`,
-`scope_exceeded`, `unknown_root` — and the ninth, `missing_credential`, is not a failure to verify
-but a failure to present. Keeping it separate matters: the caller's next step is to attach a
-credential, not to fix one.
+There are **eleven** layers. Nine are verification failures — `invalid_signature`,
+`stale_signature`, `audience_mismatch`, `digest_mismatch`, `chain_invalid`, `revoked`,
+`role_mismatch`, `scope_exceeded`, `unknown_root`. `missing_credential` is not a failure to verify
+but a failure to present, and `unsupported_version` says one side does not speak vlei-sig/0.3.
+Keeping them separate matters: the caller's next step is to attach a credential, or upgrade, not to
+fix one.
 
 Only `stale_signature` is worth retrying, and only once. Every other layer is a state of the world
 that a retry cannot change.
@@ -315,6 +357,13 @@ endpoint (see *Common mistakes*), so there is no service to hand a counterparty'
 Recompute each SAID, follow the `e` edges, require that each link's issuer is the previous link's
 issuee, and confirm the chain terminates in your `acceptedRoots`. If it fails, **do not proceed**.
 
+Then **challenge it** (`spec/SPEC.md`, *Proof of possession*): `POST` `{"v": "vlei-pop/0.3",
+"nonce", "url"}` to the `pop` it declares, and accept the answer only if it echoes your nonce and
+URL, is fresh, and verifies under the key state — from a majority of your witnesses — of the LE's
+issuee or of an AID whose `dip` the LE's key event log anchors. A server that declares no
+`vlei-sig/0.3`, or no `pop`, is `unsupported_version`: present nothing. Verify all of it again
+before presenting once the server's `ttlMs` (or your own limit) has passed.
+
 Be honest about what you did not establish. Issuer signatures need each issuer's key event log;
 revocation needs each issuer's transaction event log. If you reached neither, say so in the result
 rather than letting a caller read "verified" — the reference implementation carries
@@ -330,17 +379,23 @@ control — the server decides.
 ### 3. Sign the request
 
 ```
-signature over:  method + "\n" + ts + "\n" + digest
+signature over:  JCS({"aid", "aud": {"aid", "url"}, "cred", "digest", "exp",
+                      "method", "nonce", "ts", "v": "vlei-sig/0.3"})
 digest        =  base64url(sha256(JCS(params without _meta)))    unpadded
 ```
 
 Exactly, because every one of these breaks interop if guessed:
 
 - `method` is the **JSON-RPC method** — the literal string `"tools/call"` — not the tool's name.
-- `ts` is **RFC 3339 UTC**, e.g. `2026-09-23T04:12:47Z`. Not epoch seconds, not milliseconds.
+- `aud.aid` is the issuee of the LE you verified for the server; `aud.url` the endpoint URL you send
+  to, normalised (lower-case scheme and host, no default port, no query).
+- `cred` is the `credentialSaid` you send beside the signature — required.
+- `ts` and `exp` are **RFC 3339 UTC**, e.g. `2026-09-23T04:12:47.000Z`, `exp` 30 s later. `nonce`
+  is 16 random bytes, base64url, unpadded.
 - `digest` is unpadded base64url of the SHA-256 over the **RFC 8785 (JCS)** canonicalization of
-  `params`, with the whole `_meta` member removed — not just the signature key, so the rule stays
-  auditable by eye. `params` of `None` and `{}` must produce the same digest.
+  `params`, with the whole `_meta` member removed. Numbers as ECMAScript writes them (`1e+21`),
+  integers within ±(2⁵³−1). `params` of `None` and `{}` must produce the same digest.
+  `spec/examples/digest-vectors.json` and `jcs-number-vectors.json` settle the bytes.
 - The signature is CESR: `0B` + 86 characters for a non-indexed Ed25519 signature. Accept indexed
   forms too (`A…`, 88 characters) — a keystore-backed signer emits those, and they carry the same
   64 raw bytes.
@@ -352,8 +407,11 @@ The four request `_meta` keys, in full, so there is nothing to invent:
   "org.gleif.vlei/credential":     "<CESR stream: the ACDC and its chain>",
   "org.gleif.vlei/credentialSaid": "EM3weUSh…",
   "org.gleif.vlei/delegatedAid":   "EPP835Iz…",
-  "org.gleif.vlei/signature":      {"aid": "EPP835Iz…", "ts": "2026-09-23T04:12:47Z",
-                                    "digest": "9pQzR4mK…", "sig": "0BDwS8nU…", "alg": "Ed25519"}
+  "org.gleif.vlei/signature":      {"v": "vlei-sig/0.3", "aid": "EPP835Iz…",
+                                    "aud": {"aid": "EReg…", "url": "http://localhost:3000/mcp"},
+                                    "ts": "2026-09-23T04:12:47.000Z", "exp": "2026-09-23T04:13:17.000Z",
+                                    "nonce": "q3V0b2tlbi1ub25jZS0x", "digest": "9pQzR4mK…",
+                                    "sig": "0BDwS8nU…", "alg": "Ed25519"}
 }
 ```
 
@@ -441,12 +499,18 @@ They are different numbers doing different jobs, and reusing one for the other i
 
 | | What it bounds | Sensible default |
 |---|---|---|
-| freshness window | How old a request signature may be | **60 seconds** |
-| replay-cache retention | How long `(aid, digest, ts)` is remembered | **at least** the freshness window |
-| `ttlMs` | How long a *verification result* may be cached | 30s, and **0** for high-value tools |
+| clock tolerance (`skew`) | How far `ts` may be ahead of your clock, and how long after `exp` a signature is still accepted | **60 seconds** |
+| longest lifetime | How long a signature may ask to live, `exp − ts` (the reference client asks for 30 s) | **60 seconds** |
+| nonce claims | How long a claimed `(aid, nonce)` is remembered | **at least `exp + 2 × skew`** |
+| `ttlMs` | How long a counterparty may rely on its *verification of you* | 30 s, and **0** for high-value tools |
 
-An hour-long `ttlMs` used as a replay window would accept an hour-old signature. The replay cache
-must outlive the freshness window, or a signature can be replayed the moment it is forgotten.
+An hour-long `ttlMs` used as a replay window would accept an hour-old signature. A nonce claim must
+outlive the last instant the time check accepts, `exp + skew`, by one more skew: the claim is made a
+moment after the check, and a claim that lapsed at `exp + skew` could already be gone when a copy
+checked just before that instant is claimed. Claim `(aid, nonce)` atomically and **only after the
+signature verifies** — claiming earlier lets anyone who saw a nonce burn it with a signature that
+does not verify. And know where your memory starts (`memory_since`): after a restart that lost the
+claims, refuse `ts < memory_since + skew`, the only signatures you could have accepted before.
 
 ### Do not cache revocation with the chain
 
@@ -464,8 +528,13 @@ SAID and the delegated AID. That is enough for audit and no more than necessary.
 
 A server is conformant when all of these hold:
 
-- [ ] Declares `org.gleif.vlei/identity` in `capabilities.extensions`
+- [ ] Declares `org.gleif.vlei/identity` in `capabilities.extensions`, with `signatureFormats`
+      `["vlei-sig/0.3"]` and `pop`
 - [ ] Publishes its LE credential at `discovery.wellKnown`, reachable without a session
+- [ ] Answers proof-of-possession challenges at `pop` with its LE's key or a delegate's, only for
+      the URLs it is reached at
+- [ ] Refuses a signature made for another recipient (`audience_mismatch`), and claims each
+      `(aid, nonce)` once, after the signature verifies
 - [ ] Declares `org.gleif.vlei/requires` on every protected tool
 - [ ] Runs checks 0–12 in order, stopping at the first failure
 - [ ] Verifies request signatures under the signer's key state **from its key event log**, never
@@ -484,6 +553,8 @@ The last two are the ones reviewers should check first: the additive property is
 what makes the extension adoptable, and an empty root set silently accepts
 anything.
 
-A client is conformant when it verifies the server before its first call, signs
-every protected call over method, timestamp and parameter digest, and surfaces
-the failing layer rather than a generic error.
+A client is conformant when it verifies the server — chain, revocation and proof of possession —
+before presenting anything, and again once the server's `ttlMs` (or its own limit) has passed; signs
+every protected call as `vlei-sig/0.3`, over the recipient (`aud`: the server's LE AID and the
+endpoint URL), the `credentialSaid`, the parameter digest, `ts` and `exp`, a fresh nonce and the
+method; and surfaces the failing layer rather than a generic error.

@@ -26,7 +26,7 @@ import binascii
 import json
 import os
 import re
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -72,6 +72,15 @@ if NAMESPACE and not _NAMESPACE_SHAPE.fullmatch(NAMESPACE):
 #: reached. One file, so what is published and what is enforced cannot drift apart.
 POLICY = Path(os.environ.get("VLEI_AUTHZ_POLICY", HERE.parent / "vlei-authz" / "policy.json"))
 
+#: LABOR_SIM_MODE=before: the same tools as an ordinary MCP server runs them today, for the
+#: before-and-after demonstration. No gateway, no identity: the server files for its one employer
+#: whoever connects, and the only thing it records about the caller is the name the client gave
+#: itself — which any program can give. Bound to 127.0.0.1 in deploy/agentgateway; never public.
+BEFORE = os.environ.get("LABOR_SIM_MODE", "").strip().lower() == "before"
+BEFORE_EMPLOYER = "00000000"
+#: Every filing in order, before mode only: two filings under the same name sit side by side.
+FILINGS: list[dict[str, Any]] = []
+
 
 def _published(tool: str) -> dict[str, Any] | None:
     """``{"<namespace>/requires": requirement}`` for a tool's ``_meta``, or nothing.
@@ -79,8 +88,8 @@ def _published(tool: str) -> dict[str, Any] | None:
     Nothing without a namespace: a requirement under a name no caller reads would make the tool look
     public, which is worse than saying nothing.
     """
-    if not NAMESPACE or not POLICY.is_file():
-        return None
+    if BEFORE or not NAMESPACE or not POLICY.is_file():
+        return None   # a server today declares no requirement: there is nothing it could check
     requirement = json.loads(POLICY.read_text(encoding="utf-8")).get("tools", {}).get(tool)
     return {f"{NAMESPACE}/requires": requirement} if requirement else None
 
@@ -113,12 +122,34 @@ def _header(headers: Any, name: str) -> str:
     return values[0] if values else ""
 
 
+def _declared_client(ctx: Context) -> str:
+    """The name the client gave itself — all an MCP server knows about its caller today."""
+    try:
+        params = ctx.session.client_params
+        info = getattr(params, "client_info", None) if params is not None else None
+        if info is not None:
+            return f"{info.name} {info.version or ''}".strip()
+    except Exception:  # noqa: BLE001 - a 2026-07-28 request carries it per request instead
+        pass
+    try:
+        meta = ctx.request_context.meta
+        meta = meta.model_dump(by_alias=True) if hasattr(meta, "model_dump") else dict(meta or {})
+        raw = meta.get("io.modelcontextprotocol/clientInfo") or {}
+        return f"{raw.get('name') or 'unknown'} {raw.get('version') or ''}".strip()
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+
 def _caller(ctx: Context) -> dict[str, str]:
     """Read what the gateway established. No verification happens here — that already happened.
 
     If these headers are absent, the request did not come through the gateway. The server refuses
     rather than guessing: a deployment where it is reachable directly is a misconfiguration.
+    In before mode there is no gateway: the caller is only the name it gave itself.
     """
+    if BEFORE:
+        return {**{name: "" for name in (*IDENTITY_HEADERS, REPORT_HEADER, NAMESPACE_HEADER)},
+                "before": "1", "declared": _declared_client(ctx)}
     headers = ctx.headers or {}
     received = {name: _header(headers, name)
                 for name in (*IDENTITY_HEADERS, REPORT_HEADER, NAMESPACE_HEADER)}
@@ -131,6 +162,8 @@ def _caller(ctx: Context) -> dict[str, str]:
 
 def _employer(caller: dict[str, str]) -> str:
     """The caller's unified business number, from the LEI the gateway established."""
+    if caller.get("before"):
+        return BEFORE_EMPLOYER   # one employer, whoever connects: nothing says otherwise
     lei = caller["x-vlei-lei"]
     ubn = REGISTERED_AS.get(lei)
     if not ubn:
@@ -174,7 +207,9 @@ def _report(encoded: str) -> dict[str, Any] | None:
     return report if isinstance(report, dict) else None
 
 
-def _filed_by(caller: dict[str, str]) -> dict[str, str]:
+def _filed_by(caller: dict[str, str]) -> dict[str, Any]:
+    if caller.get("before"):
+        return {"declaredClient": caller["declared"], "verified": False}
     return {
         "lei": caller["x-vlei-lei"],
         "role": caller["x-vlei-role"],
@@ -184,6 +219,9 @@ def _filed_by(caller: dict[str, str]) -> dict[str, str]:
 
 
 def _receipt(caller: dict[str, str], body: dict[str, Any]) -> CallToolResult:
+    if caller.get("before") and isinstance(body.get("record"), dict):
+        FILINGS.append({"at": datetime.now(timezone.utc).isoformat(), "action": body.get("action"),
+                        **body["record"]})
     receipt = {
         "simulated": SIMULATED,
         **body,
@@ -214,6 +252,15 @@ def _refused(caller: dict[str, str], message: str) -> CallToolResult:
         is_error=True,
         meta={f"{namespace}/report": report} if report is not None and namespace else None,
     )
+
+
+@mcp.custom_route("/ledger", methods=["GET"])
+async def ledger(request: Request) -> JSONResponse:
+    """Before mode: every filing in order, with all the server knows of who filed it."""
+    if not BEFORE:
+        return JSONResponse({"error": "no ledger: this server is behind the gateway"}, status_code=404)
+    return JSONResponse({"mode": "before", "employer": BEFORE_EMPLOYER, "filings": FILINGS[-50:],
+                         "note": SIMULATED})
 
 
 @mcp.custom_route("/.well-known/vlei", methods=["GET"])

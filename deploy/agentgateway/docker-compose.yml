@@ -17,6 +17,11 @@
 #
 # Several witnesses: vlei-authz compares each caller's key log across all three demo witnesses and
 # refuses a fork (duplicity). They are one container here, so the check is exercised, not earned.
+#
+# v0.3: VLEI_AUDIENCE_URLS lists every URL a signing client uses for this gateway (a call signed for
+# any other is refused as audience_mismatch); vlei-pop answers /.well-known/vlei and the proof of
+# possession, signing in its own keystore as the `gateway` AID that scripts/bootstrap-gateway-signer.sh
+# delegates from the operator's LE.
 
 name: mcp-vlei-regulator
 
@@ -54,6 +59,20 @@ services:
     expose:
       - "8081"
 
+  # The before half of the demonstration: the same simulator as an ordinary MCP server runs today —
+  # no gateway, no identity, the caller known only by the name its client gives itself. Bound to
+  # 127.0.0.1 and never routed through the tunnel. Claude Desktop reaches it through the credential
+  # proxy's plain profile (examples/credential-proxy); /ledger lists what it filed, and for whom.
+  labor-insurance-before:
+    build: *python-build
+    command: python examples/regulator/labor-insurance-sim/server.py
+    environment:
+      - PORT=8081
+      - LABOR_SIM_MODE=before
+      - LABOR_SIM_ALLOWED_HOSTS=localhost:*,127.0.0.1:*
+    ports:
+      - "127.0.0.1:8090:8081"
+
   # mcp_vlei's VleiIdentity.verify_call behind HTTP — the same checks as the in-process extension.
   vlei-authz:
     build: *python-build
@@ -74,16 +93,47 @@ services:
       - VLEI_POLICY_UTC_OFFSET=${VLEI_POLICY_UTC_OFFSET:-+08:00}
       # The extension's namespace: provisional, and configuration (see spec/SPEC.md, Namespace).
       - MCP_VLEI_NAMESPACE=${MCP_VLEI_NAMESPACE:-org.gleif.vlei}
+      # v0.3: the URLs callers sign for, and where nonces are remembered across restarts. Anchored:
+      # vlei-pop proves itself for exactly these URLs, so the list is written once.
+      - &audience-urls VLEI_AUDIENCE_URLS=${VLEI_AUDIENCE_URLS:-http://localhost:3000/mcp,http://127.0.0.1:3000/mcp}
+      - VLEI_REPLAY_DB=/state/replay.sqlite3
     volumes:
       - *le-credential
       # One JSON object per decision, allowed and denied alike. Bind-mounted so the log survives
       # the container and can be read during the demo.
       - ./audit:/audit
+      # A named volume, not a bind mount: SQLite's locking is not reliable over desktop file sharing.
+      - vlei-authz-state:/state
     expose:
       - "9000"
       - "9001"
     networks:
       - default
+      - mcp-vlei_default
+
+  # Who operates this gateway (/.well-known/vlei) and the proof that it holds the key
+  # (/.well-known/vlei/pop): examples/regulator/vlei-pop. Signs with `kli sign` in its own keystore.
+  vlei-pop:
+    build:
+      context: ../..
+      dockerfile: deploy/agentgateway/Dockerfile.pop
+    environment:
+      - PORT=9100
+      - VLEI_LE_CREDENTIAL=/run/vlei/le.cesr
+      - VLEI_ACCEPTED_ROOTS=${VLEI_ACCEPTED_ROOTS:-}
+      - *audience-urls
+      - VLEI_POP_KEYSTORE=gateway
+      - VLEI_TTL_MS=${VLEI_TTL_MS:-300000}
+      - MCP_VLEI_NAMESPACE=${MCP_VLEI_NAMESPACE:-org.gleif.vlei}
+    volumes:
+      - *le-credential
+      # The `gateway` AID's KERI keystore — the only place its private key exists.
+      - vlei-pop-keystore:/usr/local/var/keri
+    expose:
+      - "9100"
+    networks:
+      - default
+      # The gateway AID's delegated inception reaches the witnesses (scripts/bootstrap-gateway-signer.sh).
       - mcp-vlei_default
 
   agentgateway:
@@ -98,8 +148,13 @@ services:
     depends_on:
       - labor-insurance-sim
       - vlei-authz
+      - vlei-pop
 
 networks:
   # Created by scripts/docker-compose.yml; the witness is reachable on it as witness-demo:5642.
   mcp-vlei_default:
     external: true
+
+volumes:
+  vlei-authz-state: {}
+  vlei-pop-keystore: {}

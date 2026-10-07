@@ -17,12 +17,19 @@
 #
 # Chain:  self-configured root  ->  QVI  ->  LE  ->  ECR  ->  delegated agent AID
 #
+# Another stack than the default (scripts/v03-stack.sh's parallel one) is chosen with
+# VLEI_BOOTSTRAP_COMPOSE (the whole `docker compose …` command), VLEI_BOOTSTRAP_CREDENTIALS (where
+# credentials are written), VLEI_BOOTSTRAP_DOTENV (the env file to read; /dev/null for none),
+# VLEI_BOOTSTRAP_VERIFIER_URL and VLEI_BOOTSTRAP_SCHEMA_URL (host addresses). Unset, every one of them
+# is what it always was.
+#
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Machine-local overrides (gitignored), e.g. witness host ports when Windows has reserved 5642-5644.
 # `docker compose` reads the same file, so the scripts and the containers agree on the ports.
-[[ -f "${HERE}/.env" ]] && { set -a; . "${HERE}/.env"; set +a; }
+DOTENV="${VLEI_BOOTSTRAP_DOTENV:-${HERE}/.env}"
+[[ -f "$DOTENV" ]] && { set -a; . "$DOTENV"; set +a; }
 WITNESS_URL="${VLEI_WITNESS_URL:-http://localhost:5642}"
 ROOT_DIR="$(cd "${HERE}/.." && pwd)"
 
@@ -33,11 +40,12 @@ case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*) NATIVE_HERE="$(cygpath -m "$HERE")" ;;
   *)                    NATIVE_HERE="$HERE" ;;
 esac
-COMPOSE="docker compose -f ${NATIVE_HERE}/docker-compose.yml"
-OUT="${ROOT_DIR}/credentials"
+COMPOSE="${VLEI_BOOTSTRAP_COMPOSE:-docker compose -f ${NATIVE_HERE}/docker-compose.yml}"
+OUT="${VLEI_BOOTSTRAP_CREDENTIALS:-${ROOT_DIR}/credentials}"
 WORK="${OUT}/_work"
 
-VERIFIER="http://localhost:7676"
+VERIFIER="${VLEI_BOOTSTRAP_VERIFIER_URL:-http://localhost:7676}"
+SCHEMA_HOST="${VLEI_BOOTSTRAP_SCHEMA_URL:-http://localhost:7723}"
 
 # Published WebOfTrust/vLEI ACDC schema SAIDs, served by the vlei-server container.
 # Override from the environment if you are pinning a different schema release.
@@ -56,7 +64,7 @@ LE_LEI="${LE_LEI:-984500DEMOSTAFF00178}"
 # The engagement context the demo files in: labour-insurance enrolment (simulated — not connected
 # to the Bureau of Labor Insurance; see examples/regulator/labor-insurance-sim).
 ECR_ROLE="${ECR_ROLE:-labor-insurance-filing}"
-ECR_PERSON="${ECR_PERSON:-Wang Xiao-Ming (fictional)}"
+ECR_PERSON="${ECR_PERSON:-Bob (fictional)}"
 
 # Keystore names. Each is an independent controller with its own keystore, as separate parties
 # would be in reality.
@@ -99,7 +107,7 @@ bring_up() {
   ok "witnesses wan/wil/wes up (${WITNESS_URL})"
 
   tries=0
-  until curl -fsS "http://localhost:7723/oobi/${SCHEMA_QVI}" >/dev/null 2>&1; do
+  until curl -fsS "${SCHEMA_HOST}/oobi/${SCHEMA_QVI}" >/dev/null 2>&1; do
     tries=$((tries+1)); [[ $tries -gt 40 ]] && fail "vLEI schema server did not come up on :7723"
     sleep 2
   done
@@ -335,7 +343,7 @@ EOF
 # Emit the rules block a schema demands, with every disclaimer's exact const text.
 rules_for() {
   local said="$1" out="$2"
-  curl -fsS "http://localhost:7723/oobi/${said}" | python -c '
+  curl -fsS "${SCHEMA_HOST}/oobi/${said}" | python -c '
 import json, sys
 schema = json.load(sys.stdin)
 block = next(o for o in schema["properties"]["r"]["oneOf"] if o.get("type") == "object")
@@ -494,6 +502,15 @@ export_creds() {
 # ---------------------------------------------------------------------------------------------
 install_root() {
   step "Stage 6 — installing the self-configured root of trust into vlei-verifier"
+  local code; code="$(post_root)"
+  case "$code" in
+    200|201|202) ok "root of trust installed: $(cat "${WORK}/root.aid") (HTTP ${code})" ;;
+    *) fail "verifier rejected the root of trust (HTTP ${code}): $(cat "${WORK}/root_of_trust.out")" ;;
+  esac
+}
+
+# POST the root's KEL to /root_of_trust; prints the HTTP status, the body goes to root_of_trust.out.
+post_root() {
   local root_aid; root_aid="$(cat "${WORK}/root.aid")"
   local oobi;     oobi="$(cat "${WORK}/root.oobi")"
 
@@ -522,9 +539,35 @@ open(out_path, "wb").write(payload)
 print(status)
 PY
 )"
+  printf '%s' "$code"
+}
 
+# vlei-verifier keeps everything in temporary stores (keripy `temp=True`): any restart of its process
+# — Docker Desktop restarting, its `unless-stopped` policy — forgets every KEL, every schema and the
+# root of trust. It resolves the schema OOBIs in its config once, at start, and gives up for good
+# ("aborting OOBI") if the schema server is not up yet, which after a Docker restart it is not: the
+# verifier has a restart policy, the schema server is started later. A credential presented to it
+# then is escrowed for a missing schema and refused as "did not cryptographically verify".
+# So before presenting, give it back what a restart takes away: the three schemas, and the root.
+SCHEMA_INTERNAL="http://vlei-server:7723"
+refresh_verifier() {
+  local said code
+  for said in "$SCHEMA_QVI" "$SCHEMA_LE" "$SCHEMA_ECR"; do
+    # The verifier takes an OOBI (202) whether or not it can fetch it; check that it can, before a
+    # credential is issued that it would then refuse.
+    curl -fsS -o /dev/null --max-time 5 "${SCHEMA_HOST}/oobi/${said}" \
+      || fail "the vLEI schema server does not answer at ${SCHEMA_HOST}: start it before re-issuing"
+    code="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "${VERIFIER}/oobi" \
+            -H 'Content-Type: application/json' \
+            -d "{\"oobi\":\"${SCHEMA_INTERNAL}/oobi/${said}\"}")"
+    [[ "$code" == "202" ]] || fail "the verifier did not take the schema OOBI for ${said} (HTTP ${code})"
+  done
+  # Not idempotent upstream: the verifier answers 400 "FAILED" when it already holds the root's KEL —
+  # because the root is installed, or because a chain presented since a restart carried it.
+  code="$(post_root)"
   case "$code" in
-    200|201|202) ok "root of trust installed: ${root_aid} (HTTP ${code})" ;;
+    200|201|202) ok "verifier refreshed: schema OOBIs sent, root of trust re-installed (HTTP ${code})" ;;
+    400) ok "verifier refreshed: schema OOBIs sent; it already holds the root's KEL (HTTP 400)" ;;
     *) fail "verifier rejected the root of trust (HTTP ${code}): $(cat "${WORK}/root_of_trust.out")" ;;
   esac
 }
@@ -556,9 +599,9 @@ introduce_to_verifier() {
 # because nothing ever tells it otherwise.
 WITNESS_INTERNAL="http://witness-demo:5642"
 
-present() {
-  local said="$1"
-  kli_py present ecr ecr "$said" /credentials/ecr.cesr "$VERIFIER_INTERNAL" "$WITNESS_INTERNAL"
+present() {  # $1 SAID, $2 the CESR file as the container sees it (default: the installed one)
+  local said="$1" cesr="${2:-/credentials/ecr.cesr}"
+  kli_py present ecr ecr "$said" "$cesr" "$VERIFIER_INTERNAL" "$WITNESS_INTERNAL"
 }
 
 authorized() {
@@ -651,14 +694,28 @@ reissue_ecr() {
   "engagementContextRole": "${ECR_ROLE}"
 }
 EOF
-  ECR_SAID="$(issue le "$ecr_aid" ecr "$SCHEMA_ECR"               /credentials/_work/ecr-data.json /credentials/_work/ecr-edges.json               /credentials/_work/ecr-rules.json private)"
-  printf '%s' "$ECR_SAID" > "${WORK}/ecr.said"
+  # First, so the verifier has resolved the schemas by the time the credential exists.
+  refresh_verifier
+  local said; said="$(issue le "$ecr_aid" ecr "$SCHEMA_ECR"               /credentials/_work/ecr-data.json /credentials/_work/ecr-edges.json               /credentials/_work/ecr-rules.json private)"
 
-  kli vc export --name ecr --alias ecr --said "$ECR_SAID" --full > "${OUT}/ecr.cesr"
-  _write_env
+  # Exported beside, not over, the installed credential: credentials/ecr.cesr, _work/ecr.said and
+  # env.json go on naming the one that works until the verifier has accepted this one. Written
+  # before the presentation, a rejected re-issue left every example pointing at a credential the
+  # verifier had just refused.
+  local staged="${WORK}/ecr.next.cesr"
+  kli vc export --name ecr --alias ecr --said "$said" --full > "$staged"
   introduce_to_verifier ecr ecr
-  local code; code="$(present "$ECR_SAID")"
-  [[ "$code" == "202" || "$code" == "200" ]]     && ok "fresh ECR credential $ECR_SAID presented (HTTP ${code})"     || fail "the re-issued credential was rejected (HTTP ${code}): $(cat "${WORK}/verifier.out")"
+  local code; code="$(present "$said" /credentials/_work/ecr.next.cesr)"
+  if [[ "$code" != "202" && "$code" != "200" ]]; then
+    rm -f "$staged"
+    fail "the re-issued credential ${said} was rejected (HTTP ${code}): $(cat "${WORK}/verifier.out")
+      Nothing was installed: credentials/ecr.cesr and env.json still name $(cat "${WORK}/ecr.said")."
+  fi
+  mv -f "$staged" "${OUT}/ecr.cesr"
+  ECR_SAID="$said"
+  printf '%s' "$ECR_SAID" > "${WORK}/ecr.said"
+  _write_env
+  ok "fresh ECR credential $ECR_SAID presented (HTTP ${code}) and installed"
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -671,9 +728,9 @@ main() {
     return
   fi
   if [[ "${1:-}" == "--install-root" ]]; then
-    # A recreated verifier starts with an empty database: it knows no root of trust, so every
-    # presentation is rejected until the root is installed again. `reset-demo.sh --keep-credentials`
-    # recreates it and calls this.
+    # A recreated — or merely restarted (see refresh_verifier) — verifier starts with an empty
+    # database: it knows no root of trust, so every presentation is rejected until the root is
+    # installed again. `reset-demo.sh --keep-credentials` recreates it and calls this.
     install_root
     step "Done"
     return

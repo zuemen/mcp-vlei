@@ -274,6 +274,13 @@ async def test_a_gateway_refusal_without_a_report_is_refused_on_the_page(console
                 "text": "gateway refused the call (HTTP 403)", "url": "http://gateway/mcp"}
     monkeypatch.setattr(console, "_target", lambda scene: "gateway")
     monkeypatch.setattr(console, "_remote", refused_without_report)
+    # Fix round 1: _audience() now refuses to sign at all when the gateway's own document cannot
+    # be read (AudienceUnavailable, spec §6.1) instead of falling back to signing for this
+    # console's own LE. This test is about what happens when the gateway itself refuses without a
+    # report — a different thing from the gateway being unreachable (test_scenes.py covers that) —
+    # so its identity is established here by a fixed stand-in rather than a real network fetch.
+    monkeypatch.setattr(console, "_audience",
+                        lambda: console.Audience(console.ENV.world.le.pre, "http://gateway/mcp"))
     async with _client(console) as client:
         result = await _scenario(client, "enroll-today")
         entry = (await client.get("/api/log")).json()["entries"][0]
@@ -380,6 +387,15 @@ def test_every_string_exists_in_both_languages():
     assert set(strings) == {"zh", "en"}
     assert set(strings["zh"]) == set(strings["en"])
     assert all(isinstance(v, str) and v.strip() for lang in strings.values() for v in lang.values())
+
+
+def test_a_gateway_that_failed_itself_is_explained_in_both_languages():
+    """vlei-authz names ``verifier_error`` where a layer would stand; the evidence panel shows it."""
+    strings = json.loads((CONSOLE / "static" / "i18n.json").read_text(encoding="utf-8"))
+    assert strings["en"]["layer.short.verifier_error"] == "gateway error, try again"
+    assert strings["zh"]["layer.short.verifier_error"] == "閘道內部錯誤，可重試"
+    assert strings["en"]["layer.verifier_error"].startswith("Gateway error: the verifier itself failed")
+    assert strings["zh"]["layer.verifier_error"].startswith("閘道內部錯誤")
 
 
 def test_every_check_layer_scenario_tool_and_variant_is_explained():

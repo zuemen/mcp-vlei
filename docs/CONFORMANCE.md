@@ -4,7 +4,7 @@ One row per normative statement in [`spec/SPEC.md`](../spec/SPEC.md), with the c
 it and the test that holds it. A specification whose requirements cannot be traced to running code
 is a document; this table is the difference.
 
-Reviewed against the repository at v0.2. Where a row says **gap**, it says so.
+Reviewed against the repository at v0.3. Where a row says **gap**, it says so.
 
 | # | Section | Requirement | Implementation | Test |
 |---|---|---|---|---|
@@ -16,10 +16,10 @@ Reviewed against the repository at v0.2. Where a row says **gap**, it says so.
 | 6 | Delegation | A verifier **MUST** establish the holder from the credential | `extension.py::_presented` — the issuee (`a.i`) of the named credential, or of the chain's leaf | `test_chain.py::test_walks_to_the_root` asserts the issuee chain |
 | 7 | Delegation | An implementation **MUST** read the issuee out of the credential | same as 6 — the value is parsed, never taken from `_meta` | same as 6 |
 | 8 | Delegation | An implementation **MUST NOT** accept a caller's assertion of whose record to consult | `_verify` reads the holder from the parsed credential and never falls back to `signature.aid`; `delegatedAid` must equal the signer | `test_extension.py::test_an_agent_the_holder_delegated_to_is_allowed` records holder and delegate separately; `::test_a_delegated_aid_claim_must_match_the_signer` |
-| 9 | Request signing | A verifier **MUST** reject a signature outside the freshness window | `signing.py::verify_request` step 1 | `test_signing.py::test_expired_signature_is_stale`, `::test_freshness_window_is_configurable` |
-| 10 | Request signing | A verifier **MUST** cache `(aid, digest, ts)` for at least the freshness window | `signing.py::ReplayCache`, evicting at `window_seconds * 2` — deliberately longer than required | `test_signing.py::test_replay_is_rejected`, `test_report.py` ordering |
+| 9 | Request signing | A verifier **MUST** refuse `exp ≤ ts`, a lifetime beyond its limit, `ts > now + skew` and `now > exp + skew` | `signing.py::_check_time`, called by `precheck_request` / `verify_request` | `test_signing.py::test_outside_the_window_is_stale`, `::test_a_signature_cannot_ask_for_a_long_life`, `::test_a_signature_that_expires_before_it_was_made_is_stale`, `::test_the_clock_tolerance_is_configurable` |
+| 10 | Request signing | A verifier **MUST** claim `(aid, nonce)` atomically and refuse a repeat, keeping the claim until at least `exp + 2 × skew` (one skew past the last instant the time check accepts, so a copy checked just before it and claimed just after is still a repeat) | `replay.py::MemoryReplayStore`, `::SqliteReplayStore`; `signing.py::verify_request` claims last | `test_signing.py::test_replay_is_rejected`, `::test_the_claim_lasts_until_the_signature_can_no_longer_verify`, `::test_a_copy_checked_at_the_expiry_boundary_and_claimed_after_it_is_a_replay`; `test_replay.py::test_processes_sharing_one_file_let_exactly_one_claim_through` |
 | 11 | Errors | The text **MUST** name the failure layer | `errors.py::VleiError.to_text`; every raise site passes a layer | Nine tests assert on the layer by name, not on "refused" |
-| 12 | Security | A stricter deployment **SHOULD** shorten the window and **MAY** add a challenge | `freshness_seconds` is a constructor argument | `test_signing.py::test_freshness_window_is_configurable` |
+| 12 | Security | A deployment **MAY** narrow the window | `freshness_seconds`, `max_lifetime_seconds` are constructor arguments | `test_signing.py::test_the_clock_tolerance_is_configurable` |
 | 13 | Security | High-value tools **SHOULD** set `ttlMs` to zero | `VleiVerifier(ttl_ms=…)`, advertised in `settings()` | `test_extension.py::test_settings_are_the_capability_value` |
 | 14 | Security | A production deployment **SHOULD** use Signify so private keys stay with the holder | `signing.py::CommandSigner` — the agent never holds a key; `examples/my-agent/kli_signer.py` signs through the keystore | Exercised end to end by the acceptance suite, which signs every call this way |
 | 15 | Security | An attestation **MUST NOT** be accepted from an unverified party | same as 5 | same as 5 |
@@ -29,7 +29,16 @@ Reviewed against the repository at v0.2. Where a row says **gap**, it says so.
 | 20 | Whose key | Revocation **MUST** be established for every credential in the chain, and a log without the issuance is *not established* | `extension.py::_verify` checks each of `result.chain_saids` with its issuer; given a key-state resolver (the extension and the client always give one), `revocation.py` reads issuance and withdrawal from the anchors in the issuer's key event log, resolved from the witnesses, and refuses a link whose issuer is unknown | `test_extension.py::test_a_revoked_link_above_the_ecr_refuses_the_call`, `::test_a_live_log_that_never_saw_the_issuance_is_not_read_as_valid`, `test_anchored_revocation.py::test_a_witness_that_leaves_out_the_withdrawal_does_not_hide_it`, `::test_an_unknown_issuer_is_not_a_reason_to_fall_back_to_the_witness_copy`, `::test_several_witnesses_given_to_the_client_are_compared` |
 | 23 | Whose key | Given several witnesses, a signer's key event log that differs between them (duplicity) **MUST** be refused, and fewer answers than the quorum is *not established* | `kel.py::WitnessKeyStates.resolve` compares copies event by event; `VleiIdentity(witness_urls=…)` | `test_kel.py::test_a_controller_showing_two_witnesses_two_logs_is_refused`, `::test_a_witness_that_is_behind_is_not_duplicity`, `::test_too_few_witnesses_answering_is_refused`; `test_extension.py::test_a_signer_whose_log_is_forked_across_witnesses_is_refused`; live: all five AIDs agree across wan/wil/wes |
 | 22 | Whose key | An ECR or OOR **MUST** be issued under an LE credential naming the same LEI, an LE credential under a QVI credential, and every edge **MUST** point at the schema it declares | `chain.py::verify_vlei_chain`, called by `OfflineVerifier` | `test_issuance.py::test_an_ecr_a_qvi_issued_without_any_le_is_refused`, `::test_an_ecr_naming_another_entitys_lei_is_refused`, `::test_an_edge_must_point_at_the_type_it_declares` |
-| 21 | Request signing | A replay entry **MUST** be recorded only after the signature verified | `signing.py::verify_request` records last | `test_extension.py::test_a_forged_request_cannot_lock_out_the_real_one` |
+| 21 | Request signing | A nonce **MUST** be claimed only after the signature verified | `signing.py::verify_request` claims last | `test_extension.py::test_a_forged_request_cannot_lock_out_the_real_one`; `test_signing.py::test_a_forged_signature_does_not_spend_the_nonce` |
+| 24 | Request signing | A verifier **MUST** refuse a signature made for another LE AID or another endpoint URL (`audience_mismatch`), and **MUST NOT** verify v0.3 requests without knowing its URLs | `audience.py::Recipient.check`; `VleiIdentity(audience_urls=…)` raises without them | `test_audience.py`; `test_extension.py::test_a_call_signed_for_another_server_is_refused_before_it_runs`, `::test_a_server_without_audience_urls_is_a_configuration_error`; `test_replay_across_gateways.py` |
+| 25 | Request signing | The signature **MUST** cover the signer, the recipient, the credential named and the method, rebuilt by the verifier | `signing.py::statement`, `verify_request` | `test_signing.py::test_the_signature_speaks_for_one_credential`, `::test_the_signer_is_inside_the_signed_bytes`, `::test_tampered_method_reports_invalid_signature`; `test_vectors.py::test_signature_vector` |
+| 26 | Request signing | The canonical form **MUST** be RFC 8785 over I-JSON: ECMAScript numbers, no integer beyond ±(2⁵³−1), no repeated member name | `signing.py::_jcs_number`, `loads_strict`, `reject_duplicate_members`; vlei-authz parses with the latter | `test_canonical.py`; `test_vlei_authz_v03.py::test_a_body_with_a_repeated_member_name_is_digest_mismatch` |
+| 27 | Request signing | A verifier **MUST** refuse any signature made before its replay memory began (`ts < memory_since + skew`) | `ReplayStore.memory_since`; `signing.py::_check_time` | `test_signing.py::test_a_signature_from_before_the_memory_began_is_stale`; `test_extension.py::test_a_replay_across_a_restart_is_refused_by_the_memory_horizon`, `::test_a_replay_across_a_restart_is_refused_by_the_persistent_store` |
+| 28 | Request signing | A v0.3 verifier **MUST** refuse a signature of another format as `unsupported_version`, and `credentialSaid` is **required** | `signing.py::unsupported_version`; `extension.py::_verify` row 1 | `test_signing.py::test_a_v02_signature_is_unsupported_version_not_invalid`; `test_extension.py::test_a_v02_signature_is_unsupported_version`, `::test_a_call_that_names_no_credential_is_missing_credential` |
+| 29 | Proof of possession | A client **MUST NOT** present anything to a server that has not proven it holds the key of its LE or of an AID the LE delegated to | `pop.py::prove_server`; `client.py::_verify_server_identity` | `test_pop.py` (accepted and refused cases); `test_client_v03.py::test_nothing_is_presented_to_a_server_that_cannot_prove_its_key` |
+| 30 | Proof of possession | A server **MUST** sign only for its own endpoint URLs | `pop.py::PopResponder.respond` | `test_pop.py::test_the_responder_signs_only_for_its_own_endpoints`; `test_vlei_pop.py::test_it_proves_nothing_for_someone_elses_url` |
+| 31 | Proof of possession | A client **MUST** verify the server again once its verification is older than `ttlMs` or its own limit, and after `audience_mismatch` | `client.py::recheck_due`, `call_tool` | `test_client_v03.py::test_the_server_is_verified_again_when_it_is_due`, `::test_the_servers_ttl_shortens_the_recheck`, `::test_after_audience_mismatch_the_server_is_verified_again` |
+| 32 | Whose key | A client reads key states from several witnesses, a majority agreeing, as a verifier does | `client.py` (`witness_url=[…]`, `witness_quorum`); `kel.py::KeyState.agreeing` | `test_client_v03.py::test_key_states_come_from_a_quorum_of_witnesses`, `::test_one_witness_of_three_is_not_enough`; `test_witness_copies.py::test_two_of_three_is_a_quorum_and_says_so` |
 | 16 | Security | A verifier **SHOULD** record which attesting party a decision rested on | `VerificationResult.attested_by`, set by `verify_attestation` | `test_attest.py::test_roundtrip` asserts `source == "attestation"`; `attested_by` carries the AID |
 
 ## The defect that every green test missed (2026-09-24)
@@ -110,9 +119,14 @@ The table would be dishonest without these.
   of identifiers, where the 2026-07-28 revision defines a `ClientCapabilities` object. Untested and
   incorrect turned out to be the same path. See
   [`skills/implementing-vlei/CONFORMANCE.md`](../skills/implementing-vlei/CONFORMANCE.md).
-- **The replay cache lives in one process.** It is lost on restart and not shared between
-  replicas, so a deployment running several must share it; within one process it holds for twice
-  the freshness window.
+- **Claims are shared by one host at most.** `SqliteReplayStore` survives restarts and is shared by
+  processes on one host; several gateway hosts must share a store with an atomic insert-if-absent
+  (Redis, a database), which this package does not ship. A restart with `MemoryReplayStore` refuses
+  calls for a minute rather than forget a claim.
+- **The proof of possession is not channel binding.** It shows who answers at a URL when
+  challenged; TLS is what keeps anyone from sitting in front of it.
+- **Business idempotency is the tool's.** A nonce makes a signature single-use, not an operation;
+  no idempotency key is implemented.
 - **Scope comparison is a default, not a standard.** `signing.scope_satisfied` implements one
   reasonable algebra. The specification fixes where scope lives and that it must be checked, not how
   — a deployment with different semantics replaces the function.
@@ -120,6 +134,6 @@ The table would be dishonest without these.
 ## Running the checks behind this table
 
 ```bash
-pytest packages/mcp-vlei/tests          # 310 tests, no containers required
+pytest packages/mcp-vlei/tests          # 572 tests, no containers required
 pytest examples/association-server/tests -s   # end to end; needs the credential environment
 ```

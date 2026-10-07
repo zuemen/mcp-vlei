@@ -1,5 +1,5 @@
 {
-  "description": "Test vectors for the request digest and signature of org.gleif.vlei/identity (spec/SPEC.md, Request signing). digest = base64url(sha256(JCS(params without _meta))), unpadded; the signed payload is method + LF + ts + LF + digest; Ed25519 is deterministic, so the signature is reproducible from the seed.",
+  "description": "Test vectors for the request digest and signature of org.gleif.vlei/identity (spec/SPEC.md, Request signing). digest = base64url(sha256(JCS(params without _meta))), unpadded. A vlei-sig/0.3 signature is over the RFC 8785 serialization of the statement {aid, aud{aid,url}, cred, digest, exp, method, nonce, ts, v}; Ed25519 is deterministic, so the signature is reproducible from the seed. The AIDs and the credential SAID are illustrative: no key event log stands behind them.",
   "digests": [
     {
       "note": "the _meta member is excluded, whatever it holds",
@@ -61,10 +61,21 @@
   "signature": {
     "seedHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
     "verkey": "DAOhB7_zzhC-HXDdGOdLwJln5NYwm6UNXx3chmQSVTG4",
-    "method": "tools/call",
-    "ts": "2026-09-24T09:00:00.000Z",
-    "digest": "WX2NR6lYuqSYTMttNXGSiS-KY2oIh14kv-Su3YLbev4",
-    "payload": "tools/call\n2026-09-24T09:00:00.000Z\nWX2NR6lYuqSYTMttNXGSiS-KY2oIh14kv-Su3YLbev4",
-    "sig": "0BAJEn7FUM_CkzaaQXxlDfqwiUP_r0mz_zQ6hIiRnrvd7-TXC7sov7k3QLgy3Y07Jkqe2iM2UbB9P6R7Ko3qbzkC"
+    "statement": {
+      "aid": "EFn3RtYqXmLdW5oJbP2TvNcUiSpRyEg7ZhKa4QsMxVwB",
+      "aud": {
+        "aid": "ELaborSimOfficeFictionalAidForTheSpecExample",
+        "url": "http://localhost:3000/mcp"
+      },
+      "cred": "EDq8WnPrK3xLm5ZvTcYbJi1RoUa9HgNsEf7QdMwXy2Vt",
+      "digest": "WX2NR6lYuqSYTMttNXGSiS-KY2oIh14kv-Su3YLbev4",
+      "exp": "2026-09-24T09:00:30.000Z",
+      "method": "tools/call",
+      "nonce": "AAECAwQFBgcICQoLDA0ODw",
+      "ts": "2026-09-24T09:00:00.000Z",
+      "v": "vlei-sig/0.3"
+    },
+    "canonical": "{\"aid\":\"EFn3RtYqXmLdW5oJbP2TvNcUiSpRyEg7ZhKa4QsMxVwB\",\"aud\":{\"aid\":\"ELaborSimOfficeFictionalAidForTheSpecExample\",\"url\":\"http://localhost:3000/mcp\"},\"cred\":\"EDq8WnPrK3xLm5ZvTcYbJi1RoUa9HgNsEf7QdMwXy2Vt\",\"digest\":\"WX2NR6lYuqSYTMttNXGSiS-KY2oIh14kv-Su3YLbev4\",\"exp\":\"2026-09-24T09:00:30.000Z\",\"method\":\"tools/call\",\"nonce\":\"AAECAwQFBgcICQoLDA0ODw\",\"ts\":\"2026-09-24T09:00:00.000Z\",\"v\":\"vlei-sig/0.3\"}",
+    "sig": "0BDogz7bBpR0_GbMqxuay5241R6w_CcvgrkkC75mgncG8K4WdhV0JbGLx9yzO4zyJKNiuzADVfZ40C15hssv2gYF"
   }
 }

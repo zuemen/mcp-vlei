@@ -140,3 +140,21 @@ step "Checking recording preconditions"
 bash "${HERE}/record-check.sh" || die "preconditions not met (see above)"
 
 printf '\n%s  READY%s\n\n' "$c_ok" "$c_reset"
+
+if (( ! KEEP_CREDENTIALS )); then
+  # A full reset made new witnesses and a new operator AID (`regulator`, bootstrap-regulator.sh).
+  # The gateway's signing AID lives in vlei-pop's own volume, which the reset keeps: it is still
+  # delegated by the old operator, so every proof of possession fails until it is replaced. Not run
+  # here: the delegation appends an event to the operator's key event log, and this script never
+  # does that unasked.
+  GW_COMPOSE="docker compose -p mcp-vlei-regulator -f ${NATIVE_HERE%/scripts}/deploy/agentgateway/docker-compose.yml"
+  printf '%s  WARNING%s  the gateway signer is NOT restored: every proof of possession fails (v0.3).\n' "$c_bad" "$c_reset"
+  printf '  The gateway AID in the volume mcp-vlei-regulator_vlei-pop-keystore is delegated by the\n'
+  printf '  operator AID this reset replaced. To restore it, run these two commands:\n\n'
+  printf '  1. Remove that volume and start the gateway again with an empty one:\n\n'
+  printf '     %s rm -sf vlei-pop && docker volume rm mcp-vlei-regulator_vlei-pop-keystore && VLEI_ACCEPTED_ROOTS=%s VLEI_LE_CREDENTIAL_FILE=../../credentials/regulator/le.cesr %s up -d --force-recreate\n\n' \
+    "$GW_COMPOSE" "$ROOT_AID" "$GW_COMPOSE"
+  printf '  2. Make a new gateway AID in vlei-pop and have the operator delegate to it:\n\n'
+  printf '     VLEI_BOOTSTRAP_COMPOSE="docker compose -p mcp-vlei -f %s/docker-compose.yml" VLEI_BOOTSTRAP_POP_COMPOSE="%s" DELEGATION_TRIES=20 bash %s/bootstrap-gateway-signer.sh\n\n' \
+    "$NATIVE_HERE" "$GW_COMPOSE" "$NATIVE_HERE"
+fi

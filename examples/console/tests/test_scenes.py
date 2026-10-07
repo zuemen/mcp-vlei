@@ -265,6 +265,21 @@ async def test_the_employer_card_links_the_unified_business_number_to_the_lei(co
     assert "registeredAs" in card["note"]
 
 
+def test_an_english_take_names_the_unified_business_number_as_the_story_does():
+    """`record-demo.py --lang en` opens `/?lang=en`: the card's one Chinese term, in the story's
+    English words for it, and nothing else on the page changes."""
+    static = ROOT / "examples" / "console" / "static"
+    script = (static / "console.js").read_text(encoding="utf-8")
+    english = json.loads((static / "i18n.json").read_text(encoding="utf-8"))["en"]["who.ubn"]
+
+    assert 'params.get("lang") === "en"' in script
+    assert 'replace(/統一編號/g, "Unified Business No.")' in script
+    assert english.startswith("Unified Business No. ")
+    assert "${term(card.label)}" in script
+    recorder = (ROOT / "scripts" / "record-demo.py").read_text(encoding="utf-8")
+    assert '"&lang=en" if args.lang == "en"' in recorder
+
+
 async def test_no_country_or_address_reaches_the_screen(console):
     """GLEIF's records carry a country and addresses; none of it belongs on this screen."""
     for n in console.SCENES:

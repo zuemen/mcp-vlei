@@ -7,7 +7,7 @@ follows are the same text a reader of this repo can audit — not something bake
 Run::
 
     export ANTHROPIC_API_KEY=...
-    python examples/my-agent/agent.py "register Wang Xiao-Ming, xiaoming@example.org"
+    python examples/my-agent/agent.py "register Bob, bob@example.org"
 
 What this file is responsible for: transport, credentials, and handing the model accurate facts.
 What the *model* is responsible for, guided by the skill: deciding whether this agent is entitled
@@ -117,7 +117,12 @@ async def run(task: str, claude: Any = None) -> None:
             credential_said=cfg["ecrSaid"],
             # The key stays in the KERI keystore; this signer asks it for signatures.
             signer=agent_signer(),
-            witness_url=os.environ.get("VLEI_WITNESS_URL"),
+            # Every key state from several witnesses, a majority agreeing (VLEI_WITNESS_URLS);
+            # the one VLEI_WITNESS_URL otherwise.
+            witness_url=[u.strip() for u in os.environ.get("VLEI_WITNESS_URLS", "").split(",")
+                         if u.strip()] or os.environ.get("VLEI_WITNESS_URL"),
+            # Every call is signed for this server: its LE, verified at connect, and this URL.
+            endpoint_url=SERVER_URL,
             delegated_aid=cfg.get("agentAid") or cfg["ecrAid"],
             accepted_roots=cfg["acceptedRoots"],
             verifier_url=cfg["verifierUrl"],
@@ -200,5 +205,5 @@ def _render(result: Any) -> str:
 
 
 if __name__ == "__main__":
-    task = " ".join(sys.argv[1:]) or "List the upcoming events, then register Wang Xiao-Ming (xiaoming@example.org) as a member."
+    task = " ".join(sys.argv[1:]) or "List the upcoming events, then register Bob (bob@example.org) as a member."
     asyncio.run(run(task))

@@ -25,6 +25,7 @@ The protocol buffers are agentgateway's own (``envoy_authz/proto/``, copied from
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -36,6 +37,8 @@ sys.path.insert(0, str(HERE / "envoy_authz"))
 import ext_authz_pb2 as pb  # noqa: E402
 import ext_authz_pb2_grpc as pb_grpc  # noqa: E402
 import shared_envoy_pb2 as common  # noqa: E402
+
+logger = logging.getLogger(__name__)
 
 import service  # noqa: E402  (the module that started this one; its decision and its names)
 
@@ -68,8 +71,8 @@ def _refused(decision: service.Decision) -> pb.CheckResponse:
     if decision.call is not None:
         status, body = 200, service.tool_error(decision)
     else:
-        status, body = 403, {"layer": decision.layer, "message": decision.message,
-                             "report": decision.report}
+        status, body = decision.status, {"layer": decision.layer, "message": decision.message,
+                                         "report": decision.report}
     headers = [_header("content-type", "application/json")]
     if decision.layer:
         headers.append(_header(service.FAILURE_HEADER, decision.layer))
@@ -88,9 +91,21 @@ class Check(pb_grpc.AuthorizationServicer):
         self._decide = decide
 
     async def Check(self, request: pb.CheckRequest, context: Any) -> pb.CheckResponse:  # noqa: N802
-        http = request.attributes.request.http
-        body = http.raw_body or http.body.encode("utf-8")
-        decision = await self._decide(body, dict(http.headers), "grpc")
+        try:
+            http = request.attributes.request.http
+            body = http.raw_body or http.body.encode("utf-8")
+            decision = await self._decide(body, dict(http.headers), "grpc")
+        except Exception as exc:  # noqa: BLE001 - this wire has no "never allow on error" except
+            # by never raising: an uncaught exception here surfaces to agentgateway as an UNKNOWN
+            # status, indistinguishable from a bug, and the call goes nowhere. Answer the same
+            # labelled denial the HTTP wire would, instead. ``self._decide`` (`decide()`, above)
+            # already does this for everything inside it; this is the backstop for everything else
+            # in this method (reading the request itself). Only the exception's class name, never
+            # its text or the request.
+            logger.warning("vlei-authz: unexpected error in gRPC Check (%s)", type(exc).__name__)
+            message = f"the verifier failed unexpectedly ({type(exc).__name__}); try again"
+            return _refused(service.Decision(False, layer="verifier_error", message=message,
+                                             status=503))
         return _allowed(decision) if decision.allowed else _refused(decision)
 
 

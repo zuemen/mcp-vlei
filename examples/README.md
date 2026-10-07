@@ -17,7 +17,7 @@ agent's ECR and its signed request, and passes the simulator only the verified e
 
 Where it is tested:
 
-- `regulator/tests/` — 60 tests, no containers: the authoriser (`test_vlei_authz.py`), the
+- `regulator/tests/` — 107 tests, no containers: the authoriser (`test_vlei_authz.py`), the
   simulator (`test_labor_insurance_sim.py`) and the client that calls through the gateway
   (`test_gateway_client.py`).
 - The four scenes as the console runs them: `console/tests/` (below).
@@ -26,7 +26,7 @@ Where it is tested:
 - On the wire: the tool's definition is `spec/examples/tool-with-requirement.json`, and a signed call
   of it is `spec/examples/tools-call-request.json`.
 - With Claude itself as the agent: `credential-proxy/` (below) puts the gateway's tools in Claude
-  Desktop or Claude Code and signs every call. `credential-proxy/tests/` — 28 tests run the four
+  Desktop or Claude Code and signs every call. `credential-proxy/tests/` — 50 tests run the four
   scenes and a forged chain (`unknown_root`) without containers; `test_live.py` runs them against
   the live stack.
 
@@ -43,8 +43,8 @@ The same agent is used throughout; its source does not change between deployment
 | Directory | What it is |
 |---|---|
 | `my-agent/` | An agent that presents a vLEI credential — Claude as the model, official MCP client, `VleiClient` for identity, and the skill loaded as its system prompt |
-| `console/` | The Trust Console the recording is shot on. Every scene makes its real call — scenes 1–4 through the gateway to the simulator. `/evidence` shows every tools/call the gateway decided, from any client (claude.ai, the credential proxy, the console): which vLEI fields arrived, the eight checks, whose key event logs were read and the anchors that decide revocation, and the presented schemas against GLEIF's — never a credential, a key or an argument's value; `console/tests/` — 74 tests |
-| `skill-server/` | A server written from `skills/implementing-vlei/SKILL.md` alone, with no stubs; what it found is in `skill-server/REPORT.md`. `skill-server/tests/` — 31 tests |
+| `console/` | The Trust Console the recording is shot on. Every scene makes its real call — scenes 1–4 through the gateway to the simulator. `/evidence` shows every tools/call the gateway decided, from any client (claude.ai, the credential proxy, the console): which vLEI fields arrived, the eight checks, whose key event logs were read and the anchors that decide revocation, and the presented schemas against GLEIF's — never a credential, a key or an argument's value; `console/tests/` — 111 tests |
+| `skill-server/` | A server written from `skills/implementing-vlei/SKILL.md` alone, with no stubs; what it found is in `skill-server/REPORT.md`. `skill-server/tests/` — 42 tests |
 | `credential-proxy/` | Claude's side of the gateway: a STDIO MCP server for Claude Desktop / Claude Code that verifies the gateway's LE before listing anything, relays its tools with their requirements, and signs every call in the KERI keystore. The profile (`demo` / `forged`) is fixed at start; no tool switches it |
 | `impersonation/` | The problem, made executable: a vendor server granting quota on a name the caller chose |
 | `observatory/` | The same measurement off the laptop: a read-only MCP server that records what it receives about the client, so a real client (the claude.ai connector) and a replay of its `clientInfo` can be compared side by side at `/observatory`. `observatory/tests/` — 39 tests |
@@ -64,7 +64,7 @@ python examples/association-server/server.py
 
 # 3. The agent (terminal 3)
 export ANTHROPIC_API_KEY=...
-python examples/my-agent/agent.py "register Wang Xiao-Ming, xiaoming@example.org"
+python examples/my-agent/agent.py "register Bob, bob@example.org"
 
 # 4. Acceptance tests, printing layer-by-layer outcomes
 pytest examples/association-server/tests -v -s

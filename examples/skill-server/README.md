@@ -63,20 +63,31 @@ API reference; none of them contains the extension's interceptor.
 - `server.py` — `MCPServer` (streamable HTTP, `127.0.0.1`, `PORT` default 8082) with one
   hand-written `Extension` subclass, `VleiIdentity`. It declares the capability, publishes
   `GET /.well-known/vlei`, stamps `org.gleif.vlei/requires` on the protected tool's `_meta`, runs
-  checks 0–10 of SKILL.md section 4 in order, and refuses in the two shapes of section 5. Every
+  checks 0–10 of SKILL.md section 5 in order, and refuses in the two shapes of section 6. Every
   protected call's result — allowed or refused — carries
   `_meta["org.gleif.vlei/report"] = VerificationReport(...).as_dict()`.
   - `list_events` — public; served to clients that never declared the extension.
   - `submit_filing(form, period, payload)` — requires `{"credential": "ECR", "role": $VLEI_ROLE}`.
-- `tests/test_server.py` — 31 tests through the real SDK (in-process `mcp.Client` → `MCPServer`)
+- `tests/test_server.py` — 42 tests through the real SDK (in-process `mcp.Client` → `MCPServer`)
   against `mcp_vlei.testing.World`. Every refusal test asserts the failure layer **and** the report
   check it stopped at.
 
 The verification pipeline is assembled from `mcp_vlei` components: `kel.WitnessKeyStates` +
 `kel.verify_kel` (check 3 and the delegation evidence for 5), `signing.precheck_request` /
-`verify_request` / `ReplayCache` (1–4), `chain.parse_stream` / `recompute_said` / `verify_issuance`
-(6–8), `revocation.TelRevocationChecker` (9). `verifier.OfflineVerifier` is deliberately **not**
-used — see REPORT.md, gap 6.
+`verify_request` (1–3) and a `replay.ReplayStore` — `MemoryReplayStore` by default — claiming each
+`(aid, nonce)` once, after the signature verifies (4), `chain.parse_stream` / `recompute_said` /
+`verify_issuance` (6–8), `revocation.TelRevocationChecker` (9). `verifier.OfflineVerifier` is
+deliberately **not** used — see REPORT.md, gap 6.
+
+**Proof of possession (SKILL.md section 3).** `build_server(pop_signer=…)` wires
+`pop.PopResponder`: the server then declares `pop` and answers challenges at
+`POST /.well-known/vlei/pop`, only for its own endpoint URL; the tests give it the test World's LE
+key, and a v0.3 client (`pop.prove_server`) verifies the proof. The route has vlei-pop's abuse
+limits: a challenge over 4096 bytes is `413` (bounded while streaming too), more than four admitted
+at once is `503`, and challenges are signed one at a time. Started from the command line
+(`python examples/skill-server/server.py`) no keystore is wired, so it offers no proof: it is then
+verifier-side only, and a v0.3 client refuses it as `unsupported_version` before presenting
+anything.
 
 ## Run
 

@@ -4,8 +4,8 @@
     "a missing capability is a configuration problem reported as a JSON-RPC error, while a",
     "rejected credential is a tool result. Collapsing them tells the caller to fix the wrong thing.",
     "Every rejection names its layer, because the correct recovery differs per layer and an agent",
-    "that receives only 'access denied' cannot choose one. 'layers' lists all nine in the order of the",
-    "check that raises each: credential_present, freshness, digest, signature, delegation, chain,",
+    "that receives only 'access denied' cannot choose one. 'layers' lists all eleven in the order of",
+    "the check that raises each: credential_present, freshness, digest, signature, delegation, chain,",
     "revocation, authority."
   ],
 
@@ -76,8 +76,8 @@
           "caveats": [],
           "checks": [
             {"name": "credential_present", "label": "credential presented", "passed": true, "skipped": false, "durationMs": 0.4, "layer": null, "detail": ""},
-            {"name": "freshness", "label": "signature is fresh", "passed": true, "skipped": false, "durationMs": 9.8, "layer": null, "detail": ""},
-            {"name": "digest", "label": "arguments match the signed digest", "passed": true, "skipped": false, "durationMs": 9.8, "layer": null, "detail": ""},
+            {"name": "freshness", "label": "signature is fresh, unexpired and not a replay", "passed": true, "skipped": false, "durationMs": 9.8, "layer": null, "detail": ""},
+            {"name": "digest", "label": "signed for this server, with these arguments", "passed": true, "skipped": false, "durationMs": 9.8, "layer": null, "detail": ""},
             {"name": "signature", "label": "signature verifies", "passed": true, "skipped": false, "durationMs": 9.8, "layer": null, "detail": "under the current key state of EFn3RtYqXmLdW5oJbP2TvNcUiSpRyEg7ZhKa4QsMxVwB (key event log at sn 0)"},
             {"name": "delegation", "label": "acting identifier is authorized", "passed": true, "skipped": false, "durationMs": 0.1, "layer": null, "detail": "delegated AID EFn3RtYqXmLdW5oJbP2TvNcUiSpRyEg7ZhKa4QsMxVwB, anchored in the holder's key event log"},
             {"name": "chain", "label": "credential chain reaches an accepted root", "passed": true, "skipped": false, "durationMs": 4.2, "layer": null, "detail": "root EHJ2kA8vQZ4Yd3mRr7TcN1sWpLxFbGuV9oKqDzXnA5eM; each issuance anchored in its issuer's key event log"},
@@ -97,14 +97,26 @@
       "text": "missing_credential: this tool requires an ECR credential and a signed request; the caller presented no credential"
     },
     {
+      "layer": "unsupported_version",
+      "when": "The signature names no format (a vlei-sig/0.2 signature: no recipient, nonce or expiry) or another one; at a client, a server that does not declare vlei-sig/0.3 or offers no proof of possession.",
+      "retry": "No. One side must be upgraded. Nothing was executed (server side) or presented (client side).",
+      "text": "unsupported_version: the signature names no format — a vlei-sig/0.2 signature (method, time and digest; no recipient, nonce or expiry). This verifier requires vlei-sig/0.3: upgrade the client"
+    },
+    {
       "layer": "stale_signature",
-      "when": "The signature's timestamp is outside the freshness window, or the same (aid, digest, ts) was seen before.",
-      "retry": "Yes, once. If it fails again the clocks disagree by more than the window; say so rather than retrying further. This is the only retryable layer.",
-      "text": "stale_signature: signature timestamp is 312s from now, outside the 60s freshness window"
+      "when": "Outside the signature's window (ts, exp, the clock tolerance, the longest lifetime), made before the verifier's replay memory began, or its nonce was already claimed — a replay.",
+      "retry": "Yes, once, re-signed. If it fails again the clocks disagree by more than the tolerance, or the verifier has just restarted; say so rather than retrying further. This is the only retryable layer.",
+      "text": "stale_signature: this signature was already presented (its nonce is spent): a replay"
+    },
+    {
+      "layer": "audience_mismatch",
+      "when": "The signature names another recipient — another LE AID or another endpoint URL; or a server's proof of possession answers another challenge, or the server will not prove itself for this URL.",
+      "retry": "No. Either the client is configured for another server or URL, or the call was captured and sent here. Report the URL and AID named.",
+      "text": "audience_mismatch: the call was signed for http://elsewhere.example/mcp, which is not this server's endpoint: it was meant for another endpoint, or replayed from one"
     },
     {
       "layer": "digest_mismatch",
-      "when": "The received parameters do not hash to the digest that was signed — the request was altered after signing.",
+      "when": "The received parameters do not hash to the digest that was signed — the request was altered after signing — or have no single canonical form: a repeated member name, an integer beyond I-JSON, NaN.",
       "retry": "No. This is an integrity problem, not a transient one. Reported separately from invalid_signature because tampering in transit and a bad key state call for different responses.",
       "text": "digest_mismatch: request arguments do not match the signed digest; they were altered after signing"
     },

@@ -72,28 +72,37 @@ def write_profile(root: Path, world: World, name: str = "demo", **extra: Any) ->
 
 
 def relay_for(world: World, profile: proxy.Profile, gateway: Any, log_path: Path,
-              *, signer_world: World | None = None) -> proxy.Relay:
-    """A relay signing as ``signer_world``'s agent (default ``world``'s), reading ``world``'s witness,
-    and trusting ``world``'s root for the gateway's LE."""
+              *, signer_world: World | None = None, **kwargs: Any) -> proxy.Relay:
+    """A relay signing as ``signer_world``'s agent (default ``world``'s), reading ``world``'s witness
+    (one, unless ``kwargs`` names ``witness_url``/``witness_client`` of its own — a test with its own
+    multi-witness setup), and trusting ``world``'s root for the gateway's LE."""
     signer_world = signer_world or world
+    kwargs.setdefault("witness_url", "http://witness")
+    kwargs.setdefault("witness_client", world.witness_client())
     return proxy.Relay(
         profile, gateway,
         signer=Signer.from_seed(signer_world.agent.pre, signer_world.agent.seed),
         accepted_roots=[world.root.pre],
-        witness_url="http://witness", witness_client=world.witness_client(),
         log=proxy.RelayLog(log_path, stream=io.StringIO()),
         reload=lambda: profile,
+        **kwargs,
     )
 
 
 @asynccontextmanager
-async def stand_in(world: World, tmp_path: Path, *, published: World | None = None) -> AsyncIterator[str]:
-    """The stand-in gateway in front of the simulator, publishing ``published``'s LE (default
-    ``world``'s) at /.well-known/vlei. Yields the MCP endpoint URL."""
+async def stand_in(world: World, tmp_path: Path, *, published: World | None = None,
+                   pop_signer: Any = None, document: dict | None = None) -> AsyncIterator[str]:
+    """The stand-in gateway in front of the simulator. Its vlei-pop publishes ``published``'s LE
+    (default ``world``'s) and answers challenges as that operator's delegated gateway AID, or as
+    ``pop_signer``. With ``document``, a v0.2 gateway instead: that document at /.well-known/vlei,
+    and no proof of possession. Yields the MCP endpoint URL."""
     harness.labor.INSURED.clear()
-    document = {"extension": "org.gleif.vlei/identity",
-                "credential": (published or world).le_stream}
+    authz = harness.authz_app(world, tmp_path)
+    pop = None if document is not None else harness.pop_app(published or world, signer=pop_signer)
     async with harness.serve(harness.labor.create_app()) as upstream:
-        app = harness.stand_in_gateway(harness.authz_app(world, tmp_path), upstream, published=document)
+        app = harness.stand_in_gateway(authz, upstream, published=document, pop=pop)
         async with harness.serve(app) as base:
+            harness.answer_at(authz, f"{base}/mcp")
+            if pop is not None:
+                pop.state.set_audience_urls([f"{base}/mcp"])
             yield f"{base}/mcp"

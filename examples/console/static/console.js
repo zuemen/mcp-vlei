@@ -21,6 +21,10 @@ addEventListener("resize", fitStage);
 fitStage();
 const params = new URLSearchParams(location.search);
 if (params.get("chrome") === "off") document.body.classList.add("no-chrome");
+/* ?lang=en: the page is English already but for one term, the employer's 統一編號 — named here as
+   the story's English names it ("who.ubn" in i18n.json), for a take with no Chinese on screen. */
+const ENGLISH = params.get("lang") === "en";
+const term = (text) => (ENGLISH ? String(text).replace(/統一編號/g, "Unified Business No.") : text);
 
 let revealTimers = [];
 let lastSceneKey = null;
@@ -37,7 +41,7 @@ function renderCard(card) {
   return `<div class="card ${status}">
       <div class="kind"><span>${card.role}</span><span>${card.type}</span></div>
       <div class="lei">${card.lei}</div>
-      <div class="label">${card.label}</div>
+      <div class="label">${term(card.label)}</div>
       <div class="status">${text}</div>
       <div class="stamp">${card.revokedAt || ""}</div>
       ${card.note ? `<div class="note">${card.note}</div>` : ""}

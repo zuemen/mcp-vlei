@@ -7,7 +7,8 @@ Three lines in a server::
     from mcp_vlei import VleiIdentity
 
     vlei = VleiIdentity(le_credential="credentials/le.cesr", requires="ECR",
-                        verifier_url="http://localhost:7676", accepted_roots=["E..."])
+                        accepted_roots=["E..."], witness_url="http://localhost:5642",
+                        audience_urls=["http://localhost:8080/mcp"])
     mcp = MCPServer(name="association", version="0.1.0", extensions=[vlei])
     vlei.bind(mcp)      # lets the extension read each tool's declared requirement
 
@@ -20,6 +21,7 @@ in-process, at a gateway, or by a third party without the tool changing.
 from __future__ import annotations
 
 import logging
+import math
 
 from pathlib import Path
 from datetime import date
@@ -32,6 +34,7 @@ from mcp.shared.exceptions import MCPError
 from mcp.types import CallToolRequestParams, CallToolResult, TextContent
 
 from .chain import VLEI_SCHEMAS, Acdc, parse_stream
+from .audience import Recipient
 from .errors import (
     ChainInvalid,
     InvalidSignature,
@@ -43,14 +46,18 @@ from .errors import (
 from .kel import KeyState, WitnessKeyStates
 from .signing import (
     DEFAULT_FRESHNESS_SECONDS,
-    ReplayCache,
-    precheck_request,
+    DEFAULT_MAX_LIFETIME_SECONDS,
+    SIGNATURE_FORMAT,
     arguments_satisfied,
+    precheck_request,
     scope_satisfied,
+    unsupported_version,
     verify_request,
 )
 from .namespace import Keys
 from .namespace import keys as namespace_keys
+from .pop import POP_PATH, PopResponder
+from .replay import MemoryReplayStore, ReplayStore
 from .report import VerificationReport
 from .revocation import TelRevocationChecker
 from .verifier import OfflineVerifier, VerificationResult, VleiVerifier, _last_in_chain
@@ -93,10 +100,30 @@ CREDENTIAL_SCHEMAS = VLEI_SCHEMAS
 __all__ = ["VleiIdentity", "EXTENSION_ID"]
 
 
+def _require_non_negative_finite(name: str, value: Any) -> float:
+    """A constructor argument that must be a non-negative, finite number — never a bool, never
+    NaN or infinity, never negative. Zero is accepted on purpose: a ``ttlMs`` of ``0`` tells a
+    v0.3 client to re-check before every presentation (spec §6.3). (A ``ttlMs`` a *peer* sends is
+    read far more leniently — see ``mcp_vlei.client.VleiClient.recheck_due`` — because refusing to
+    talk to a sloppy counterparty is not this check's job; this one guards what this process
+    configures.)
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) \
+            or value < 0:
+        raise ValueError(f"{name} must be a non-negative, finite number, not {value!r}")
+    return value
+
+
 class VleiIdentity(Extension):
     """Presents this server's LE credential and enforces per-tool ECR requirements.
 
     `identifier` is set per instance, from its namespace (the SDK validates it when applied).
+
+    `replay_store` is where each accepted signature's nonce is claimed, once. `None` does not turn
+    that off: it means a `MemoryReplayStore` of this process — single-use while the process runs,
+    forgotten on restart, so every call is refused for `freshness_seconds` after each start. Pass
+    a `SqliteReplayStore` to survive restarts; instances that share an audience share one store.
+    (`verify_request(replay_store=None)`, by contrast, claims nothing: no single-use protection.)
     """
 
     def __init__(
@@ -118,6 +145,10 @@ class VleiIdentity(Extension):
         witness_client: Any = None,
         witness_urls: Sequence[str] | None = None,
         namespace: str | None = None,
+        audience_urls: Sequence[str] | None = None,
+        replay_store: ReplayStore | None = None,
+        max_lifetime_seconds: int = DEFAULT_MAX_LIFETIME_SECONDS,
+        pop_signer: Any = None,
     ) -> None:
         #: Every name this server puts on or reads from the wire. `MCP_VLEI_NAMESPACE`, or the
         #: provisional default, unless given; a client must declare the extension under the same.
@@ -131,6 +162,10 @@ class VleiIdentity(Extension):
         self.accepted_roots = list(accepted_roots or [])
         self.well_known = well_known
         self.freshness_seconds = freshness_seconds
+        self.max_lifetime_seconds = max_lifetime_seconds
+        #: Advertised as `ttlMs`: the longest a counterparty may rely on its verification of this
+        #: server before verifying again — a v0.3 client re-checks within it.
+        self.ttl_ms = _require_non_negative_finite("ttl_ms", ttl_ms)
         #: Today's date for rules on a call's arguments (`requirement["arguments"]`). The server's
         #: local date by default; a deployment in another time zone than its callers passes its own.
         self._today = today or date.today
@@ -174,7 +209,24 @@ class VleiIdentity(Extension):
                 "revocation_source='none': revocation is NOT checked. A withdrawn credential will "
                 "be accepted until it expires; the decision record says revocationChecked=false."
             )
-        self._replay = ReplayCache(window_seconds=freshness_seconds)
+        #: Who this server is to a v0.3 caller: the issuee of its own LE credential, and every URL
+        #: its callers send calls to. A call signed for anyone else is `audience_mismatch`.
+        if not audience_urls:
+            raise ValueError(
+                "audience_urls is required: a v0.3 signature names the endpoint it was made for, "
+                "and a server that cannot say where it is reached cannot check that"
+            )
+        self.recipient = Recipient(_presented(self.le_credential, None).issuee, tuple(audience_urls))
+        #: Proves this server holds its LE's key (or a key its LE delegated to) when a client
+        #: challenges it at /.well-known/vlei/pop. None: this server offers no proof, and a v0.3
+        #: client will not present anything to it.
+        self.pop = PopResponder(pop_signer, self.recipient) if pop_signer is not None else None
+        #: Every signature's nonce, claimed once. In memory by default — lost on restart, which
+        #: its `memory_since` says, so a restart costs a minute of refusals rather than a replay.
+        #: A deployment that restarts passes a `SqliteReplayStore`; several instances share one.
+        self._replay: ReplayStore = (
+            replay_store if replay_store is not None else MemoryReplayStore()
+        )
         #: Tool name -> requirement. Populated from the bound server's tool list, or supplied
         #: directly for a deployment that keeps its policy elsewhere (a gateway, for instance).
         self._requirements: dict[str, dict[str, Any]] = dict(requirements or {})
@@ -204,8 +256,11 @@ class VleiIdentity(Extension):
             "presents": ["LE"],
             "acceptedRoots": self.accepted_roots,
             "signatureAlgs": ["Ed25519"],
-            "ttlMs": getattr(self.verifier, "ttl_ms", 0),
+            "signatureFormats": [SIGNATURE_FORMAT],
+            "ttlMs": self.ttl_ms,
         }
+        if self.pop is not None:
+            capability["pop"] = POP_PATH
         if self.requires:
             capability["requires"] = self.requires
         if self.well_known:
@@ -231,7 +286,23 @@ class VleiIdentity(Extension):
             "credential": self.le_credential,
             "acceptedRoots": self.accepted_roots,
             "signatureAlgs": ["Ed25519"],
+            "signatureFormats": [SIGNATURE_FORMAT],
+            "ttlMs": self.ttl_ms,
+            **({"pop": POP_PATH} if self.pop is not None else {}),
         }
+
+    def set_audience_urls(self, urls: Sequence[str]) -> None:
+        """Change the URLs this server answers at — for a server that learns its address only once
+        it is listening (port 0). The AID is its LE's and does not change."""
+        self.recipient = Recipient(self.recipient.aid, tuple(urls))
+        if self.pop is not None:
+            self.pop.recipient = self.recipient
+
+    def pop_response(self, body: Any) -> tuple[int, dict[str, Any]]:
+        """Answer a challenge posted to ``/.well-known/vlei/pop``: ``(status, JSON body)``."""
+        if self.pop is None:
+            return 404, {"layer": None, "message": "this server offers no proof of possession"}
+        return self.pop.respond(body)
 
     def tools(self) -> Sequence[ToolBinding]:
         """One diagnostic tool, contributed by the extension itself.
@@ -393,6 +464,7 @@ class VleiIdentity(Extension):
         credential = meta.get(self.keys.credential)
         signature = meta.get(self.keys.signature)
         delegated = meta.get(self.keys.delegated_aid)
+        named = meta.get(self.keys.credential_said)
 
         report.start("credential_present")
         if not credential or not signature:
@@ -405,10 +477,19 @@ class VleiIdentity(Extension):
                 "this tool requires an ECR credential and a signed request; the caller presented "
                 + missing
             )
-        # The credential being presented: the one named, or the leaf of the chain. Its issuee is the
-        # holder — read from the credential, never from the caller (spec/SPEC.md §Delegation).
+        # A signature of this format (a v0.2 one is unsupported_version, by name), speaking for one
+        # named credential. Its issuee is the holder — read from the credential, never from the
+        # caller (spec/SPEC.md §Delegation). A malformed signature is refused at `signature`.
         try:
-            presented = _presented(credential, meta.get(self.keys.credential_said))
+            foreign = unsupported_version(signature)
+            if foreign is not None:
+                raise foreign
+            if not named:
+                raise MissingCredential(
+                    "credentialSaid is required: a vlei-sig/0.3 signature speaks for one named "
+                    "credential, and this call names none"
+                )
+            presented = _presented(credential, named)
         except VleiError as exc:
             report.failed("credential_present", exc.layer.value, exc.message)
             raise
@@ -424,27 +505,50 @@ class VleiIdentity(Extension):
         serialized = params.model_dump(by_alias=True, exclude_none=True)
         for name in ("freshness", "digest", "signature"):
             report.start(name)
+        # Whether the standalone precheck below ran to completion: it calls parse_signature
+        # first, which can refuse a malformed signature (invalid_signature) before freshness or
+        # digest are ever checked. Only once it has returned normally are those rows established
+        # facts — `verify_request` repeats it, but that repeat cannot itself invalidate them.
+        precheck_passed = False
         try:
-            # Everything decidable from the request alone first, so a stale or altered call costs
-            # no round trip to a witness.
-            precheck_request(signature, serialized, freshness_seconds=self.freshness_seconds)
-            state = await self._key_state(signer)
-            verify_request(
-                signature, "tools/call", serialized, state.keys,
+            # Everything decidable from the request and this server's own configuration first —
+            # the window, the recipient, the arguments — so a stale, misdirected or altered call
+            # costs no round trip to a witness.
+            precheck_request(
+                signature, serialized, recipient=self.recipient,
                 freshness_seconds=self.freshness_seconds,
-                replay_cache=self._replay,
+                max_lifetime_seconds=self.max_lifetime_seconds,
+                memory_since=self._replay.memory_since,
+            )
+            precheck_passed = True
+            state = await self._key_state(signer)
+            sig = verify_request(
+                signature, "tools/call", serialized, state.keys,
+                recipient=self.recipient, credential_said=said,
+                freshness_seconds=self.freshness_seconds,
+                max_lifetime_seconds=self.max_lifetime_seconds,
+                replay_store=self._replay,
             )
         except VleiError as exc:
             stage = {
                 "stale_signature": "freshness",
+                "audience_mismatch": "digest",
                 "digest_mismatch": "digest",
             }.get(exc.layer.value, "signature")
-            for earlier in ("freshness", "digest")[: ("freshness", "digest", "signature").index(stage)]:
-                report.passed(earlier)
+            # The refusal still lands on `stage` (the signature row, by default — per spec). But
+            # rows before it are only marked passed when the precheck that establishes them
+            # actually ran: a signature refused on shape alone (a dict with no "v", a bare string,
+            # a list) never reached freshness or digest, and they must be left exactly as a row
+            # that never ran is left elsewhere in this report — not silently "passed".
+            if precheck_passed or stage != "signature":
+                for earlier in ("freshness", "digest")[
+                    : ("freshness", "digest", "signature").index(stage)
+                ]:
+                    report.passed(earlier)
             report.failed(stage, exc.layer.value, exc.message)
             raise
-        report.passed("freshness")
-        report.passed("digest")
+        report.passed("freshness", f"signed at {sig.ts}, valid until {sig.exp}; nonce not seen before")
+        report.passed("digest", f"signed for {sig.aud['url']} ({sig.aud['aid']}); arguments match")
         report.passed(
             "signature",
             f"under the current key state of {signer} (key event log at sn {state.sn})",
@@ -620,6 +724,12 @@ def _links_and_issuers(result: VerificationResult, said: str) -> tuple[list[str]
 
 def _presented(cesr: Any, said: str | None) -> Acdc:
     """The credential being presented: the one named, or else the leaf of the chain."""
+    if said is not None and not isinstance(said, str):
+        # credentialSaid is attacker-controlled _meta. `target not in credentials` below is a
+        # membership test against a dict keyed by SAID string: a dict or list is unhashable
+        # there and would raise TypeError instead of naming a layer. An int or another string
+        # is merely absent and already falls through to the same chain_invalid below.
+        raise ChainInvalid(f"credentialSaid must be a string, not {type(said).__name__}")
     if not isinstance(cesr, str):
         raise ChainInvalid("the presented credential is not a CESR stream")
     credentials = parse_stream(cesr)

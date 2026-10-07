@@ -22,10 +22,12 @@ from pathlib import Path
 import httpx
 import pytest
 
-from conftest import Ctx, StubVerifier, make_params  # noqa: E402
+from conftest import Ctx, StubVerifier, make_params, name_leaked  # noqa: E402
 from mcp_vlei.testing import ECR_SCHEMA, LEI, Controller, World
 from mcp_vlei import Signer, VleiIdentity
+from mcp_vlei.audience import Audience
 from mcp_vlei.extension import META_CREDENTIAL, META_DELEGATED_AID, META_SIGNATURE
+from mcp_vlei.replay import MemoryReplayStore, SqliteReplayStore
 from mcp_vlei.signing import sign_request
 
 REQUIRES_REGISTRATION = {"credential": "ECR", "role": "member-registration"}
@@ -35,6 +37,10 @@ REQUIRES_FILING = {
     "scope": {"maxAmount": 1_000_000},
 }
 ARGS = {"name": "A", "email": "a@example.org"}
+#: Where the server under test is reached; every call here is signed for it unless a test says not.
+AUDIENCE_URL = "http://server.test/mcp"
+#: A replay store whose memory began before any test signs: restarts are tested where they matter.
+LONG_AGO = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
 # --------------------------------------------------------------------------------------------- #
@@ -59,6 +65,8 @@ def build(
     le.write_text(world.le_stream, encoding="utf-8")
     records: list[dict] = []
     kwargs.setdefault("revocation_source", "tel")
+    kwargs.setdefault("audience_urls", [AUDIENCE_URL])
+    kwargs.setdefault("replay_store", MemoryReplayStore(memory_since=LONG_AGO))
     ext = VleiIdentity(
         le_credential=le,
         accepted_roots=roots or [world.root.pre],
@@ -86,15 +94,20 @@ def present(
     said: str | None = None,
     delegated: str | None = "agent",
     ts: str | None = None,
+    exp: str | None = None,
+    audience: Audience | None = None,
     **extra,
 ):
-    """Sign and present — by default, the agent presenting its holder's ECR."""
+    """Sign and present — by default, the agent presenting its holder's ECR to the server under
+    test. ``said=""`` leaves ``credentialSaid`` out of ``_meta`` (the signature still names one)."""
     signer = signer or signer_for(world.agent)
     unsigned = make_params(tool, arguments)
     meta = {
         META_CREDENTIAL: stream if stream is not None else world.ecr_stream,
         META_SIGNATURE: sign_request(
-            signer, "tools/call", unsigned.model_dump(by_alias=True, exclude_none=True), ts=ts
+            signer, "tools/call", unsigned.model_dump(by_alias=True, exclude_none=True),
+            audience=audience or Audience(world.le.pre, AUDIENCE_URL),
+            credential_said=said or world.ecr_credential.said, ts=ts, exp=exp,
         ),
         "org.gleif.vlei/verkey": signer.verkey,
     }
@@ -153,14 +166,15 @@ async def test_the_holder_signing_directly_is_allowed(world, tmp_path):
     assert text_of(result) == "TOOL RAN"
 
 
-async def test_the_presented_credential_is_found_without_being_named(world, tmp_path):
-    """A --full export carries the whole chain; the one presented is the leaf, not the first."""
+async def test_a_call_that_names_no_credential_is_missing_credential(world, tmp_path):
+    """v0.3: the signature speaks for one named credential; v0.2 fell back to the chain's leaf."""
     ext = build(world, tmp_path, {"register_member": REQUIRES_REGISTRATION})
     result = await ext.intercept_tool_call(
         present(world, "register_member", ARGS, said=""), Ctx(), call_next
     )
 
-    assert text_of(result) == "TOOL RAN"
+    assert layer_of(result) == "missing_credential"
+    assert "credentialSaid" in text_of(result)
 
 
 # --------------------------------------------------------------------------------------------- #
@@ -219,7 +233,8 @@ async def test_a_request_without_a_verifiable_signature_is_refused(world, tmp_pa
     params = make_params(
         "register_member",
         ARGS,
-        {META_CREDENTIAL: world.ecr_stream, META_SIGNATURE: {"junk": 1}},
+        {META_CREDENTIAL: world.ecr_stream, META_SIGNATURE: {"junk": 1},
+         "org.gleif.vlei/credentialSaid": world.ecr_credential.said},
     )
     result = await ext.intercept_tool_call(params, Ctx(), call_next)
 
@@ -467,14 +482,20 @@ async def test_a_forged_request_cannot_lock_out_the_real_one(world, tmp_path):
 
 
 async def test_a_timestamp_without_a_zone_is_refused_by_layer(world, tmp_path):
-    """Malformed input still names a layer; it does not escape as an unhandled TypeError."""
+    """Malformed input still names a layer; it does not escape as an unhandled TypeError. The
+    layer is invalid_signature — a malformed signature object (spec) — not the retryable
+    stale_signature: no clock makes a timestamp without a zone fresh."""
     ext = build(world, tmp_path, {"register_member": REQUIRES_REGISTRATION})
     naive = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
     result = await ext.intercept_tool_call(
-        present(world, "register_member", ARGS, ts=naive), Ctx(), call_next
+        present(world, "register_member", ARGS, ts=naive, exp=naive), Ctx(), call_next
     )
 
-    assert layer_of(result) == "stale_signature"
+    assert layer_of(result) == "invalid_signature"
+    assert "signature.ts carries no time zone" in text_of(result)
+    assert check(result, "signature")["layer"] == "invalid_signature"
+    for name in ("freshness", "digest"):
+        assert check(result, name)["passed"] is None, f"{name} never ran"
 
 
 # --------------------------------------------------------------------------------------------- #
@@ -541,7 +562,8 @@ async def test_the_report_names_the_key_state_it_verified_against(world, tmp_pat
 async def test_a_refusal_carries_the_report(world, tmp_path):
     ext = build(world, tmp_path, {"register_member": REQUIRES_REGISTRATION})
     params = make_params(
-        "register_member", ARGS, {META_CREDENTIAL: world.ecr_stream, META_SIGNATURE: {"junk": 1}}
+        "register_member", ARGS, {META_CREDENTIAL: world.ecr_stream, META_SIGNATURE: {"junk": 1},
+                                  "org.gleif.vlei/credentialSaid": world.ecr_credential.said}
     )
     result = await ext.intercept_tool_call(params, Ctx(), call_next)
 
@@ -559,7 +581,8 @@ async def test_verify_call_is_the_same_pipeline_without_a_server(world, tmp_path
 
     report = VerificationReport(tool="register_member")
     forged = make_params(
-        "register_member", ARGS, {META_CREDENTIAL: world.ecr_stream, META_SIGNATURE: {"junk": 1}}
+        "register_member", ARGS, {META_CREDENTIAL: world.ecr_stream, META_SIGNATURE: {"junk": 1},
+                                  "org.gleif.vlei/credentialSaid": world.ecr_credential.said}
     )
     with pytest.raises(InvalidSignature):
         await ext.verify_call(forged, REQUIRES_REGISTRATION, report=report)
@@ -652,7 +675,7 @@ async def test_an_extension_that_cannot_see_its_tools_refuses_rather_than_opens(
     le.write_text(world.le_stream, encoding="utf-8")
     ext = VleiIdentity(
         le_credential=le, accepted_roots=[world.root.pre], witness_url="http://witness",
-        witness_client=world.witness_client(),
+        witness_client=world.witness_client(), audience_urls=[AUDIENCE_URL],
     )
     result = await ext.intercept_tool_call(make_params("register_member", ARGS), Ctx(), call_next)
 
@@ -688,3 +711,259 @@ def test_empty_accepted_roots_is_a_configuration_error():
 
     with pytest.raises(ValueError, match="accepted_roots"):
         VleiVerifier("http://localhost:7676", accepted_roots=[])
+
+
+# --------------------------------------------------------------------------------------------- #
+# v0.3: the recipient, the format, restarts, and what a refusal never says
+# --------------------------------------------------------------------------------------------- #
+
+OTHER_SERVER = "E" + "X" * 43
+
+
+def test_the_servers_audience_is_its_les_issuee_at_its_configured_urls(world, tmp_path):
+    ext = build(world, tmp_path, audience_urls=["HTTP://SERVER.TEST/mcp", "http://127.0.0.1:8080/mcp"])
+    assert ext.recipient.aid == world.le.pre
+    assert ext.recipient.urls == ("http://server.test/mcp", "http://127.0.0.1:8080/mcp")
+
+
+def test_a_server_without_audience_urls_is_a_configuration_error(world, tmp_path):
+    with pytest.raises(ValueError, match="audience_urls"):
+        build(world, tmp_path, audience_urls=[])
+
+
+def test_the_capability_and_the_well_known_document_declare_the_format(world, tmp_path):
+    ext = build(world, tmp_path)
+    assert ext.settings()["signatureFormats"] == ["vlei-sig/0.3"]
+    assert ext.well_known_document()["signatureFormats"] == ["vlei-sig/0.3"]
+
+
+@pytest.mark.parametrize("bad", [-1, float("nan"), float("inf"), True, None])
+def test_ttl_ms_must_be_a_non_negative_finite_number(world, tmp_path, bad):
+    with pytest.raises(ValueError, match="ttl_ms"):
+        build(world, tmp_path, ttl_ms=bad)
+
+
+def test_ttl_ms_default_still_constructs(world, tmp_path):
+    ext = build(world, tmp_path)
+    assert ext.ttl_ms == 30_000
+    assert ext.settings()["ttlMs"] == 30_000
+    assert ext.well_known_document()["ttlMs"] == 30_000
+
+
+def test_ttl_ms_zero_is_accepted(world, tmp_path):
+    """0 is a stated meaning (spec §6.3: re-check before every presentation), not an error."""
+    ext = build(world, tmp_path, ttl_ms=0)
+    assert ext.ttl_ms == 0
+    assert ext.settings()["ttlMs"] == 0
+    assert ext.well_known_document()["ttlMs"] == 0
+
+
+async def test_a_call_signed_for_another_server_is_refused_before_it_runs(world, tmp_path):
+    """The replay the council found: a call captured at one server, sent to another."""
+    ext = build(world, tmp_path, {"register_member": REQUIRES_REGISTRATION})
+    params = present(world, "register_member", ARGS,
+                     audience=Audience(OTHER_SERVER, AUDIENCE_URL))
+    result = await ext.intercept_tool_call(params, Ctx(), call_next)
+
+    assert layer_of(result) == "audience_mismatch"
+    assert check(result, "digest")["layer"] == "audience_mismatch"
+    assert check(result, "signature")["passed"] is None, "refused before any witness was asked"
+
+
+async def test_a_call_signed_for_another_endpoint_of_the_same_entity_is_refused(world, tmp_path):
+    ext = build(world, tmp_path, {"register_member": REQUIRES_REGISTRATION})
+    params = present(world, "register_member", ARGS,
+                     audience=Audience(world.le.pre, "http://other-route.test/mcp"))
+    result = await ext.intercept_tool_call(params, Ctx(), call_next)
+
+    assert layer_of(result) == "audience_mismatch"
+    assert "http://other-route.test/mcp, which is not this server's endpoint" in text_of(result)
+    assert "http://server.test/mcp" not in text_of(result)
+
+
+def _readdressed(world, params, aud: dict):
+    """``params`` with its signature's ``aud`` rewritten and everything else — ``sig`` too — kept."""
+    meta = dict(params.meta)
+    meta[META_SIGNATURE] = {**meta[META_SIGNATURE], "aud": aud}
+    return make_params("register_member", ARGS, meta)
+
+
+async def test_an_intercepted_call_re_addressed_to_this_server_is_invalid_signature(world, tmp_path):
+    """A call captured on its way to another server, its ``aud`` rewritten to name this one: it now
+    passes the recipient check, and fails the signature, which covers ``aud``."""
+    ext = build(world, tmp_path, {"register_member": REQUIRES_REGISTRATION})
+    captured = present(world, "register_member", ARGS,
+                       audience=Audience(OTHER_SERVER, "http://elsewhere.test/mcp"))
+    result = await ext.intercept_tool_call(
+        _readdressed(world, captured, {"aid": world.le.pre, "url": AUDIENCE_URL}), Ctx(), call_next)
+
+    assert layer_of(result) == "invalid_signature"
+    assert check(result, "digest")["passed"] is True, "it names this server and the arguments match"
+    assert check(result, "signature")["layer"] == "invalid_signature"
+    assert "does not verify" in text_of(result)
+
+
+async def test_a_malformed_audience_aid_is_invalid_signature_not_audience_mismatch(world, tmp_path):
+    """An ``aud.aid`` that is no CESR identifier names no recipient at all: a malformed signature
+    object, refused at the signature row (spec), with freshness and digest not reached."""
+    ext = build(world, tmp_path, {"register_member": REQUIRES_REGISTRATION})
+    params = _readdressed(world, present(world, "register_member", ARGS),
+                          {"aid": "not-an-aid", "url": AUDIENCE_URL})
+    result = await ext.intercept_tool_call(params, Ctx(), call_next)
+
+    assert layer_of(result) == "invalid_signature"
+    assert "aud.aid" in text_of(result)
+    assert check(result, "signature")["layer"] == "invalid_signature"
+    for name in ("freshness", "digest"):
+        assert check(result, name)["passed"] is None, f"{name} never ran"
+
+
+@pytest.mark.parametrize("said", [None, ""], ids=["credentialSaid-sent", "no-credentialSaid"])
+async def test_a_v02_signature_is_unsupported_version(world, tmp_path, said):
+    """A v0.2 client sends no credentialSaid (v0.2 had none): the format is named first, as
+    unsupported_version, never as the missing_credential its absence would otherwise be."""
+    from mcp_vlei.signing import digest_params
+
+    ext = build(world, tmp_path, {"register_member": REQUIRES_REGISTRATION})
+    signer = signer_for(world.agent)
+    unsigned = make_params("register_member", ARGS).model_dump(by_alias=True, exclude_none=True)
+    ts = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    digest = digest_params(unsigned)
+    legacy = {"aid": signer.aid, "ts": ts, "digest": digest, "alg": "Ed25519",
+              "sig": signer.sign(f"tools/call\n{ts}\n{digest}".encode())}
+    params = present(world, "register_member", ARGS, said=said)
+    assert ("org.gleif.vlei/credentialSaid" in params.meta) is (said is None)
+    params = make_params("register_member", ARGS, {**params.meta, META_SIGNATURE: legacy})
+    result = await ext.intercept_tool_call(params, Ctx(), call_next)
+
+    assert layer_of(result) == "unsupported_version"
+    assert check(result, "credential_present")["layer"] == "unsupported_version"
+
+
+async def test_a_replay_across_a_restart_is_refused_by_the_persistent_store(world, tmp_path):
+    requirements = {"register_member": REQUIRES_REGISTRATION}
+    path = tmp_path / "state" / "replay.sqlite3"
+    # Created "long ago", so its memory began before this test signs anything.
+    first = build(world, tmp_path, requirements,
+                  replay_store=SqliteReplayStore(path, clock=lambda: LONG_AGO))
+    params = present(world, "register_member", ARGS)
+    assert text_of(await first.intercept_tool_call(params, Ctx(), call_next)) == "TOOL RAN"
+
+    restarted = build(world, tmp_path, requirements, replay_store=SqliteReplayStore(path))
+    assert restarted._replay.memory_since == LONG_AGO, "the horizon is the file's"
+    result = await restarted.intercept_tool_call(params, Ctx(), call_next)
+    assert layer_of(result) == "stale_signature"
+    # The nonce-spent refusal itself: the memory-horizon refusal also says "replay", and a store
+    # that forgot everything would produce that one.
+    assert "already presented (its nonce is spent)" in text_of(result)
+
+
+async def test_a_replay_across_a_restart_is_refused_by_the_memory_horizon(world, tmp_path):
+    requirements = {"register_member": REQUIRES_REGISTRATION}
+    params = present(world, "register_member", ARGS)
+    assert text_of(await build(world, tmp_path, requirements).intercept_tool_call(
+        params, Ctx(), call_next)) == "TOOL RAN"
+
+    restarted = build(world, tmp_path, requirements, replay_store=MemoryReplayStore())
+    result = await restarted.intercept_tool_call(params, Ctx(), call_next)
+    assert layer_of(result) == "stale_signature"
+    assert "replay memory began" in text_of(result)
+
+
+async def test_no_refusal_or_record_names_the_person(world, tmp_path):
+    """The ECR carries personLegalName. No report, failure detail or decision record repeats it,
+    whichever check the call stops at."""
+    import json
+
+    person = json.loads(world.ecr_credential.raw)["a"]["personLegalName"]
+    ext = build(world, tmp_path, {"register_member": REQUIRES_REGISTRATION,
+                                  "file_return": {"credential": "ECR", "role": "regulatory-filing"}})
+    calls = [  # each with where it stops, so a case that silently stopped elsewhere is caught
+        (present(world, "register_member", ARGS), "allowed"),
+        (present(world, "file_return", ARGS), "role_mismatch"),
+        (present(world, "register_member", ARGS, audience=Audience(OTHER_SERVER, AUDIENCE_URL)),
+         "audience_mismatch"),
+        (present(world, "register_member", ARGS, said=""), "missing_credential"),
+    ]
+    for params, stops_at in calls:
+        result = await ext.intercept_tool_call(params, Ctx(), call_next)
+        assert (text_of(result) == "TOOL RAN") if stops_at == "allowed" else (
+            layer_of(result) == stops_at), (stops_at, text_of(result))
+        assert not name_leaked(json.dumps(result.model_dump(by_alias=True), ensure_ascii=False), person)
+    world.le_registry.revoke(world.ecr_credential.said)
+    result = await ext.intercept_tool_call(present(world, "register_member", ARGS), Ctx(), call_next)
+    assert layer_of(result) == "revoked"
+    assert not name_leaked(json.dumps(result.model_dump(by_alias=True), ensure_ascii=False), person)
+    assert not name_leaked(json.dumps(ext.records, ensure_ascii=False), person)
+    assert not name_leaked(json.dumps(ext.last_report.as_dict(), ensure_ascii=False), person)
+
+
+async def test_a_signer_whose_clock_is_59_seconds_ahead_is_still_accepted(world, tmp_path):
+    """Two organisations' clocks: v0.2 tolerated 60 s either way, and v0.3 keeps that tolerance."""
+    ext = build(world, tmp_path, {"register_member": REQUIRES_REGISTRATION})
+    ahead = (datetime.now(timezone.utc) + timedelta(seconds=59)).isoformat(timespec="milliseconds")
+    result = await ext.intercept_tool_call(
+        present(world, "register_member", ARGS, ts=ahead.replace("+00:00", "Z")), Ctx(), call_next)
+    assert text_of(result) == "TOOL RAN"
+
+
+# --------------------------------------------------------------------------------------------- #
+# Fix round 1 (review findings F1, F2): a non-string credentialSaid, and what a malformed
+# signature leaves behind in rows that never ran.
+# --------------------------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("bad_said", [{"x": 1}, ["E" + "X" * 43]], ids=["dict", "list"])
+async def test_a_non_string_credential_said_is_chain_invalid(world, tmp_path, bad_said):
+    """F1: credentialSaid comes from attacker-controlled _meta. `_presented` does
+    `target not in credentials` without checking it is a string first — a dict or list is
+    unhashable there and raised TypeError instead of naming a layer. 7 and "abc" already landed
+    on chain_invalid (hashable, just absent); a dict or list must land there too, not crash."""
+    ext = build(world, tmp_path, {"register_member": REQUIRES_REGISTRATION})
+    params = make_params(
+        "register_member", ARGS,
+        {META_CREDENTIAL: world.ecr_stream, META_SIGNATURE: {"junk": 1},
+         "org.gleif.vlei/credentialSaid": bad_said},
+    )
+    result = await ext.intercept_tool_call(params, Ctx(), call_next)
+
+    assert layer_of(result) == "chain_invalid"
+
+
+@pytest.mark.parametrize("bad_said", [{"x": 1}, ["E" + "X" * 43]], ids=["dict", "list"])
+async def test_whoami_with_a_non_string_credential_said_does_not_crash(world, tmp_path, bad_said):
+    """Same malformed input through vlei_whoami: `_try_verify` only catches VleiError, so the
+    TypeError escaped there too. The fix must raise a VleiError (chain_invalid), caught here and
+    reported the same way any other failed credential makes whoami say "unverified"."""
+    ext = build(world, tmp_path, {"register_member": REQUIRES_REGISTRATION})
+    params = make_params(
+        "vlei_whoami", {},
+        {META_CREDENTIAL: world.ecr_stream, META_SIGNATURE: {"junk": 1},
+         "org.gleif.vlei/credentialSaid": bad_said},
+    )
+    result = await ext.intercept_tool_call(params, Ctx(), call_next)
+
+    assert layer_of(result) == "unverified"
+
+
+@pytest.mark.parametrize(
+    "junk", [{"junk": 1}, "not a signature", ["E" + "X" * 43]], ids=["dict", "string", "list"]
+)
+async def test_a_malformed_signature_leaves_freshness_and_digest_not_reached(world, tmp_path, junk):
+    """F2: parse_signature raises invalid_signature on shape alone, before _check_time or
+    _check_digest ever runs. The refusal still names the signature row (per spec), but freshness
+    and digest must show as not reached — the same representation unreached rows always get —
+    never silently "passed" with an empty detail, which is what the demo's first gate reads."""
+    ext = build(world, tmp_path, {"register_member": REQUIRES_REGISTRATION})
+    params = make_params(
+        "register_member", ARGS,
+        {META_CREDENTIAL: world.ecr_stream, META_SIGNATURE: junk,
+         "org.gleif.vlei/credentialSaid": world.ecr_credential.said},
+    )
+    result = await ext.intercept_tool_call(params, Ctx(), call_next)
+
+    assert layer_of(result) == "invalid_signature"
+    assert check(result, "signature")["layer"] == "invalid_signature"
+    for name in ("freshness", "digest"):
+        row = check(result, name)
+        assert row["passed"] is None, f"{name} never ran and must not read as passed"
+        assert row["detail"] == ""

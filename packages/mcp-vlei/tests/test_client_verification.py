@@ -17,20 +17,25 @@ from mcp_vlei.errors import ChainInvalid, InvalidSignature, Revoked
 from mcp_vlei.extension import EXTENSION_ID, META_ATTESTATION, META_CREDENTIAL
 from mcp_vlei.testing import Controller, Key, World
 from mcp_vlei.verifier import VerificationResult
-from test_client import signer_for, vlei_client
+from test_client import SERVER_URL, signer_for, vlei_client
+
+#: What a v0.3 server declares in its capability.
+V03 = {"signatureFormats": ["vlei-sig/0.3"], "pop": "/.well-known/vlei/pop"}
 
 
 class FakeSession:
     """An MCP session whose server presents `credential` and records what the client sends."""
 
-    def __init__(self, credential: str | None, result_meta: dict | None = None) -> None:
+    def __init__(self, credential: str | None, result_meta: dict | None = None,
+                 capability: dict | None = None) -> None:
         self.credential = credential
         self.result_meta = result_meta
+        self.capability = V03 if capability is None else capability
         self.sent: list[dict | None] = []
 
     async def initialize(self):
         meta = {META_CREDENTIAL: self.credential} if self.credential else {}
-        return SimpleNamespace(capabilities=SimpleNamespace(extensions={EXTENSION_ID: {}}),
+        return SimpleNamespace(capabilities=SimpleNamespace(extensions={EXTENSION_ID: self.capability}),
                                meta=meta)
 
     async def call_tool(self, name, arguments, meta=None):
@@ -43,8 +48,30 @@ def world() -> World:
     return World()
 
 
+def pop_server(world, signer=None, *, seen: list | None = None):
+    """The server's /.well-known/vlei/pop, answering as its LE (or as ``signer``)."""
+    import json
+
+    import httpx
+
+    from mcp_vlei.audience import Recipient
+    from mcp_vlei.pop import POP_PATH, PopResponder
+
+    responder = PopResponder(signer or signer_for(world.le), Recipient(world.le.pre, (SERVER_URL,)))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == POP_PATH
+        if seen is not None:
+            seen.append(request.url.path)
+        status, body = responder.respond(json.loads(request.content))
+        return httpx.Response(status, json=body)
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
 def verifying_client(session, world, tmp_path, **kwargs):
     kwargs.setdefault("on_unverified_server", "stop")
+    kwargs.setdefault("pop_client", pop_server(world))
     return vlei_client(session, world, tmp_path, verify_server=True,
                        accepted_roots=[world.root.pre], **kwargs)
 
@@ -132,8 +159,9 @@ async def test_a_verified_server_gets_signed_calls(world, tmp_path):
 
 
 async def test_choosing_to_talk_to_unverified_servers_is_still_possible(world, tmp_path):
-    session = FakeSession(None)
+    session = FakeSession(world.le_stream)
     client = vlei_client(session, world, tmp_path)  # verify_server=False, warn
+    await client.connect()
     client._requirements = {"file_report": {"credential": "ECR"}}
 
     await client.call_tool("file_report", {"period": "2026Q2"})
@@ -147,8 +175,10 @@ async def test_choosing_to_talk_to_unverified_servers_is_still_possible(world, t
 
 async def test_a_rejected_attestation_does_not_discard_the_tool_result(world, tmp_path):
     """The tool has already run; raising here told the agent it failed, and it would retry."""
-    session = FakeSession(None, result_meta={META_ATTESTATION: {"verifierAid": "garbage"}})
+    session = FakeSession(world.le_stream,
+                          result_meta={META_ATTESTATION: {"verifierAid": "garbage"}})
     client = vlei_client(session, world, tmp_path)
+    await client.connect()
     client._requirements = {"file_report": {"credential": "ECR"}}
 
     result = await client.call_tool("file_report", {"period": "2026Q2"})
@@ -231,8 +261,10 @@ async def test_connecting_without_a_revocation_check_is_a_stated_choice(world, t
 
 async def test_each_call_reports_its_own_attestation(world, tmp_path):
     """A rejected attestation must not leave an earlier accepted one looking current."""
-    session = FakeSession(None, result_meta={META_ATTESTATION: {"verifierAid": "garbage"}})
+    session = FakeSession(world.le_stream,
+                          result_meta={META_ATTESTATION: {"verifierAid": "garbage"}})
     client = vlei_client(session, world, tmp_path)
+    await client.connect()
     client._requirements = {"file_report": {"credential": "ECR"}}
     client.attested = VerificationResult(aid="E" + "x" * 43, lei="L")  # left from an earlier call
 
@@ -255,8 +287,15 @@ def test_verifying_servers_without_a_witness_is_a_stated_choice(world, tmp_path)
     with pytest.raises(ValueError, match="witness_url"):
         VleiClient(object(), credential=credential_file(tmp_path, world),
                    signer=signer_for(world.agent), verify_server=True,
-                   accepted_roots=[world.root.pre])
+                   accepted_roots=[world.root.pre], endpoint_url=SERVER_URL)
+
+    with pytest.raises(ValueError, match="proof of possession"):
+        VleiClient(object(), credential=credential_file(tmp_path, world),
+                   signer=signer_for(world.agent), verify_server=True,
+                   accepted_roots=[world.root.pre], on_unchecked_revocation="warn",
+                   endpoint_url=SERVER_URL)
 
     VleiClient(object(), credential=credential_file(tmp_path, world),
                signer=signer_for(world.agent), verify_server=True,
-               accepted_roots=[world.root.pre], on_unchecked_revocation="warn")
+               accepted_roots=[world.root.pre], on_unchecked_revocation="warn", pop="off",
+               endpoint_url=SERVER_URL)

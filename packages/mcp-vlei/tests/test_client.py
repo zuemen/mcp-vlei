@@ -7,6 +7,7 @@ in-process witness (`mcp_vlei.testing.World`).
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,6 +16,7 @@ import pytest
 from mcp_vlei import Signer, VleiCapability, VleiClient, VleiIdentity, make_attestation
 from mcp_vlei.errors import ChainInvalid
 from mcp_vlei.extension import META_ATTESTATION
+from mcp_vlei.replay import MemoryReplayStore
 from mcp_vlei.testing import Controller, World
 from mcp_vlei.verifier import VerificationResult
 
@@ -29,8 +31,13 @@ def credential_file(tmp_path: Path, world: World) -> Path:
     return path
 
 
+#: Where the server under test is reached, as the client signs for it and the server expects.
+SERVER_URL = "http://server.test/mcp"
+
+
 def vlei_client(session, world: World, tmp_path: Path, **kwargs) -> VleiClient:
     kwargs.setdefault("verify_server", False)
+    kwargs.setdefault("endpoint_url", SERVER_URL)
     kwargs.setdefault("on_unverified_server", "warn")
     kwargs.setdefault("witness_client", world.witness_client())
     kwargs.setdefault("witness_url", "http://witness")
@@ -57,6 +64,7 @@ def test_verifying_the_server_needs_accepted_roots(tmp_path):
             credential=credential_file(tmp_path, world),
             signer=signer_for(world.agent),
             verify_server=True,
+            endpoint_url=SERVER_URL,
         )
 
 
@@ -78,6 +86,8 @@ async def test_a_protected_tool_that_takes_no_arguments_verifies(tmp_path):
         accepted_roots=[world.root.pre],
         witness_url="http://witness",
         witness_client=world.witness_client(),
+        audience_urls=[SERVER_URL],
+        replay_store=MemoryReplayStore(memory_since=datetime(2026, 1, 1, tzinfo=timezone.utc)),
     )
     server = MCPServer(name="t", version="0.1.0", extensions=[vlei])
     vlei.bind(server)
@@ -87,7 +97,7 @@ async def test_a_protected_tool_that_takes_no_arguments_verifies(tmp_path):
         return "pong"
 
     async with Client(server, extensions=[VleiCapability()]) as raw:
-        client = vlei_client(raw, world, tmp_path)
+        client = vlei_client(raw, world, tmp_path, audience_aid=world.le.pre)
         await client.list_tools()
         result = await client.call_tool("ping")
 

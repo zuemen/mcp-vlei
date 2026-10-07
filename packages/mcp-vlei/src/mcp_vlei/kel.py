@@ -27,6 +27,7 @@ check meaningful. The limit is stated in ``docs/CONFORMANCE.md``.
 from __future__ import annotations
 
 import base64
+import dataclasses
 import json
 from dataclasses import dataclass, field
 from typing import Any, Sequence
@@ -35,6 +36,7 @@ import httpx
 from cryptography.exceptions import InvalidSignature as _CryptoInvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
+from .audience import normalise_endpoint
 from .errors import ChainInvalid
 
 __all__ = [
@@ -46,6 +48,7 @@ __all__ = [
     "delegator_of",
     "digest_of",
     "key_states_in",
+    "normalise_witness_urls",
     "parse_messages",
     "recompute_event_said",
     "verify_kel",
@@ -279,6 +282,10 @@ class KeyState:
     delegator: str | None
     #: Every seal anchored by a verified event in this log.
     seals: list[dict[str, Any]]
+    #: How many witnesses served a valid copy of this log that agreed with every other copy, and
+    #: how many were asked. 0 and 0 for a log read from a presented stream, not from witnesses.
+    agreeing: int = 0
+    configured: int = 0
 
     def anchors(self, seal: dict[str, Any]) -> bool:
         """Does a verified event in this log anchor ``seal`` (matched on `i`, `s` and `d`)?"""
@@ -510,6 +517,26 @@ def _delegator_named_by(copies: list[tuple[str, list[Message]]], pre: str) -> st
     return None
 
 
+def _witness_spelling(url: str) -> str:
+    try:
+        return normalise_endpoint(url).rstrip("/")
+    except ValueError:
+        return url.strip().rstrip("/")
+
+
+def normalise_witness_urls(witness_url: str | Sequence[str] | None) -> list[str]:
+    """The witnesses ``WitnessKeyStates`` asks: one spelling each, each once, in the order given.
+
+    Scheme and host lower-case, the default port dropped, no trailing ``/`` — so one witness listed
+    as ``http://wan`` and as ``HTTP://WAN:80/`` is asked once and counts once toward a quorum. A URL
+    the endpoint rules cannot read is kept as written, less its trailing ``/``.
+    """
+    if not witness_url:
+        return []
+    urls = [witness_url] if isinstance(witness_url, str) else list(witness_url)
+    return list(dict.fromkeys(_witness_spelling(u) for u in urls if u))
+
+
 class WitnessKeyStates:
     """Current key states, read from witnesses' copies of each log and verified here.
 
@@ -535,8 +562,8 @@ class WitnessKeyStates:
         timeout: float = 15.0,
         client: httpx.AsyncClient | None = None,
     ) -> None:
-        urls = [witness_url] if isinstance(witness_url, str) else list(witness_url)
-        urls = [u.rstrip("/") for u in urls if u]
+        # De-duplicated by spelling: a witness listed twice must not answer twice toward a quorum.
+        urls = normalise_witness_urls(witness_url)
         if not urls:
             raise ValueError("witness_url is required to read a key event log")
         self.witness_urls = urls
@@ -659,4 +686,5 @@ class WitnessKeyStates:
                 seen.setdefault(sn, (said, url))
 
         # A shorter valid copy is a witness still catching up; the longest valid copy is the state.
-        return max(valid, key=lambda copy: copy[2].sn)[2]
+        best = max(valid, key=lambda copy: copy[2].sn)[2]
+        return dataclasses.replace(best, agreeing=len(valid), configured=len(self.witness_urls))

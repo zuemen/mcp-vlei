@@ -17,9 +17,11 @@ Usage from code::
 
     from gateway_client import call_through_gateway, signed_meta
 
-    meta = signed_meta(credential=chain, signer=signer, tool="enroll_employee",
-                       arguments=args, delegated_aid=signer.aid, credential_said=said)
-    out = await call_through_gateway("http://localhost:3000/mcp", "enroll_employee", args, meta)
+    url = "http://localhost:3000/mcp"
+    meta = signed_meta(credential=chain, signer=signer, tool="enroll_employee", arguments=args,
+                       audience=await audience_for(url), delegated_aid=signer.aid,
+                       credential_said=said)
+    out = await call_through_gateway(url, "enroll_employee", args, meta)
     # {"allowed": True, "layer": None, "text": "...", "report": {...}, "identity": {...}}
 
 From a shell::
@@ -44,6 +46,16 @@ from mcp.shared.exceptions import MCPError
 
 DEFAULT_URL = "http://localhost:3000/mcp"
 
+
+def _client_info():
+    """How the console names itself to the gateway: a script playing the agent, not Claude."""
+    from mcp.types import Implementation
+
+    return Implementation(name="trust-console (scripted agent)", version="0.2")
+
+
+CLIENT_INFO = _client_info()
+
 _HEADER_TO_FIELD = {
     "x-vlei-lei": "lei",
     "x-vlei-role": "role",
@@ -60,31 +72,53 @@ def _keys() -> Any:
     return keys()
 
 
+async def audience_for(url: str, *, timeout: float = 10.0) -> Any:
+    """The gateway at ``url`` as a call is signed for it: the LE its ``/.well-known/vlei`` names
+    (taken as published — this script trusts the gateway it was pointed at) and ``url`` itself."""
+    from urllib.parse import urlsplit, urlunsplit
+
+    import httpx
+
+    from mcp_vlei.client import published_audience
+
+    parts = urlsplit(url)
+    well_known = urlunsplit((parts.scheme, parts.netloc, "/.well-known/vlei", "", ""))
+    async with httpx.AsyncClient(timeout=timeout) as http:
+        response = await http.get(well_known)
+    response.raise_for_status()
+    return published_audience(response.json(), url)
+
+
 def signed_meta(
     *,
     credential: str,
     signer: Any,
     tool: str,
     arguments: dict[str, Any],
+    audience: Any,
     delegated_aid: str | None = None,
     credential_said: str | None = None,
 ) -> dict[str, Any]:
-    """The ``_meta`` a vLEI ``tools/call`` carries, signed over exactly ``{name, arguments}``.
+    """The ``_meta`` a vLEI ``tools/call`` carries, signed (``vlei-sig/0.3``) over exactly
+    ``{name, arguments}``, for ``audience`` — the gateway's LE AID and the URL the call goes to.
 
-    Sign immediately before calling: the gateway's freshness window is 60 seconds, and any change
-    to ``arguments`` after signing is refused as ``digest_mismatch``.
+    Sign immediately before calling: the signature expires in 30 seconds, any change to
+    ``arguments`` after signing is refused as ``digest_mismatch``, and a call sent anywhere but
+    ``audience`` is refused as ``audience_mismatch``.
     """
+    from mcp_vlei.extension import _said_of
     from mcp_vlei.signing import sign_request
 
     k = _keys()
+    said = credential_said or _said_of(credential)
     meta: dict[str, Any] = {
         k.credential: credential,
-        k.signature: sign_request(signer, "tools/call", {"name": tool, "arguments": arguments}),
+        k.signature: sign_request(signer, "tools/call", {"name": tool, "arguments": arguments},
+                                  audience=audience, credential_said=said),
+        k.credential_said: said,
     }
     if delegated_aid:
         meta[k.delegated_aid] = delegated_aid
-    if credential_said:
-        meta[k.credential_said] = credential_said
     return meta
 
 
@@ -96,6 +130,7 @@ async def call_through_gateway(
     *,
     mode: str = "auto",
     timeout: float = 30.0,
+    client_info: Any = None,
 ) -> dict:
     """Call ``tool`` at ``url`` (the gateway's MCP endpoint) and report the outcome.
 
@@ -136,7 +171,8 @@ async def call_through_gateway(
     )
     try:
         async with http:
-            async with Client(streamable_http_client(url, http_client=http), mode=mode) as client:
+            async with Client(streamable_http_client(url, http_client=http), mode=mode,
+                              client_info=client_info or CLIENT_INFO) as client:
                 result = await client.call_tool(tool, arguments, meta=meta)
     except MCPError as exc:
         return _refused(refusals, f"{exc.error.message} (JSON-RPC {exc.error.code})")
@@ -227,12 +263,14 @@ def _meta_from_args(args: argparse.Namespace, arguments: dict[str, Any]) -> dict
         # A deterministic demo chain (mcp_vlei.testing): verifies only against a witness serving
         # the same World. Never a real credential.
         from mcp_vlei import Signer
+        from mcp_vlei.audience import Audience
         from mcp_vlei.testing import World
 
         world = World(role="labor-insurance-filing", label=args.world_label)
         signer = Signer.from_seed(world.agent.pre, world.agent.seed)
         return signed_meta(
             credential=world.ecr_stream, signer=signer, tool=args.tool, arguments=arguments,
+            audience=Audience(world.le.pre, args.url),
             delegated_aid=world.agent.pre, credential_said=world.ecr_credential.said,
         )
     if args.credential and args.key_store and args.aid:
@@ -241,8 +279,8 @@ def _meta_from_args(args: argparse.Namespace, arguments: dict[str, Any]) -> dict
         signer = Signer.from_key_store(args.key_store, args.aid)
         return signed_meta(
             credential=Path(args.credential).read_text(encoding="utf-8").strip(), signer=signer,
-            tool=args.tool, arguments=arguments, delegated_aid=args.delegated_aid,
-            credential_said=args.credential_said,
+            tool=args.tool, arguments=arguments, audience=asyncio.run(audience_for(args.url)),
+            delegated_aid=args.delegated_aid, credential_said=args.credential_said,
         )
     return {}
 

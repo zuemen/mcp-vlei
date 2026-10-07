@@ -76,12 +76,13 @@ policy permits continuing.
    cannot read. Only a client constructed with `on_unchecked_revocation="warn"` connects without the
    check; its result carries `revocation_checked=False`. Then the server is verified *except for
    revocation*: say so, and never report its revocation as checked.
-6. If the discover result carried a signature, verify it under the server AID's current key state
-   and check freshness. The specification does not define this signature yet, and the reference
-   client does not check one.
+6. **Challenge the server** at the `pop` it declares (proof of possession, `vlei-pop/0.3`): a fresh
+   nonce and the URL you will call; the answer must echo both, be fresh, and verify under the key
+   state — from a majority of witnesses — of the LE's issuee or an AID it delegated to. No `pop`,
+   or no `vlei-sig/0.3` in `signatureFormats` → `unsupported_version`.
 
-**Pass condition:** 1–4; 5 whenever the live logs can be reached (otherwise, record that revocation
-was not established); 6 whenever a signature is present.
+**Pass condition:** 1–4 and 6; 5 whenever the live logs can be reached (otherwise, record that
+revocation was not established). Repeat all of it before presenting once `ttlMs` has passed.
 
 **On failure:** **stop.** Report the failure layer by name. Do not call any tool on this server,
 including public ones. An organization that cannot prove it is who it claims is not one to send a
@@ -131,9 +132,10 @@ attempting the call.
 **Actions**
 1. Canonicalize `params` with RFC 8785, **excluding `_meta`**.
 2. `digest = base64url(sha256(canonical))`.
-3. `ts` = now, RFC 3339, UTC.
-4. Sign `method + "\n" + ts + "\n" + digest` through the signer — the keystore returns a signature;
-   you never hold the key.
+3. `ts` = now, `exp` = 30 s later, RFC 3339, UTC; `nonce` = 16 random bytes, base64url.
+4. Sign `JCS({aid, aud: {aid: <server LE issuee>, url: <endpoint URL>}, cred: <credentialSaid>,
+   digest, exp, method: "tools/call", nonce, ts, v: "vlei-sig/0.3"})` through the signer — the
+   keystore returns a signature; you never hold the key.
 5. Attach to `params._meta` four members: the ECR credential (`org.gleif.vlei/credential`), the
    signature (`org.gleif.vlei/signature`), the delegated AID (`org.gleif.vlei/delegatedAid`, equal
    to `signature.aid`), and which credential in the stream is being presented
@@ -207,7 +209,7 @@ flowchart TD
     S2{"Stage 2<br/>verify server LE<br/>SAID → chain → root<br/>→ issuance → vLEI shape<br/>→ revocation (if reachable)"}
     S3["Stage 3<br/>tools/list<br/>read org.gleif.vlei/requires"]
     S4{"Stage 4<br/>does my role and scope<br/>cover this tool?"}
-    S5["Stage 5<br/>digest → sign<br/>method + ts + digest<br/>→ tools/call"]
+    S5["Stage 5<br/>digest → sign statement<br/>recipient, credential, nonce, expiry<br/>→ tools/call"]
     S6{"Stage 6<br/>isError?"}
     S7["Stage 7<br/>attestation present:<br/>verify attester first"]
     STOP["STOP<br/>report the failure layer"]
@@ -216,7 +218,7 @@ flowchart TD
 
     S0 --> S1 --> S2
     S2 -->|"pass"| S3
-    S2 -->|"chain_invalid / revoked / unknown_root"| STOP
+    S2 -->|"chain_invalid / revoked / unknown_root /<br/>invalid_signature / unsupported_version"| STOP
     S3 --> S4
     S4 -->|"covered"| S5
     S4 -->|"not covered"| EXPLAIN

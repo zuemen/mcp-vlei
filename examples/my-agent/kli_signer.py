@@ -17,8 +17,11 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
+import threading
 from pathlib import Path
+from typing import Mapping
 
 from mcp_vlei.signing import CommandSigner
 
@@ -26,11 +29,22 @@ ROOT = Path(__file__).resolve().parents[2]
 COMPOSE = os.environ.get("VLEI_COMPOSE", str(ROOT / "scripts" / "docker-compose.yml"))
 
 
+def _compose() -> list[str]:
+    """The `docker compose …` command whose keri-cli signs. VLEI_COMPOSE_CMD, when set, is used as
+    it is — the parallel v0.3 stack's `docker compose -p mcp-vlei-v03p -f … -f …`, so that nothing
+    run against it ever signs in the live stack's keystores."""
+    command = os.environ.get("VLEI_COMPOSE_CMD", "").strip()
+    return shlex.split(command) if command else ["docker", "compose", "-f", COMPOSE]
+
+
 def _run(args: list[str]) -> str:
     env = dict(os.environ, MSYS_NO_PATHCONV="1")  # Git Bash rewrites container paths otherwise
     result = subprocess.run(
-        ["docker", "compose", "-f", COMPOSE, "exec", "-T", "keri-cli", *args],
+        [*_compose(), "exec", "-T", "keri-cli", *args],
         capture_output=True, text=True, env=env, timeout=120,
+        # Never the inherited stdin: in an MCP server over stdio that is the client's channel, and
+        # `docker compose exec` forwards stdin into the container, swallowing the client's messages.
+        stdin=subprocess.DEVNULL,
         # `kli status` prints a check mark for an anchored delegation, which the console codepage
         # on Windows cannot decode; without this the capture thread dies and the output is lost.
         encoding="utf-8", errors="replace",
@@ -53,6 +67,39 @@ def keystore_signer(keystore: str, alias: str) -> CommandSigner:
     )
 
 
+class LazyKeystoreSigner:
+    """`keystore_signer`, with the AID and key read from the keystore when first needed.
+
+    Reading them takes two `kli` runs through Docker, seconds each on a busy machine. An MCP server
+    over stdio cannot spend those before it answers initialize — the client gives up on it — and
+    verifying the gateway does not need them. The first signature, or the first look at the AID,
+    reads them; from then on this is the signer `keystore_signer` would have returned.
+    """
+
+    def __init__(self, keystore: str, alias: str, make=None) -> None:
+        self._args = (keystore, alias)
+        self._make = make or keystore_signer
+        self._signer = None
+        self._lock = threading.Lock()
+
+    def _real(self):
+        with self._lock:
+            if self._signer is None:
+                self._signer = self._make(*self._args)
+            return self._signer
+
+    @property
+    def aid(self) -> str:
+        return self._real().aid
+
+    @property
+    def verkey(self) -> str:
+        return self._real().verkey
+
+    def sign(self, payload: bytes) -> str:
+        return self._real().sign(payload)
+
+
 def _verkey(keystore: str, alias: str) -> str:
     """The AID's current public key, which the counterparty verifies the signature against.
 
@@ -71,13 +118,21 @@ def _verkey(keystore: str, alias: str) -> str:
     raise RuntimeError(f"no current public key in key state for {alias!r}: {out[:200]}")
 
 
+def credentials_dir(root: Path = ROOT, environ: Mapping[str, str] | None = None) -> Path:
+    """Where the bootstrap scripts wrote credentials: VLEI_CREDENTIALS_DIR (the parallel v0.3
+    stack's .v03/credentials), else the repository's credentials/. The one copy of this rule —
+    examples/credential-proxy/proxy.py imports it."""
+    env = os.environ if environ is None else environ
+    return Path(env["VLEI_CREDENTIALS_DIR"]) if env.get("VLEI_CREDENTIALS_DIR") else root / "credentials"
+
+
 def agent_signer() -> CommandSigner:
     """The agent's signer: its delegated AID when one exists, the ECR holder's otherwise.
 
     The fallback is the documented one from `spec/SPEC.md`: `delegatedAid` is optional, and a
     deployment without it keeps every property except the second revocation switch.
     """
-    env_path = ROOT / "credentials" / "env.json"
+    env_path = credentials_dir() / "env.json"
     env = json.loads(env_path.read_text()) if env_path.exists() else {}
     if env.get("agentAid"):
         return keystore_signer("agent", "agent")

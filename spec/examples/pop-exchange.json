@@ -1,0 +1,36 @@
+{
+  "$comment": [
+    "Proof of possession (spec/SPEC.md): the client's challenge, and the server's answer. The",
+    "signature is real: it verifies against the published test key of digest-vectors.json",
+    "(seed 00..1f). The AIDs are illustrative; in a deployment the client reads the signer's key",
+    "state from witnesses and requires it to be the LE's issuee or delegated by it."
+  ],
+  "request": {
+    "method": "POST",
+    "url": "http://localhost:3000/.well-known/vlei/pop",
+    "body": {
+      "v": "vlei-pop/0.3",
+      "nonce": "EBESExQVFhcYGRobHB0eHw",
+      "url": "http://localhost:3000/mcp"
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "v": "vlei-pop/0.3",
+      "aid": "EGatewaySigningAidDelegatedByTheOperatorsLE0",
+      "nonce": "EBESExQVFhcYGRobHB0eHw",
+      "url": "http://localhost:3000/mcp",
+      "ts": "2026-09-24T09:00:00.000Z",
+      "exp": "2026-09-24T09:01:00.000Z",
+      "sig": "0BCu4W_G8Kf8GGQl_10nZ_beLONg5GcjyiKK2cDvG4oyNkATAylZ8EqOySthsTkM2oekGB82dNl_DfYXnfV17jYN"
+    }
+  },
+  "refusedForAnotherUrl": {
+    "status": 403,
+    "body": {
+      "layer": "audience_mismatch",
+      "message": "http://relay.example/mcp is not an endpoint this server will prove itself for"
+    }
+  }
+}

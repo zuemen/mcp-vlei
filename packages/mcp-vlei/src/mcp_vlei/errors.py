@@ -27,6 +27,8 @@ __all__ = [
     "ScopeExceeded",
     "UnknownRoot",
     "MissingCredential",
+    "AudienceMismatch",
+    "UnsupportedVersion",
     "EXTENSION_REQUIRED_CODE",
 ]
 
@@ -48,6 +50,14 @@ class FailureLayer(str, Enum):
 
     #: Not a verification failure: the caller presented nothing at all.
     MISSING_CREDENTIAL = "missing_credential"
+
+    #: v0.3. The signature (or a server's proof of possession) names another recipient: another LE
+    #: AID or another endpoint. A misconfigured client, or a call replayed to a server it was not
+    #: meant for.
+    AUDIENCE_MISMATCH = "audience_mismatch"
+    #: v0.3. The other party does not speak `vlei-sig/0.3`: a v0.2 signature at a v0.3 verifier, or
+    #: a v0.2 server in front of a v0.3 client. Nothing was executed, or nothing was presented.
+    UNSUPPORTED_VERSION = "unsupported_version"
 
     @property
     def retryable(self) -> bool:
@@ -148,3 +158,5 @@ RoleMismatch = _layered("RoleMismatch", FailureLayer.ROLE_MISMATCH)
 ScopeExceeded = _layered("ScopeExceeded", FailureLayer.SCOPE_EXCEEDED)
 UnknownRoot = _layered("UnknownRoot", FailureLayer.UNKNOWN_ROOT)
 MissingCredential = _layered("MissingCredential", FailureLayer.MISSING_CREDENTIAL)
+AudienceMismatch = _layered("AudienceMismatch", FailureLayer.AUDIENCE_MISMATCH)
+UnsupportedVersion = _layered("UnsupportedVersion", FailureLayer.UNSUPPORTED_VERSION)

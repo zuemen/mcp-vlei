@@ -31,7 +31,7 @@ SCHEMA_SOURCE = "https://github.com/WebOfTrust/vLEI/tree/main/schema/acdc"
 
 RECORD_FIELDS = ("at", "decision", "tool", "layer", "message", "via", "wire", "metaKeys",
                  "argumentNames", "revocationChecked", "lei", "role", "holderAid", "delegateAid",
-                 "credentialSaid", "note")
+                 "credentialSaid", "note", "declaredClient")
 REPORT_FIELDS = ("allowed", "layer", "totalMs", "tool", "caveats")
 IDENTITY_FIELDS = ("lei", "role", "holderAid", "delegateAid", "credentialSaid", "rootAid")
 CHECK_FIELDS = ("name", "label", "passed", "skipped", "layer", "detail", "durationMs")

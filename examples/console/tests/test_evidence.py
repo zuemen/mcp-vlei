@@ -72,3 +72,31 @@ async def test_the_page_serves_the_log_and_the_official_schemas(tmp_path, monkey
     assert "ACDC" not in json.dumps(data)
     assert page.status_code == 200 and "evidence.js" in page.text
     assert script.status_code == 200
+
+
+async def test_the_story_page_and_its_assets_are_served():
+    """/story: the demonstration in three views (issuer, gateway, outcome), driving the same API."""
+    module = _load()
+    async with _client(module) as client:
+        page = await client.get("/story")
+        script = await client.get("/app/story.js")
+        style = await client.get("/app/story.css")
+    assert page.status_code == 200 and "story.js" in page.text
+    for view in ("issuer", "gateway", "outcome"):
+        assert f'data-view="{view}"' in page.text
+    assert script.status_code == 200 and "/api/call" in script.text and "/api/evidence" in script.text
+    assert style.status_code == 200
+
+
+async def test_the_before_ledger_says_when_the_before_server_is_not_there(monkeypatch):
+    monkeypatch.setenv("VLEI_BEFORE_URL", "http://127.0.0.1:9")   # nothing listens there
+    module = _load()
+    async with _client(module) as client:
+        data = (await client.get("/api/before/ledger")).json()
+    assert data["reachable"] is False and data["filings"] == [] and data["impostor"] == "EMP-0666"
+
+
+async def test_the_impostor_is_not_on_the_public_page():
+    module = _load(public=True)
+    async with _client(module) as client:
+        assert (await client.post("/api/before/impersonate")).status_code == 403

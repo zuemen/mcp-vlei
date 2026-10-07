@@ -78,7 +78,8 @@ def test_turning_revocation_off_is_said_out_loud(world, tmp_path, caplog):
     le.write_text(world.le_stream, encoding="utf-8")
     with caplog.at_level(logging.WARNING):
         VleiIdentity(le_credential=le, accepted_roots=[world.root.pre],
-                     witness_url="http://witness", revocation_source="none")
+                     witness_url="http://witness", revocation_source="none",
+                     audience_urls=["http://server.test/mcp"])
 
     assert any("revocation" in r.message.lower() for r in caplog.records)
 

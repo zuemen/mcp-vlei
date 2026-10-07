@@ -1,0 +1,44 @@
+# The parallel v0.3 stack's witnesses, schema server, verifier and keystores — an overlay on
+# scripts/docker-compose.yml that changes every name and port the live stack uses:
+#
+#   docker compose -p mcp-vlei-v03p -f scripts/docker-compose.yml -f deploy/v03/parallel.base.yml …
+#
+# Never run scripts/docker-compose.yml from a worktree without this overlay and `-p mcp-vlei-v03p`:
+# its project name and container names are the live stack's, and compose would recreate those
+# containers — including mcp-vlei-cli, whose keystores live in its container layer and would be lost.
+# scripts/v03-stack.sh is the only intended caller.
+#
+# Host ports: the live ones +30000 (witnesses 35642-35644, schema 37723, verifier 37676), outside
+# Windows' excluded ranges on this machine and clear of the frontend plan's +20000.
+# Relative paths resolve against scripts/, the directory of the first compose file.
+name: mcp-vlei-v03p
+
+services:
+  witness-demo:
+    container_name: !override mcp-vlei-v03p-witness
+    ports: !override
+      - "35642:5642"
+      - "35643:5643"
+      - "35644:5644"
+
+  vlei-server:
+    container_name: !override mcp-vlei-v03p-schema
+    ports: !override
+      - "37723:7723"
+
+  vlei-verifier:
+    container_name: !override mcp-vlei-v03p-verifier
+    ports: !override
+      - "37676:7676"
+
+  keri-cli:
+    container_name: !override mcp-vlei-v03p-cli
+    volumes: !override
+      - ./keri-config:/keri-config
+      # The parallel credentials (.v03/credentials, gitignored): set by scripts/v03-stack.sh.
+      - ${VLEI_CREDENTIALS_DIR:?scripts/v03-stack.sh sets VLEI_CREDENTIALS_DIR}:/credentials
+      # Unlike the live keri-cli, the parallel one keeps its keystores on a volume.
+      - keystores:/usr/local/var/keri
+
+volumes:
+  keystores: {}

@@ -12,12 +12,14 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+import anyio
 import httpx
 import pytest
 
@@ -32,6 +34,12 @@ _spec.loader.exec_module(skill_server)
 from mcp import Client  # noqa: E402
 from mcp.client import advertise  # noqa: E402
 from mcp.shared.exceptions import MCPError  # noqa: E402
+from mcp_vlei.audience import Audience  # noqa: E402
+from mcp_vlei.errors import UnsupportedVersion  # noqa: E402
+from mcp_vlei.kel import WitnessKeyStates  # noqa: E402
+from mcp_vlei.pop import POP_PATH, prove_server  # noqa: E402
+from mcp_vlei.pop import challenge as pop_challenge  # noqa: E402
+from mcp_vlei.replay import MemoryReplayStore  # noqa: E402
 from mcp_vlei.signing import Signer, sign_request  # noqa: E402
 from mcp_vlei.testing import ECR_SCHEMA, LEI, Controller, World, export  # noqa: E402
 
@@ -39,7 +47,17 @@ EXT = skill_server.EXTENSION_ID
 ROLE = "regulatory-filing"
 WITNESS_URL = "http://witness.test"
 ARGS = {"form": "CAP-1", "period": "2026-Q3", "payload": {"tier1Capital": 1250000, "currency": "EUR"}}
-PERSON = "Wang Xiao-Ming"  # the natural person World puts in the ECR; must never leak into a report
+PERSON = "Bob"  # the natural person World puts in the ECR; must never leak into a report
+PUBLIC_URL = "http://127.0.0.1:8082"
+#: Before anything a test signs: these tests are about restarts only where they say so.
+LONG_AGO = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+def name_leaked(text: str, name: str) -> bool:
+    """True if `name` appears in `text` as a whole word, outside any base64url-ish run of 20+
+    characters (a SAID, AID or signature) where a short name could appear by chance."""
+    cleaned = re.sub(r"[A-Za-z0-9_-]{20,}", "", text)
+    return re.search(rf"\b{re.escape(name)}\b", cleaned) is not None
 
 
 @pytest.fixture
@@ -79,16 +97,21 @@ class Deployment:
     server: Any
 
 
-def deploy(world: World | None = None, *, roots: list[str] | None = None) -> Deployment:
+def deploy(world: World | None = None, *, roots: list[str] | None = None,
+           replay_store: Any = None, pop_signer: Any = None) -> Deployment:
+    global _server_aid
     world = world or World(role=ROLE)
+    _server_aid = world.le.pre
     witness = Witness(world)
     server = skill_server.build_server(
         le_credential=world.le_stream,
         accepted_roots=roots or [world.root.pre],
         witness_url=WITNESS_URL,
         role=ROLE,
-        public_url="http://127.0.0.1:8082",
+        public_url=PUBLIC_URL,
         http=witness.client(),
+        replay_store=replay_store or MemoryReplayStore(memory_since=LONG_AGO),
+        **({"pop_signer": pop_signer} if pop_signer is not None else {}),
     )
     return Deployment(world, witness, server)
 
@@ -105,16 +128,24 @@ def presentation(
     arguments: dict[str, Any] = ARGS,
     ts: str | None = None,
     delegated_aid: str | None = None,
+    audience_aid: str | None = None,
+    nonce: str | None = None,
 ) -> dict[str, Any]:
-    """The four request `_meta` keys, signed over method, ts and the digest of the params."""
+    """The four request `_meta` keys, signed (vlei-sig/0.3) for this server's LE at its URL."""
     return {
         "org.gleif.vlei/credential": stream,
         "org.gleif.vlei/credentialSaid": said,
         "org.gleif.vlei/delegatedAid": delegated_aid or signer.aid,
         "org.gleif.vlei/signature": sign_request(
-            signer, "tools/call", {"name": "submit_filing", "arguments": arguments}, ts=ts
+            signer, "tools/call", {"name": "submit_filing", "arguments": arguments}, ts=ts,
+            audience=Audience(audience_aid or _server_aid, f"{PUBLIC_URL}/mcp"),
+            credential_said=said, nonce=nonce,
         ),
     }
+
+
+#: The LE AID of the server `deploy` built last: the signing helpers sign for it unless told not to.
+_server_aid = ""
 
 
 def agent_presents_ecr(world: World, **kwargs: Any) -> dict[str, Any]:
@@ -144,7 +175,7 @@ def refused(result: Any) -> tuple[str, str]:
     assert report["layer"] == layer
     failed = [c["name"] for c in report["checks"] if c["passed"] is False]
     assert len(failed) == 1, failed
-    assert PERSON not in json.dumps(result.meta), "the report must not carry the credential"
+    assert not name_leaked(json.dumps(result.meta), PERSON), "the report must not carry the credential"
     return layer, failed[0]
 
 
@@ -154,7 +185,7 @@ def allowed(result: Any) -> dict[str, Any]:
     assert report["allowed"] is True
     assert report["layer"] is None
     assert all(c["passed"] is True for c in report["checks"]), report["checks"]
-    assert PERSON not in json.dumps(result.meta)
+    assert not name_leaked(json.dumps(result.meta), PERSON)
     return report
 
 
@@ -179,6 +210,7 @@ async def test_declares_capability_and_per_tool_requirements() -> None:
         "requires": "ECR",
         "acceptedRoots": [dep.world.root.pre],
         "signatureAlgs": ["Ed25519"],
+        "signatureFormats": ["vlei-sig/0.3"],
         "ttlMs": 0,
         "discovery": {"wellKnown": "http://127.0.0.1:8082/.well-known/vlei"},
     }
@@ -199,7 +231,158 @@ async def test_well_known_is_served_without_a_session() -> None:
         "credential": dep.world.le_stream,
         "acceptedRoots": [dep.world.root.pre],
         "signatureAlgs": ["Ed25519"],
+        "signatureFormats": ["vlei-sig/0.3"],
     }
+
+
+async def _prove(dep: Deployment):
+    """What a v0.3 client does before presenting anything: challenge the server, and verify the
+    answer under the responder's key state read from the witness."""
+    app = dep.server.streamable_http_app()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=PUBLIC_URL) as http:
+        return await prove_server(http=http, pop_url=f"{PUBLIC_URL}{POP_PATH}",
+                                  endpoint_url=f"{PUBLIC_URL}/mcp", holder=dep.world.le.pre,
+                                  key_states=WitnessKeyStates(WITNESS_URL, client=dep.witness.client()))
+
+
+@pytest.mark.anyio
+async def test_given_a_signer_it_declares_pop_and_proves_it_holds_its_les_key() -> None:
+    world = World(role=ROLE)
+    dep = deploy(world, pop_signer=signer_for(world.le))
+    async with Client(dep.server, extensions=[advertise(EXT)]) as client:
+        settings = client.session.server_capabilities.extensions[EXT]
+    assert settings["pop"] == POP_PATH
+
+    proof = await _prove(dep)
+
+    assert proof.responder_aid == dep.world.le.pre and proof.delegated is False
+
+
+@pytest.mark.anyio
+async def test_it_proves_itself_only_for_its_own_endpoint() -> None:
+    world = World(role=ROLE)
+    dep = deploy(world, pop_signer=signer_for(world.le))
+    app = dep.server.streamable_http_app()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=PUBLIC_URL) as http:
+        response = await http.post(POP_PATH, json=pop_challenge("http://relay.test/mcp"))
+        malformed = await http.post(POP_PATH, content=b"not json")
+    assert response.status_code == 403 and response.json()["layer"] == "audience_mismatch"
+    assert "8082" not in response.json()["message"]
+    assert malformed.status_code == 400
+
+
+# --------------------------------------------------------------------------------------------- #
+# The optional PoP route has vlei-pop's abuse limits: a fake signer, never a keystore
+# --------------------------------------------------------------------------------------------- #
+
+class _FakeSigner:
+    """Signs nothing real: counts calls, and how many ran at once. Never holds a key."""
+
+    def __init__(self, aid: str, delay: float = 0.0) -> None:
+        import threading
+
+        self.aid, self.delay = aid, delay
+        self.calls = self.running = self.most_at_once = 0
+        self._lock = threading.Lock()
+
+    def sign(self, payload: bytes) -> str:
+        import time
+
+        with self._lock:
+            self.calls += 1
+            self.running += 1
+            self.most_at_once = max(self.most_at_once, self.running)
+        time.sleep(self.delay)
+        with self._lock:
+            self.running -= 1
+        return "0B" + "A" * 86
+
+
+def _pop_client(signer: _FakeSigner, received: list[int] | None = None) -> httpx.AsyncClient:
+    app = deploy(World(role=ROLE), pop_signer=signer).server.streamable_http_app()
+    if received is not None:
+        inner = app
+
+        async def app(scope, receive, send):  # every request-body byte the server actually read
+            async def counted():
+                message = await receive()
+                if message["type"] == "http.request":
+                    received.append(len(message.get("body", b"")))
+                return message
+            await inner(scope, counted, send)
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=PUBLIC_URL)
+
+
+async def _chunks(count: int, size: int = 1000):
+    for _ in range(count):
+        yield b"a" * size
+
+
+@pytest.mark.anyio
+async def test_an_oversize_challenge_is_413_whether_declared_or_streamed() -> None:
+    signer = _FakeSigner("E" + "S" * 43)
+    async with _pop_client(signer) as http:
+        declared = await http.post(POP_PATH, content=b"a" * (skill_server.MAX_POP_BODY_BYTES + 1))
+        streamed = await http.post(POP_PATH, content=_chunks(10))
+    assert declared.status_code == 413 and streamed.status_code == 413
+    assert declared.headers.get("connection") == "close" == streamed.headers.get("connection")
+    assert signer.calls == 0
+
+
+@pytest.mark.anyio
+async def test_an_oversize_challenge_is_not_read_into_memory_whole() -> None:
+    """The bound holds while streaming: a 200 KB body is not read to its end to be measured."""
+    received: list[int] = []
+    async with _pop_client(_FakeSigner("E" + "S" * 43), received) as http:
+        response = await http.post(POP_PATH, content=_chunks(200))
+    assert response.status_code == 413
+    assert sum(received) <= skill_server.MAX_DRAIN_BYTES + 1000, "read far more than the bound"
+
+
+async def _slow_challenge(url: str, chunk: int = 8, delay: float = 0.01):
+    body = json.dumps(pop_challenge(url)).encode()
+    for i in range(0, len(body), chunk):
+        yield body[i: i + chunk]
+        await anyio.sleep(delay)
+
+
+@pytest.mark.anyio
+async def test_challenges_beyond_the_admission_bound_are_503() -> None:
+    """A slot is claimed before the body is read, so slow senders cannot all be admitted."""
+    signer = _FakeSigner("E" + "S" * 43)
+    attempts = skill_server.POP_MAX_WAITING + 4
+    async with _pop_client(signer) as http:
+        responses = await _gather(*(http.post(POP_PATH, content=_slow_challenge(f"{PUBLIC_URL}/mcp"))
+                                    for _ in range(attempts)))
+    statuses = [r.status_code for r in responses]
+    assert statuses.count(200) + statuses.count(503) == attempts
+    assert 1 <= statuses.count(200) <= skill_server.POP_MAX_WAITING
+    assert signer.calls == statuses.count(200)
+
+
+@pytest.mark.anyio
+async def test_challenges_are_signed_one_at_a_time() -> None:
+    """One keystore behind the route: signing is serialised, not run in parallel threads."""
+    signer = _FakeSigner("E" + "S" * 43, delay=0.05)
+    async with _pop_client(signer) as http:
+        responses = await _gather(*(http.post(POP_PATH, json=pop_challenge(f"{PUBLIC_URL}/mcp"))
+                                    for _ in range(3)))
+    assert [r.status_code for r in responses] == [200, 200, 200]
+    assert signer.most_at_once == 1
+
+
+async def _gather(*coroutines):
+    import asyncio
+
+    return await asyncio.gather(*coroutines)
+
+
+@pytest.mark.anyio
+async def test_without_a_signer_it_offers_no_proof_and_a_v03_client_refuses_it() -> None:
+    """Started from the command line no keystore is wired: verifier-side only."""
+    dep = deploy()
+    with pytest.raises(UnsupportedVersion, match="404"):
+        await _prove(dep)
 
 
 def test_empty_accepted_roots_is_refused_at_construction() -> None:
@@ -498,7 +681,28 @@ async def test_replayed_request_is_refused() -> None:
 
     assert refused(result) == ("stale_signature", "freshness")
     assert check_passed(result, "signature") is True  # recorded only after the signature verified
-    assert "replay" in result.content[0].text
+    # This server's own nonce-spent message — not the package's memory-horizon refusal, which
+    # also says "replay" and is what a server that forgot every claim would answer.
+    assert "this signature was already presented: a replay" in result.content[0].text
+
+
+@pytest.mark.anyio
+async def test_the_claim_outlasts_the_time_window_by_one_skew() -> None:
+    """The time check accepts until exp + skew and the claim is made a moment later; a claim that
+    lapsed at exp + skew could be swept before a copy checked at the boundary is claimed."""
+
+    class Recording(MemoryReplayStore):
+        def claim(self, aid: str, nonce: str, expires_at: datetime) -> bool:
+            self.last = expires_at
+            return super().claim(aid, nonce, expires_at)
+
+    seen = Recording(memory_since=LONG_AGO)
+    dep = deploy(replay_store=seen)
+    meta = agent_presents_ecr(dep.world)
+    allowed(await call(dep, meta))
+
+    exp = datetime.fromisoformat(meta["org.gleif.vlei/signature"]["exp"].replace("Z", "+00:00"))
+    assert seen.last == exp + timedelta(seconds=2 * 60)
 
 
 @pytest.mark.anyio
@@ -509,9 +713,11 @@ async def test_replay_is_not_burned_by_a_signature_that_does_not_verify() -> Non
     genuine = agent_presents_ecr(world)
     forged = json.loads(json.dumps(genuine))
     attacker = Controller("attacker", witnesses=world.witnesses, toad=2)
+    original = genuine["org.gleif.vlei/signature"]
     forged["org.gleif.vlei/signature"]["sig"] = sign_request(
         Signer.from_seed(world.agent.pre, attacker.seed), "tools/call",
-        {"name": "submit_filing", "arguments": ARGS}, ts=genuine["org.gleif.vlei/signature"]["ts"],
+        {"name": "submit_filing", "arguments": ARGS}, ts=original["ts"], nonce=original["nonce"],
+        audience=Audience(**original["aud"]), credential_said=world.ecr_credential.said,
     )["sig"]
 
     assert refused(await call(dep, forged)) == ("invalid_signature", "signature")
@@ -569,3 +775,37 @@ async def test_public_tool_needs_no_credential_and_no_extension() -> None:
         assert "org.gleif.vlei/failure" not in (result.meta or {})
         assert {e["form"] for e in result.structured_content["result"]} >= {"CAP-1", "LIQ-2"}
     assert dep.witness.requests == []
+
+
+# --------------------------------------------------------------------------------------------- #
+# v0.3: the recipient, the format, the named credential
+# --------------------------------------------------------------------------------------------- #
+
+@pytest.mark.anyio
+async def test_a_call_signed_for_another_server_is_audience_mismatch() -> None:
+    dep = deploy()
+    meta = agent_presents_ecr(dep.world, audience_aid="E" + "X" * 43)
+    assert refused(await call(dep, meta)) == ("audience_mismatch", "digest")
+    assert dep.witness.requests == []  # decided from the request alone
+
+
+@pytest.mark.anyio
+async def test_a_v02_signature_is_unsupported_version() -> None:
+    from mcp_vlei.signing import digest_params
+
+    dep = deploy()
+    meta = agent_presents_ecr(dep.world)
+    signer = signer_for(dep.world.agent)
+    ts = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    digest = digest_params({"name": "submit_filing", "arguments": ARGS})
+    meta["org.gleif.vlei/signature"] = {"aid": signer.aid, "ts": ts, "digest": digest, "alg": "Ed25519",
+                                        "sig": signer.sign(f"tools/call\n{ts}\n{digest}".encode())}
+    assert refused(await call(dep, meta)) == ("unsupported_version", "credential_present")
+
+
+@pytest.mark.anyio
+async def test_a_call_that_names_no_credential_is_missing_credential() -> None:
+    dep = deploy()
+    meta = agent_presents_ecr(dep.world)
+    del meta["org.gleif.vlei/credentialSaid"]
+    assert refused(await call(dep, meta)) == ("missing_credential", "credential_present")

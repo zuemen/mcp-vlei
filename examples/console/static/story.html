@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MCP × vLEI — interactive demonstration</title>
+<link rel="stylesheet" href="/app/app.css">
+<link rel="stylesheet" href="/app/story.css">
+</head>
+<body class="story">
+<header class="top">
+  <div class="brand"><span class="mark" aria-hidden="true"></span><span>MCP × vLEI</span></div>
+  <div class="titles">
+    <h1 data-t="app.title"></h1>
+    <p data-t="app.subtitle"></p>
+  </div>
+  <div class="status" id="status" aria-live="polite"></div>
+  <div class="lang" id="lang" role="group" aria-label="Language">
+    <button type="button" data-lang="zh">中文</button>
+    <button type="button" data-lang="en">English</button>
+  </div>
+</header>
+<p class="banner" data-t="banner.simulated"></p>
+
+<nav class="tabs">
+  <a class="tab" href="/story" aria-current="page" data-t="tab.story"></a>
+  <a class="tab" href="/app?tab=tour" data-t="tab.tour"></a>
+  <a class="tab" href="/app?tab=scenarios" data-t="tab.scenarios"></a>
+  <a class="tab" href="/app?tab=build" data-t="tab.build"></a>
+  <a class="tab" href="/evidence" data-t="tab.evidence"></a>
+</nav>
+
+<section class="modes" role="tablist" aria-label="mode">
+  <button type="button" role="tab" data-mode="live" data-t="st.mode.live"></button>
+  <button type="button" role="tab" data-mode="demo" data-t="st.mode.demo"></button>
+</section>
+
+<!-- The real Claude: the same request, before and after -------------------------------------- -->
+<section class="live" id="live" hidden>
+  <p class="how" data-t="st.live.how"></p>
+  <div class="compare">
+    <div class="box side before">
+      <h2 data-t="st.before.title"></h2>
+      <p class="sub" data-t="st.before.sub"></p>
+      <div class="agent">
+        <div class="agent-bar">
+          <button type="button" class="btn ask" data-side="before" data-ask="enrol" data-t="st.agent.enrol.before"></button>
+        </div>
+        <div class="ag-chat" id="chat-before" aria-live="polite"></div>
+      </div>
+      <h3 class="feed-title" data-t="st.feed.before"></h3>
+      <ol class="feed" id="before-feed"></ol>
+    </div>
+    <div class="box side after">
+      <h2 data-t="st.after.title"></h2>
+      <p class="sub" data-t="st.after.sub"></p>
+      <div class="agent">
+        <div class="agent-bar">
+          <button type="button" class="btn ask" data-side="after" data-ask="enrol" data-t="st.agent.enrol.after"></button>
+          <button type="button" class="btn ask" data-side="after" data-ask="adjust" data-t="st.agent.adjust"></button>
+        </div>
+        <div class="ag-chat" id="chat-after" aria-live="polite"></div>
+      </div>
+      <div class="replay">
+        <button type="button" class="btn danger" id="replay" data-t="st.replay.button"></button>
+        <ol class="feed replay-out" id="replay-out" aria-live="polite"></ol>
+      </div>
+      <h3 class="feed-title" data-t="st.feed.after"></h3>
+      <label class="filter"><input type="checkbox" id="only-claude" checked> <span data-t="st.filter.claude"></span></label>
+      <ol class="feed" id="after-feed"></ol>
+    </div>
+  </div>
+  <div class="imp">
+    <button type="button" class="btn" id="fresh-start" data-t="st.live.fresh"></button>
+    <button type="button" class="btn" id="show-all" data-t="st.live.all"></button>
+    <button type="button" class="btn danger" id="impersonate" data-t="st.imp.button"></button>
+    <p class="msg" id="imp-msg" aria-live="polite"></p>
+  </div>
+  <table class="cmp">
+    <thead><tr><th data-t="st.cmp.q"></th><th data-t="st.before.title"></th><th data-t="st.after.title"></th></tr></thead>
+    <tbody>
+      <tr><td data-t="st.cmp.q1"></td><td class="b" data-t="st.cmp.b1"></td><td class="a" data-t="st.cmp.a1"></td></tr>
+      <tr><td data-t="st.cmp.q2"></td><td class="b" data-t="st.cmp.b2"></td><td class="a" data-t="st.cmp.a2"></td></tr>
+      <tr><td data-t="st.cmp.q3"></td><td class="b" data-t="st.cmp.b3"></td><td class="a" data-t="st.cmp.a3"></td></tr>
+    </tbody>
+  </table>
+</section>
+
+<div id="demo-mode" hidden>
+<!-- The scenario: chosen once, followed by all three views -------------------------------- -->
+<section class="pick">
+  <div class="pick-row">
+    <span class="pick-label" data-t="st.pick"></span>
+    <div class="chips" id="chips" role="radiogroup"></div>
+  </div>
+  <div class="pick-row second">
+    <p class="what" id="what"></p>
+    <button type="button" class="btn play" id="play" data-t="st.play"></button>
+  </div>
+</section>
+
+<nav class="steps-nav" id="stepper" aria-label="views">
+  <button type="button" data-view="issuer"><span class="num">1</span><span data-t="st.view.issuer"></span></button>
+  <span class="arrow" aria-hidden="true"></span>
+  <button type="button" data-view="gateway"><span class="num">2</span><span data-t="st.view.gateway"></span></button>
+  <span class="arrow" aria-hidden="true"></span>
+  <button type="button" data-view="outcome"><span class="num">3</span><span data-t="st.view.outcome"></span></button>
+</nav>
+
+<!-- ① Issuer ---------------------------------------------------------------------------------- -->
+<section class="view" id="view-issuer" hidden>
+  <div class="issuer">
+    <div class="box form">
+      <h2 data-t="st.iss.title"></h2>
+      <p class="sub" data-t="st.iss.sub"></p>
+      <dl class="fields" id="fields"></dl>
+      <p class="callout" id="iss-callout" hidden></p>
+      <div class="actions" id="iss-actions"></div>
+      <p class="msg" id="iss-msg" aria-live="polite"></p>
+    </div>
+    <div class="cardside">
+      <article class="vcard" id="vcard" data-state="issued">
+        <div class="vcard-top"><span class="badge" data-t="st.card.badge"></span><span class="state" id="card-status"></span></div>
+        <p class="vcard-name" id="card-name"></p>
+        <p class="vcard-lei" id="card-lei"></p>
+        <div class="vcard-grid" id="card-grid"></div>
+      </article>
+      <div class="chain">
+        <h3 data-t="st.chain.title"></h3>
+        <ol id="chain"></ol>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ② Gateway --------------------------------------------------------------------------------- -->
+<section class="view" id="view-gateway" hidden>
+  <p class="sub" data-t="st.gw.who"></p>
+  <div class="gateway">
+    <div class="box flow" id="flow"></div>
+    <div class="box logic">
+      <h3 data-t="st.gw.logic"></h3>
+      <ol class="checklist" id="steps"></ol>
+      <h3 class="log-title" data-t="st.gw.log"></h3>
+      <div class="term" id="term" aria-live="polite"></div>
+      <div class="actions right" id="gw-actions"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ③ Outcome --------------------------------------------------------------------------------- -->
+<section class="view" id="view-outcome" hidden>
+  <p class="sub" data-t="st.out.sub"></p>
+  <div class="devices">
+    <div class="device chat" id="dev-chat"></div>
+    <div class="device system" id="dev-system"></div>
+  </div>
+</section>
+
+</div>
+
+<footer class="foot">
+  <p data-t="footer.namespace"></p>
+</footer>
+<script src="/app/story.js"></script>
+</body>
+</html>

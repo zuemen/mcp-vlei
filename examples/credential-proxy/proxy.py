@@ -4,12 +4,16 @@ Claude Desktop and Claude Code start local MCP servers over STDIO and know nothi
 one stands between them and the gateway and does four things, and nothing else:
 
 1. **Verifies the gateway first.** It reads the operator's LE credential from the gateway's
-   ``/.well-known/vlei`` and verifies the chain to an accepted root, and the issuers' transaction
-   event logs for revocation, before a single tool is listed. If that fails, no tools are listed,
-   nothing is signed or sent, and the reason is in the server's instructions and the log.
+   ``/.well-known/vlei``, verifies the chain to an accepted root and the issuers' logs for
+   revocation, and challenges the gateway to prove it holds the operator's key (``vlei-pop/0.3``) —
+   every key state read from the three demo witnesses, two of which must agree — before a single
+   tool is listed. It verifies again every five minutes (or the gateway's ``ttlMs``) before
+   presenting anything. If that fails, no tools are listed, nothing is signed or sent, and the
+   reason is in the server's instructions and the log.
 2. **Relays the tool list as it is,** ``_meta`` requirements included, adding one sentence in
    Chinese and English on the role each tool requires.
-3. **Signs every call** in the KERI keystore with ``kli sign``, as the agent's delegated AID. The
+3. **Signs every call** (``vlei-sig/0.3``: for this gateway's operator and URL, with a nonce and
+   a 30-second expiry) in the KERI keystore with ``kli sign``, as the agent's delegated AID. The
    private key never leaves the keystore. The ``credential``, ``credentialSaid``,
    ``delegatedAid`` and ``signature`` keys are attached under the extension's namespace.
 4. **Returns what the gateway answered.** A refusal's first line is its failure layer
@@ -32,6 +36,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import datetime
@@ -56,11 +61,18 @@ from mcp.shared.exceptions import MCPError  # noqa: E402
 
 from mcp_vlei import VleiCapability, VleiClient  # noqa: E402
 from mcp_vlei.errors import VleiError  # noqa: E402
+from mcp_vlei.kel import normalise_witness_urls  # noqa: E402
 from mcp_vlei.namespace import Keys  # noqa: E402
 from mcp_vlei.namespace import keys as namespace_keys  # noqa: E402
 from mcp_vlei.verifier import VerificationResult  # noqa: E402
 
+#: Where the bootstrap scripts wrote credentials (VLEI_CREDENTIALS_DIR, else credentials/): the
+#: agent's signer reads env.json by the same rule, so there is one copy of it.
+from kli_signer import credentials_dir  # noqa: E402  (examples/my-agent, on sys.path above)
+
 DEFAULT_GATEWAY = "http://localhost:3000/mcp"
+#: The before-mode simulator (deploy/agentgateway, bound to 127.0.0.1): what VLEI_PROFILE=plain reaches.
+DEFAULT_PLAIN = "http://localhost:8090/mcp"
 DEFAULT_WITNESS = "http://localhost:5642"
 DEFAULT_LOG = HERE / "relay.log"
 SIMULATED = "Simulated — not connected to the Bureau of Labor Insurance"
@@ -85,7 +97,8 @@ class Profile:
 
 
 def profile_folders(root: Path = ROOT) -> dict[str, Path]:
-    return {"demo": root / "credentials", "forged": root / "credentials" / "forged"}
+    base = credentials_dir(root)
+    return {"demo": base, "forged": base / "forged"}
 
 
 def load_profile(name: str, root: Path = ROOT) -> Profile:
@@ -118,26 +131,76 @@ def accepted_roots(root: Path = ROOT, environ: dict[str, str] | None = None) -> 
     roots = [r.strip() for r in env.get("VLEI_ACCEPTED_ROOTS", "").split(",") if r.strip()]
     if roots:
         return roots
-    main = root / "credentials" / "env.json"
+    main = credentials_dir(root, env) / "env.json"
     return list(json.loads(main.read_text(encoding="utf-8")).get("acceptedRoots", [])) if main.is_file() else []
 
 
-def witness_url(root: Path = ROOT, environ: dict[str, str] | None = None) -> str:
-    """Where the issuers' logs are read: VLEI_WITNESS_URL, else the one ``scripts/.env`` sets.
-
-    The scripts read ``scripts/.env`` for machine-local witness ports (Windows reserves 5642-5644 on
-    some machines). Only that one key is read from it; nothing else in the file is loaded.
-    """
-    env = os.environ if environ is None else environ
-    if env.get("VLEI_WITNESS_URL", "").strip():
-        return env["VLEI_WITNESS_URL"].strip()
+def _setting(name: str, root: Path, env: dict[str, str] | Any) -> str:
+    """One key, from the environment or else from ``scripts/.env`` — nothing else in that file is
+    read. The scripts keep machine-local witness ports there (Windows reserves 5642-5644 on some
+    machines)."""
+    if env.get(name, "").strip():
+        return env[name].strip()
     dotenv = root / "scripts" / ".env"
     if dotenv.is_file():
         for line in dotenv.read_text(encoding="utf-8").splitlines():
             key, _, value = line.strip().partition("=")
-            if key == "VLEI_WITNESS_URL" and value.strip():
+            if key == name and value.strip():
                 return value.strip().strip('"').strip("'")
-    return DEFAULT_WITNESS
+    return ""
+
+
+def witness_url(root: Path = ROOT, environ: dict[str, str] | None = None) -> str:
+    """The first witness: VLEI_WITNESS_URL, else the one ``scripts/.env`` sets."""
+    env = os.environ if environ is None else environ
+    return _setting("VLEI_WITNESS_URL", root, env) or DEFAULT_WITNESS
+
+
+#: Dropped the same way ``mcp_vlei.client`` drops them when comparing origins: a witness URL
+#: without a port still has one — the scheme's default — and must not be mistaken for "no port to
+#: expand from" and collapsed to a single witness.
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _host_port(hostname: str, port: int) -> str:
+    """``hostname:port``, bracketing an IPv6 literal. ``urlsplit`` strips the brackets from
+    ``.hostname`` (``[::1]`` becomes ``::1``); they must go back on before the URL is reassembled,
+    or ``::1:5643`` is parsed as a different, invalid address."""
+    return f"[{hostname}]:{port}" if ":" in hostname else f"{hostname}:{port}"
+
+
+def witness_urls(root: Path = ROOT, environ: dict[str, str] | None = None) -> list[str]:
+    """Every witness key event logs are read from — compared, and a majority required, as
+    vlei-authz does. VLEI_WITNESS_URLS (comma-separated, environment or ``scripts/.env``); else the
+    demo's three, which ``kli witness demo`` serves on consecutive ports from VLEI_WITNESS_URL's."""
+    env = os.environ if environ is None else environ
+    listed = _setting("VLEI_WITNESS_URLS", root, env)
+    if listed:
+        return [u.strip() for u in listed.split(",") if u.strip()]
+    first = witness_url(root, env)
+    parts = urlsplit(first)
+    if not parts.hostname:
+        return [first]
+    port = parts.port if parts.port is not None else _DEFAULT_PORTS.get(parts.scheme.lower())
+    if port is None:
+        # A scheme this module does not know a default port for, and none was given: there is no
+        # base to expand from, so one witness is all that can be said — not three at a guessed port.
+        return [first]
+    return [urlunsplit((parts.scheme, _host_port(parts.hostname, port + i), parts.path, "", ""))
+            for i in range(3)]
+
+
+def _witness_list(witness_url: str | list[str] | None) -> list[str]:
+    """Normalise ``Relay.witness_url`` exactly as ``WitnessKeyStates`` does (one URL, several, or
+    none; one spelling each, each once), so what this logs always matches what the client actually
+    configures."""
+    return normalise_witness_urls(witness_url)
+
+
+def _quorum_for(urls: list[str]) -> int:
+    """The default majority quorum ``WitnessKeyStates`` computes for this many witnesses — the only
+    quorum the proxy ever asks for; it never overrides ``witness_quorum``."""
+    return len(urls) // 2 + 1 if urls else 0
 
 
 def label_for(lei: str, root: Path = ROOT) -> str:
@@ -146,7 +209,7 @@ def label_for(lei: str, root: Path = ROOT) -> str:
     An LE credential carries the LEI and nothing else; the name belongs to the LEI record, and these
     test LEIs have none. So the name shown is the one the bootstrap scripts recorded locally.
     """
-    for env_path in sorted((root / "credentials").glob("**/env.json")):
+    for env_path in sorted(credentials_dir(root).glob("**/env.json")):
         try:
             env = json.loads(env_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -256,6 +319,9 @@ class Gateway:
         self.roots = list(roots or [])
         self.timeout = timeout
         self.keys = keys or namespace_keys()
+        #: The name the client in front of the proxy (Claude Desktop) gave itself, handed on as is:
+        #: the gateway then records which client the call came from beside what it verified.
+        self.client_info: Any = None
 
     @property
     def well_known_url(self) -> str:
@@ -273,10 +339,11 @@ class Gateway:
             raise LookupError(f"{self.well_known_url} publishes no credential")
         return document
 
-    def _client(self, http: httpx2.AsyncClient) -> Client:
+    def _client(self, http: httpx2.AsyncClient, client_info: Any = None) -> Client:
         # Declares the extension at initialize, as a client presenting a credential should.
         capability = VleiCapability(presents=["ECR"], accepted_roots=self.roots or None)
-        return Client(streamable_http_client(self.url, http_client=http), extensions=[capability])
+        extra = {"client_info": client_info} if client_info is not None else {}
+        return Client(streamable_http_client(self.url, http_client=http), extensions=[capability], **extra)
 
     async def list_tools(self) -> types.ListToolsResult:
         http = httpx2.AsyncClient(timeout=httpx2.Timeout(self.timeout))
@@ -285,7 +352,7 @@ class Gateway:
                 return await client.list_tools()
 
     async def call_tool(self, name: str, arguments: dict[str, Any] | None,
-                        meta: dict[str, Any] | None = None) -> types.CallToolResult:
+                        meta: dict[str, Any] | None = None, client_info: Any = None) -> types.CallToolResult:
         refusals: list[dict[str, Any]] = []
 
         async def capture(response: httpx2.Response) -> None:
@@ -309,7 +376,7 @@ class Gateway:
         )
         try:
             async with http:
-                async with self._client(http) as client:
+                async with self._client(http, client_info if client_info is not None else self.client_info) as client:
                     return await client.call_tool(name, arguments, meta=meta)
         except MCPError as exc:
             return refusal(refusals, f"{exc.error.message} (JSON-RPC {exc.error.code})", self.keys)
@@ -363,10 +430,13 @@ class _Published:
     accepted root, revocation from the witness.
     """
 
-    def __init__(self, gateway: GatewayLike, credential: str, keys: Keys) -> None:
+    def __init__(self, gateway: GatewayLike, document: dict[str, Any], keys: Keys) -> None:
         self._gateway = gateway
-        self.server_capabilities = SimpleNamespace(extensions={keys.extension: {}})
-        self.prior_discover = SimpleNamespace(meta={keys.credential: credential})
+        # What the document says about checking the gateway: the signature format it verifies,
+        # where to challenge it, how long a verification may be relied on.
+        offered = {k: document[k] for k in ("signatureFormats", "pop", "ttlMs") if k in document}
+        self.server_capabilities = SimpleNamespace(extensions={keys.extension: offered})
+        self.prior_discover = SimpleNamespace(meta={keys.credential: document["credential"]})
 
     async def list_tools(self) -> types.ListToolsResult:
         return await self._gateway.list_tools()
@@ -380,20 +450,32 @@ class Relay:
     """Verify the gateway, then relay tools and calls under one fixed profile."""
 
     def __init__(self, profile: Profile, gateway: GatewayLike, *, signer: Any,
-                 accepted_roots: list[str], witness_url: str | None,
+                 accepted_roots: list[str], witness_url: str | list[str] | None,
                  witness_client: Any = None, log: RelayLog | None = None,
-                 reload: Any = None) -> None:
+                 reload: Any = None, pop_client: Any = None,
+                 recheck_seconds: float = 300) -> None:
         self.profile = profile
         self.gateway = gateway
         self.signer = signer
         self.accepted_roots = list(accepted_roots)
         self.witness_url = witness_url
         self.witness_client = witness_client
+        self.pop_client = pop_client
+        self.recheck_seconds = recheck_seconds
         self.log = log or RelayLog()
         #: Re-reads the same profile — never another — so a credential re-issued after a revocation
         #: is presented without restarting Claude. The name is fixed; only its files are re-read.
         self._reload = reload or (lambda: load_profile(profile.name))
         self.keys = namespace_keys()
+        #: What the client actually asks of its witnesses (spec §6.2): logged at startup, once,
+        #: identifiers only — never key material.
+        self._witness_urls = _witness_list(witness_url)
+        self._quorum = _quorum_for(self._witness_urls)
+        caveat = "; one witness: duplicity not checked" if len(self._witness_urls) == 1 else ""
+        self.log.event(
+            f"witnesses: {', '.join(self._witness_urls) or '(none)'} "
+            f"(quorum {self._quorum} of {len(self._witness_urls)}){caveat}"
+        )
         self.verified: VerificationResult | None = None
         self.reason: str | None = "not yet connected"
         self.tools: list[types.Tool] = []
@@ -404,7 +486,7 @@ class Relay:
         try:
             document = await self.gateway.published()
             client = VleiClient(
-                _Published(self.gateway, document["credential"], self.keys),
+                _Published(self.gateway, document, self.keys),
                 credential=self.profile.credential,
                 credential_said=self.profile.credential_said,
                 signer=self.signer,
@@ -414,6 +496,9 @@ class Relay:
                 witness_url=self.witness_url,
                 witness_client=self.witness_client,
                 role=self.profile.role or None,
+                endpoint_url=self.gateway.url,
+                pop_client=self.pop_client,
+                recheck_seconds=self.recheck_seconds,
             )
             identity = await client.connect()
             if identity is None:
@@ -429,10 +514,23 @@ class Relay:
             return self._unverified(f"unavailable: {_innermost(exc)}")
         self._client, self.verified, self.reason = client, identity, None
         self.tools = [describe(tool, self.keys.requires) for tool in listed.tools]
+        proof = client.server_proof
+        if proof is None:
+            # Not a legitimate "unproven, continuing" state to narrate: this Relay always
+            # constructs its VleiClient with pop="required" (never "off"), so a verified identity
+            # with no proof of possession would mean that invariant broke, not that the operator
+            # chose to skip it. Fail loudly rather than print a warn-and-continue-looking message.
+            raise RuntimeError(
+                "the gateway was verified but did not prove possession of its key, although this "
+                "Relay always requires it (pop='required'); VleiClient.server_proof is None"
+            )
+        held = (f"key held by {proof.responder_aid} "
+                f"({'delegated by the LE' if proof.delegated else 'the LE itself'}), "
+                f"witnesses {proof.agreeing}/{proof.configured} agree (quorum {self._quorum})")
         self.log.event(
             f"gateway verified: LEI {identity.lei}, root {identity.root_aid}, "
             f"revocation {'checked' if identity.revocation_checked else 'NOT checked'}; "
-            f"{len(self.tools)} tools; profile={self.profile.name}"
+            f"{held}; {len(self.tools)} tools; profile={self.profile.name}"
         )
         return True
 
@@ -493,7 +591,14 @@ class Relay:
         except VleiError as exc:
             self.log.call(profile=self.profile.name, tool=name, result="refused",
                           reason=exc.layer.value)
+            if self._client is not None and self._client.server_identity is None:
+                # The gateway failed its re-check: no more tools until a reconnect verifies it.
+                self._unverified(f"{exc.layer.value}: {exc.message}")
             return _error(f"{exc.layer.value}: {exc.message}")
+        except (RuntimeError, OSError, subprocess.SubprocessError) as exc:   # the keystore could not sign
+            self.log.call(profile=self.profile.name, tool=name, result="unavailable", reason="signer")
+            return _error(f"unavailable: the local keystore could not sign ({_innermost(exc)}). "
+                          "Nothing was sent. 本機金鑰庫無法簽章，沒有送出任何東西。")
         outcome, reason = classify(result, self.keys)
         self.log.call(profile=self.profile.name, tool=name, result=outcome, reason=reason)
         return result
@@ -520,15 +625,77 @@ def classify(result: types.CallToolResult, keys: Keys) -> tuple[str, str | None]
 # The near side: Claude
 # ------------------------------------------------------------------------------------------- #
 
-def build_server(relay: Relay) -> Server:
-    """An MCP server whose only tools are the gateway's. Nothing here changes the profile."""
+class PlainRelay:
+    """VLEI_PROFILE=plain: MCP as it is today — the before half of the before-and-after.
+
+    No credential, no signature, no verification of the server: tools are relayed and calls passed
+    on with nothing attached. The one thing passed through is the name the client (Claude Desktop)
+    gave itself, because that is all an MCP server learns of its caller today — and the point of
+    the comparison is that any program can give the same name.
+    """
+
+    def __init__(self, gateway: GatewayLike, *, log: RelayLog | None = None) -> None:
+        self.gateway = gateway
+        self.log = log or RelayLog()
+        self.profile = SimpleNamespace(name="plain")
+        self.keys = namespace_keys()
+        self.tools: list[types.Tool] = []
+        self.verified = None
+        self.reason: str | None = "not yet connected"
+
+    async def connect(self) -> bool:
+        try:
+            self.tools = list((await self.gateway.list_tools()).tools)
+        except Exception as exc:  # noqa: BLE001
+            self.tools, self.reason = [], f"unavailable: {_innermost(exc)}"
+            self.log.event(f"plain: the server is not answering ({_token(self.reason.split(':', 1)[0])})")
+            return False
+        self.reason = None
+        self.log.event(f"plain: {len(self.tools)} tools, nothing verified, nothing signed; profile=plain")
+        return True
+
+    def instructions(self) -> str:
+        return (
+            f"This server relays the labour-insurance system the way MCP works today ({SIMULATED}): "
+            "no credential, no signature, and nothing is verified. The system will know only the "
+            "name your client gives itself. "
+            "本伺服器照今天 MCP 的做法轉送：不附憑證、不簽章、什麼都不驗證。系統只會知道你的客戶端自稱的名字。"
+        )
+
+    async def call_tool(self, name: str, arguments: dict[str, Any] | None,
+                        client_info: Any = None) -> types.CallToolResult:
+        if not self.tools and not await self.connect():
+            self.log.call(profile="plain", tool=name, result="unavailable", reason="transport")
+            return _error(f"unavailable: {self.reason}")
+        result = await self.gateway.call_tool(name, arguments, client_info=client_info)
+        outcome, reason = classify(result, self.keys)
+        self.log.call(profile="plain", tool=name, result=outcome, reason=reason)
+        return result
+
+
+def _client_info(ctx: Any) -> Any:
+    """The name the client gave this server at initialize, to hand on unchanged."""
+    try:
+        params = ctx.session.client_params
+        return getattr(params, "client_info", None) if params is not None else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def build_server(relay: Any) -> Server:
+    """An MCP server whose only tools are the upstream's. Nothing here changes the profile."""
 
     async def on_list_tools(_ctx: Any, _params: Any) -> types.ListToolsResult:
-        if relay.verified is None:
+        if not relay.tools:
             await relay.connect()
         return types.ListToolsResult(tools=list(relay.tools))
 
-    async def on_call_tool(_ctx: Any, params: types.CallToolRequestParams) -> types.CallToolResult:
+    async def on_call_tool(ctx: Any, params: types.CallToolRequestParams) -> types.CallToolResult:
+        info = _client_info(ctx)
+        if info is not None and hasattr(relay.gateway, "client_info"):
+            relay.gateway.client_info = info
+        if isinstance(relay, PlainRelay):
+            return await relay.call_tool(params.name, params.arguments, client_info=_client_info(ctx))
         return await relay.call_tool(params.name, params.arguments)
 
     return Server(
@@ -558,21 +725,36 @@ def main() -> int:
 
     docker_can_find_compose()
     name = os.environ.get("VLEI_PROFILE", "demo").strip() or "demo"
+    log_path = os.environ.get("VLEI_PROXY_LOG", "").strip()
+    if name == "plain":
+        # The before half: nothing to load, nothing to sign with — that is the point.
+        plain = PlainRelay(Gateway(os.environ.get("VLEI_GATEWAY_URL", DEFAULT_PLAIN).strip()),
+                           log=RelayLog(Path(log_path) if log_path else DEFAULT_LOG))
+
+        async def run_plain() -> None:
+            await plain.connect()
+            server = build_server(plain)
+            async with stdio_server() as (read, write):
+                await server.run(read, write, server.create_initialization_options())
+
+        anyio.run(run_plain)
+        return 0
     try:
         profile = load_profile(name)
-        from kli_signer import keystore_signer
+        from kli_signer import LazyKeystoreSigner
 
-        signer = keystore_signer(profile.keystore, profile.keystore)
+        # Read from the keystore at the first signature: kli through Docker takes seconds, and
+        # initialize must be answered before the client gives up on this server.
+        signer = LazyKeystoreSigner(profile.keystore, profile.keystore)
     except (ValueError, FileNotFoundError, RuntimeError, OSError) as exc:
         print(f"credential-proxy: {exc}", file=sys.stderr)
         return 2
-    log_path = os.environ.get("VLEI_PROXY_LOG", "").strip()
     relay = Relay(
         profile,
         Gateway(os.environ.get("VLEI_GATEWAY_URL", DEFAULT_GATEWAY).strip(), roots=accepted_roots()),
         signer=signer,
         accepted_roots=accepted_roots(),
-        witness_url=witness_url(),
+        witness_url=witness_urls(),
         log=RelayLog(Path(log_path) if log_path else DEFAULT_LOG),
     )
 
@@ -587,9 +769,9 @@ def main() -> int:
 
 
 __all__ = [
-    "Gateway", "Profile", "Relay", "RelayLog", "accepted_roots", "build_server", "classify",
-    "describe", "docker_can_find_compose", "label_for", "load_profile", "refusal",
-    "requirement_sentence", "witness_url",
+    "Gateway", "PlainRelay", "Profile", "Relay", "RelayLog", "accepted_roots", "build_server", "classify",
+    "credentials_dir", "describe", "docker_can_find_compose", "label_for", "load_profile", "refusal",
+    "requirement_sentence", "witness_url", "witness_urls",
 ]
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@
 Source of truth: ``skills/implementing-vlei/SKILL.md``. Nothing in this file was taken from the
 reference extension (``mcp_vlei.extension``) or client (``mcp_vlei.client``); the verification
 pipeline is assembled here from the components the skill names, in the order the skill fixes
-(section 4, checks 0-10), and failures are reported in the two shapes of section 5.
+(section 5, checks 0-10), and failures are reported in the two shapes of section 6.
 
 Tools
 -----
@@ -25,6 +25,7 @@ from __future__ import annotations
 import base64
 import contextvars
 import hashlib
+import json
 import logging
 import os
 import sys
@@ -32,7 +33,7 @@ import uuid
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +43,7 @@ try:  # pragma: no cover - depends on the environment
 except ImportError:  # pragma: no cover
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "packages" / "mcp-vlei" / "src"))
 
+import anyio
 import httpx
 import mcp.types as types
 from mcp.server.extension import Extension
@@ -53,9 +55,11 @@ from starlette.responses import JSONResponse
 
 # Only the components the skill names (plus their error and report types). Deliberately NOT
 # `mcp_vlei.extension` or `mcp_vlei.client`.
+from mcp_vlei.audience import Recipient
 from mcp_vlei.chain import Acdc, parse_stream, recompute_said, verify_issuance
 from mcp_vlei.namespace import keys as namespace_keys
 from mcp_vlei.errors import (
+    AudienceMismatch,
     ChainInvalid,
     DigestMismatch,
     FailureLayer,
@@ -63,6 +67,7 @@ from mcp_vlei.errors import (
     MissingCredential,
     RoleMismatch,
     ScopeExceeded,
+    StaleSignature,
     UnknownRoot,
     VleiError,
 )
@@ -75,13 +80,16 @@ from mcp_vlei.kel import (
     parse_messages,
     verify_kel,
 )
+from mcp_vlei.pop import POP_PATH, PopResponder
 from mcp_vlei.report import VerificationReport
 from mcp_vlei.revocation import TelRevocationChecker
+from mcp_vlei.replay import MemoryReplayStore, ReplayStore
 from mcp_vlei.signing import (
     DEFAULT_FRESHNESS_SECONDS,
-    ReplayCache,
+    SIGNATURE_FORMAT,
     canonicalize,
     precheck_request,
+    unsupported_version,
     verify_request,
 )
 
@@ -116,6 +124,18 @@ LE_SCHEMA = "ENPXp1vQzRF6JwIuS-mp2U8Uf1MoADoP_GqQ62VsDZWY"
 
 DEFAULT_ROLE = "regulatory-filing"
 DEFAULT_PORT = 8082
+
+#: The optional PoP route's abuse limits — the same as examples/regulator/vlei-pop/service.py's,
+#: for the same reason: it is unauthenticated, and a keystore-backed signer (`kli sign`) takes
+#: seconds. A challenge is a handful of short fields; nothing legitimate comes near this size,
+#: bounded from a reported Content-Length and while streaming a body that carries none.
+MAX_POP_BODY_BYTES = 4096
+#: An oversize body is read and discarded up to this much, so its sender reads the 413 rather than
+#: a reset; beyond it nothing more is read. The 413 always says `Connection: close`.
+MAX_DRAIN_BYTES = 64 * 1024
+#: Challenges admitted at once (reading, waiting or signing); beyond it, 503 rather than a queue
+#: no one is told about. Signing itself is one challenge at a time.
+POP_MAX_WAITING = 4
 
 #: The verified identity, visible to the protected tool for the duration of one call.
 _VERIFIED: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
@@ -187,6 +207,9 @@ class VleiIdentity(Extension):
         requirements: Mapping[str, Mapping[str, Any]],
         freshness_seconds: int = DEFAULT_FRESHNESS_SECONDS,
         http: httpx.AsyncClient | None = None,
+        endpoint_url: str = "",
+        replay_store: ReplayStore | None = None,
+        pop_signer: Any | None = None,
     ) -> None:
         if not accepted_roots or not all(isinstance(r, str) and r for r in accepted_roots):
             raise ValueError("accepted_roots must be a non-empty list of AIDs: it is the entire trust decision")
@@ -209,8 +232,16 @@ class VleiIdentity(Extension):
         self._http = http if http is not None else httpx.AsyncClient(timeout=15.0)
         self._key_states = WitnessKeyStates(witness_url, client=self._http)
         self._revocation = TelRevocationChecker(witness_url, client=self._http)
-        # Retains (aid, digest, ts) for twice the freshness window: it must outlive the window.
-        self._replay = ReplayCache(window_seconds=freshness_seconds)
+        # v0.3: who this server is to a caller — its own LE's issuee, at the URL calls are sent to —
+        # and every signature's nonce, claimed once.
+        if not endpoint_url:
+            raise ValueError("endpoint_url is required: a v0.3 call names the URL it was signed for")
+        self._recipient = Recipient(_presented(_parse_credentials(le_credential), None).issuee,
+                                    (endpoint_url,))
+        self._replay: ReplayStore = replay_store if replay_store is not None else MemoryReplayStore()
+        # SKILL.md section 3: proves this server holds its LE's key (or a delegate's) when a client
+        # challenges it. None: no proof is offered, and a v0.3 client presents nothing here.
+        self._pop = PopResponder(pop_signer, self._recipient) if pop_signer is not None else None
 
     # -- section 1: the capability ---------------------------------------------------------- #
 
@@ -221,9 +252,11 @@ class VleiIdentity(Extension):
             "requires": "ECR",
             "acceptedRoots": list(self._accepted_roots),
             "signatureAlgs": ["Ed25519"],
+            "signatureFormats": [SIGNATURE_FORMAT],
             # Nothing is cached here - chain, key state and revocation are established per call.
             "ttlMs": 0,
             "discovery": {"wellKnown": self._well_known_url},
+            **({"pop": POP_PATH} if self._pop is not None else {}),
         }
 
     # -- section 2: our own credential ------------------------------------------------------- #
@@ -234,9 +267,23 @@ class VleiIdentity(Extension):
             "credential": self._le_credential,
             "acceptedRoots": list(self._accepted_roots),
             "signatureAlgs": ["Ed25519"],
+            "signatureFormats": [SIGNATURE_FORMAT],
+            **({"pop": POP_PATH} if self._pop is not None else {}),
         }
 
-    # -- section 3: per-tool requirements ----------------------------------------------------- #
+    # -- section 3: proof of possession ------------------------------------------------------- #
+
+    @property
+    def offers_pop(self) -> bool:
+        return self._pop is not None
+
+    def pop_response(self, body: Any) -> tuple[int, dict[str, Any]]:
+        """``(status, JSON body)`` for one challenge; never raises for what a client sent."""
+        if self._pop is None:
+            return 404, {"layer": None, "message": "this server offers no proof of possession"}
+        return self._pop.respond(body)
+
+    # -- section 4: per-tool requirements ----------------------------------------------------- #
 
     def tool_meta(self, tool: str) -> dict[str, Any]:
         return {META_REQUIRES: dict(self._requirements[tool])}
@@ -248,7 +295,7 @@ class VleiIdentity(Extension):
         if requirement is None:
             return await call_next(ctx)  # public tool: untouched
 
-        self._require_declared(ctx)  # section 5, first shape: JSON-RPC -32021
+        self._require_declared(ctx)  # section 6, first shape: JSON-RPC -32021
 
         report = VerificationReport(tool=params.name)
         try:
@@ -290,7 +337,7 @@ class VleiIdentity(Extension):
             data=data.model_dump(by_alias=True, mode="json", exclude_none=True),
         )
 
-    # -- section 4: verify, in this order ------------------------------------------------------ #
+    # -- section 5: verify, in this order ------------------------------------------------------ #
 
     async def _verify(
         self,
@@ -315,6 +362,12 @@ class VleiIdentity(Extension):
                 raise ChainInvalid("the presented credential is not a CESR string")
             if not isinstance(signature, dict):
                 raise InvalidSignature("the presented signature is not an object")
+            foreign = unsupported_version(signature)
+            if foreign is not None:
+                raise foreign
+            if not meta.get(META_CREDENTIAL_SAID):
+                raise MissingCredential("credentialSaid is required: a vlei-sig/0.3 signature "
+                                        "speaks for one named credential")
             report.passed("credential_present", "credential and request signature presented")
 
         # The digest covers the parameters as received on the wire (minus `_meta`), not a
@@ -325,20 +378,22 @@ class VleiIdentity(Extension):
             else params.model_dump(by_alias=True, exclude_unset=True, mode="json")
         )
 
-        # 1. ts within the freshness window -> stale_signature
-        # 2. digest matches the received parameters -> digest_mismatch
+        # 1. ts/exp inside the window -> stale_signature
+        # 2. signed for this server, and the digest matches -> audience_mismatch / digest_mismatch
         # Both are decided from the request alone, before any round trip.
-        digest_error: DigestMismatch | None = None
+        digest_error: DigestMismatch | AudienceMismatch | None = None
         with check("freshness", FailureLayer.STALE_SIGNATURE):
             try:
-                precheck_request(signature, received, freshness_seconds=self._freshness)
-            except DigestMismatch as exc:
+                precheck_request(signature, received, recipient=self._recipient,
+                                 freshness_seconds=self._freshness,
+                                 memory_since=self._replay.memory_since)
+            except (DigestMismatch, AudienceMismatch) as exc:
                 digest_error = exc
-            report.passed("freshness", f"signed at {signature['ts']}, within {self._freshness}s")
+            report.passed("freshness", f"signed at {signature['ts']}, valid until {signature['exp']}")
         with check("digest", FailureLayer.DIGEST_MISMATCH):
             if digest_error is not None:
                 raise digest_error
-            report.passed("digest", "arguments match the signed digest")
+            report.passed("digest", "signed for this server; arguments match the signed digest")
 
         signer: str = signature["aid"]
 
@@ -357,14 +412,22 @@ class VleiIdentity(Extension):
                 raise InvalidSignature(
                     f"{signer} requires {state.threshold} signatures; a request carries one", aid=signer
                 )
-            # replay_cache=None on purpose: replay is check 4, recorded only after this passes.
-            verify_request(signature, SIGNED_METHOD, received, state.keys, freshness_seconds=self._freshness)
+            # No replay store here on purpose: replay is check 4, claimed only after this passes.
+            verify_request(signature, SIGNED_METHOD, received, state.keys, recipient=self._recipient,
+                           credential_said=meta.get(META_CREDENTIAL_SAID),
+                           freshness_seconds=self._freshness)
             report.passed("signature", f"verifies under {signer}'s key state at sn {state.sn}, read from the witness")
 
         # 4. not seen before - recorded only after check 3 passed -> stale_signature
+        #    Kept until exp + 2 * skew: check 1 accepts until exp + skew and this claim comes a
+        #    moment later, so a claim that lapsed at exp + skew could miss a copy at the boundary.
         with check("freshness", FailureLayer.STALE_SIGNATURE):
-            self._replay.check_and_record(signer, signature["digest"], signature["ts"])
-            report.passed("freshness", f"signed at {signature['ts']}, within {self._freshness}s, not seen before")
+            expires = (datetime.fromisoformat(signature["exp"].replace("Z", "+00:00"))
+                       + 2 * timedelta(seconds=self._freshness))
+            if not self._replay.claim(signer, signature["nonce"], expires):
+                raise StaleSignature("this signature was already presented: a replay", aid=signer)
+            report.passed("freshness", f"signed at {signature['ts']}, valid until "
+                                       f"{signature['exp']}, nonce not seen before")
 
         # 5. the signer IS the issuee, or is delegated by the issuee in the issuee's own KEL
         #    -> invalid_signature
@@ -617,7 +680,7 @@ def _check_lei(chain: list[Acdc], report: VerificationReport) -> None:
 
 
 def _scope_covers(required: Any, held: Any) -> tuple[bool, str]:
-    """SKILL.md section 3: numeric -> held >= required; list -> held is a superset; otherwise
+    """SKILL.md section 4: numeric -> held >= required; list -> held is a superset; otherwise
     equality. A key the credential does not carry is not satisfied."""
     if not required:
         return True, ""
@@ -675,6 +738,8 @@ def build_server(
     public_url: str = f"http://127.0.0.1:{DEFAULT_PORT}",
     http: httpx.AsyncClient | None = None,
     freshness_seconds: int = DEFAULT_FRESHNESS_SECONDS,
+    replay_store: ReplayStore | None = None,
+    pop_signer: Any | None = None,
 ) -> MCPServer:
     requirements = {"submit_filing": {"credential": "ECR", "role": role}}
     extension = VleiIdentity(
@@ -685,6 +750,9 @@ def build_server(
         requirements=requirements,
         freshness_seconds=freshness_seconds,
         http=http,
+        endpoint_url=f"{public_url.rstrip('/')}/mcp",
+        replay_store=replay_store,
+        pop_signer=pop_signer,
     )
     server = MCPServer(
         name="skill-server",
@@ -722,7 +790,61 @@ def build_server(
         # No session: a counterparty verifies us before it sends anything.
         return JSONResponse(extension.well_known_document())
 
+    if extension.offers_pop:
+        # Per server, not per module: each server has its own signer, and its own event loop.
+        gate = anyio.Semaphore(1)
+        waiting = {"n": 0}
+
+        @server.custom_route(POP_PATH, methods=["POST"])
+        async def pop(request: Request) -> JSONResponse:
+            # No session either: a client challenges us before it presents anything. A slot is
+            # claimed before anything that can await — reading the body included — so a slow
+            # sender cannot hold one open unseen.
+            if waiting["n"] >= POP_MAX_WAITING:
+                return JSONResponse({"layer": None, "message": "busy: try again in a few seconds"},
+                                    status_code=503)
+            waiting["n"] += 1
+            try:
+                body, refusal = await _read_pop_challenge(request)
+                if refusal is not None:
+                    return refusal
+                # A keystore-backed signer (`kli sign`) blocks: off the event loop, one at a time.
+                async with gate:
+                    status, payload = await anyio.to_thread.run_sync(extension.pop_response, body)
+                return JSONResponse(payload, status_code=status)
+            finally:
+                waiting["n"] -= 1
+
     return server
+
+
+async def _read_pop_challenge(request: Request) -> tuple[Any, JSONResponse | None]:
+    """The parsed challenge, or the refusal for it: oversize (413 — a reported Content-Length
+    checked up front, a body with none bounded as it streams; drained up to `MAX_DRAIN_BYTES`, and
+    the connection closed) or not JSON, deeply nested JSON included (400, never a crash)."""
+    too_large = JSONResponse({"layer": None, "message": f"a challenge is at most {MAX_POP_BODY_BYTES} bytes"},
+                             status_code=413, headers={"Connection": "close"})
+    content_length = request.headers.get("content-length", "").strip()
+    declared = int(content_length) if content_length.isdigit() else None
+    if declared is not None and declared > MAX_DRAIN_BYTES:
+        return None, too_large  # not worth reading; closed with the answer
+    oversize = declared is not None and declared > MAX_POP_BODY_BYTES
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        oversize = oversize or total > MAX_POP_BODY_BYTES
+        if oversize:
+            if total > MAX_DRAIN_BYTES:
+                break  # stop reading: the connection closes with the 413
+            continue  # drained, not kept
+        chunks.append(chunk)
+    if oversize:
+        return None, too_large
+    try:
+        return json.loads(b"".join(chunks)), None
+    except (ValueError, RecursionError):
+        return None, JSONResponse({"layer": None, "message": "a challenge is JSON"}, status_code=400)
 
 
 def main() -> None:

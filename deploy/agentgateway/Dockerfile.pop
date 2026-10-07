@@ -1,0 +1,33 @@
+# vlei-pop (examples/regulator/vlei-pop): the gateway's public identity and its proof of possession.
+#
+# On the keri image, because it signs with `kli sign` in its own KERI keystore — the private key
+# never leaves the keystore volume and is never in this process. The service runs in a virtual
+# environment of its own (/opt/pop), beside keripy's, so mcp's dependencies and keripy's cannot
+# conflict; `kli` stays on PATH from keripy's environment. Build context is the repository root;
+# what is sent is limited by Dockerfile.pop.dockerignore next to this file.
+FROM weboftrust/keri:1.2.14
+
+WORKDIR /app
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+COPY packages/mcp-vlei /app/packages/mcp-vlei
+RUN /usr/local/bin/python3 -m venv /opt/pop \
+ && /opt/pop/bin/pip install "mcp==2.2.0" /app/packages/mcp-vlei "uvicorn==0.53.0"
+
+# The witness and schema OOBIs `kli init` resolves, and the witness set for the gateway AID's
+# inception — configuration, no keys. Baked in rather than shared with keri-cli's bind mount.
+COPY scripts/keri-config/incept-witnesses.json /keri-config/incept-witnesses.json
+COPY scripts/keri-config/keri /keri-config/keri
+
+COPY examples/regulator/vlei-pop /app/examples/regulator/vlei-pop
+
+# Fail the build rather than ship a secret: nothing key-shaped may be in the image.
+RUN ! find /app /keri-config -path '*/keys/*' -o -name '*.key' -o -path '*/credentials/*' | grep -q .
+
+# The image's entrypoint is `kli`; this service is the Python one.
+ENTRYPOINT []
+CMD ["/opt/pop/bin/python", "examples/regulator/vlei-pop/service.py"]

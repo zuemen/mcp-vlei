@@ -146,7 +146,7 @@ Override from the environment:
 | `LE_NAME` | Demo Staffing Co., Ltd. (fictional) |
 | `LE_LEI` | `984500DEMOSTAFF00178` (a test value, not in GLEIF's index) |
 | `ECR_ROLE` | `labor-insurance-filing` |
-| `ECR_PERSON` | Wang Xiao-Ming (fictional) |
+| `ECR_PERSON` | Bob (fictional) |
 | `SCHEMA_QVI` / `SCHEMA_LE` / `SCHEMA_ECR` | published WebOfTrust/vLEI schema SAIDs |
 
 ## Status, 2026-09-23

@@ -11,6 +11,7 @@ import asyncio
 import importlib.util
 import inspect
 import json
+import re
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -33,13 +34,26 @@ from mcp_vlei.extension import (  # noqa: E402
     META_DELEGATED_AID,
     META_SIGNATURE,
 )
+from mcp_vlei.audience import Audience  # noqa: E402
+from mcp_vlei.replay import MemoryReplayStore  # noqa: E402
 from mcp_vlei.signing import sign_request  # noqa: E402
 from mcp_vlei.testing import Controller, World  # noqa: E402
 
-from datetime import date  # noqa: E402
+from datetime import date, datetime, timezone  # noqa: E402
 
 #: An enrolment filed on the start date. Simulated — not connected to the Bureau of Labor Insurance.
 ARGS = {"person_ref": "EMP-0001", "start_date": date.today().isoformat(), "salary_grade": 3}
+#: Where the gateway under test is reached, unless a test serves it on a port of its own.
+GATEWAY_URL = "http://gateway.test/mcp"
+#: A replay store whose memory began before any test signs.
+LONG_AGO = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+def name_leaked(text: str, name: str) -> bool:
+    """True if `name` appears in `text` as a whole word, outside any base64url-ish run of 20+
+    characters (a SAID, AID or signature) where a short name could appear by chance."""
+    cleaned = re.sub(r"[A-Za-z0-9_-]{20,}", "", text)
+    return re.search(rf"\b{re.escape(name)}\b", cleaned) is not None
 
 
 def load(name: str, path: Path) -> ModuleType:
@@ -54,6 +68,7 @@ def load(name: str, path: Path) -> ModuleType:
 
 authz = load("regulator_vlei_authz", REGULATOR / "vlei-authz" / "service.py")
 labor = load("regulator_labor_insurance_sim", REGULATOR / "labor-insurance-sim" / "server.py")
+pop_service = load("regulator_vlei_pop", REGULATOR / "vlei-pop" / "service.py")
 
 
 @pytest.fixture(scope="session")
@@ -77,25 +92,37 @@ def world() -> World:
 
 
 def identity_for(
-    world: World, tmp_path: Path, *, client: httpx.AsyncClient | None = None
+    world: World, tmp_path: Path, *, client: httpx.AsyncClient | None = None,
+    replay_store: Any = None, le_stream: str | None = None,
 ) -> VleiIdentity:
+    """vlei-authz's verifier for ``world``, operated by ``world``'s LE unless ``le_stream`` names
+    another operator."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
     le = tmp_path / "le.cesr"
-    le.write_text(world.le_stream, encoding="utf-8")
+    le.write_text(le_stream or world.le_stream, encoding="utf-8")
     return VleiIdentity(
         le_credential=le,
         accepted_roots=[world.root.pre],
         witness_url="http://witness",
         witness_client=client or world.witness_client(),
         revocation_source="tel",
+        audience_urls=[GATEWAY_URL],
+        replay_store=replay_store if replay_store is not None else MemoryReplayStore(memory_since=LONG_AGO),
     )
 
 
 def authz_app(world: World, tmp_path: Path, **kwargs: Any):
     policy = authz.load_policy(authz.HERE / "policy.json")
     audit = authz.Audit(path=tmp_path / "audit" / "decisions.jsonl")
-    return authz.create_app(
-        identity=identity_for(world, tmp_path, **kwargs), policy=policy, audit=audit
-    )
+    identity = identity_for(world, tmp_path, **kwargs)
+    app = authz.create_app(identity=identity, policy=policy, audit=audit)
+    app.state.identity = identity
+    return app
+
+
+def answer_at(app: Any, url: str) -> None:
+    """Tell the gateway under test the URL it was just served at (a free port, known only now)."""
+    app.state.identity.set_audience_urls([url])
 
 
 def signer_for(controller: Controller) -> Signer:
@@ -110,13 +137,20 @@ def signed_meta(
     signer: Signer | None = None,
     delegated: str | None = "agent",
     stream: str | None = None,
+    url: str = GATEWAY_URL,
+    audience: Audience | None = None,
 ) -> dict[str, Any]:
-    """What an agent puts in ``params._meta``: by default the holder's delegate presenting the ECR."""
+    """What an agent puts in ``params._meta``: by default the holder's delegate presenting the ECR
+    to the gateway at ``url``, whose operator is ``world``'s LE."""
     signer = signer or signer_for(world.agent)
     arguments = ARGS if arguments is None else arguments
     meta: dict[str, Any] = {
         META_CREDENTIAL: world.ecr_stream if stream is None else stream,
-        META_SIGNATURE: sign_request(signer, "tools/call", {"name": tool, "arguments": arguments}),
+        META_SIGNATURE: sign_request(
+            signer, "tools/call", {"name": tool, "arguments": arguments},
+            audience=audience or Audience(world.le.pre, url),
+            credential_said=world.ecr_credential.said,
+        ),
         META_CREDENTIAL_SAID: world.ecr_credential.said,
     }
     if delegated == "agent":
@@ -176,9 +210,21 @@ INCLUDE_RESPONSE_HEADERS = (
 )
 
 
-def stand_in_gateway(authz, upstream: str, published: dict | None = None) -> Starlette:
+def pop_app(world: World, url: str = GATEWAY_URL, signer: Any = None, **kwargs: Any):
+    """vlei-pop for ``world``'s operator: its LE published, challenges answered by ``signer`` —
+    by default a gateway AID the operator's LE delegated to, as scripts/bootstrap-gateway-signer.sh
+    creates."""
+    if signer is None:
+        signer = signer_for(world.delegate("gateway", world.le))
+    return pop_service.create_app(le_credential=world.le_stream, audience_urls=[url],
+                                  signer=signer, accepted_roots=[world.root.pre], **kwargs)
+
+
+def stand_in_gateway(authz, upstream: str, published: dict | None = None, pop: Any = None) -> Starlette:
     """agentgateway's extAuthz flow, as deploy/agentgateway/config.yaml sets it up. With
-    ``published``, also its public ``/.well-known/vlei`` route, which no authorizer sees."""
+    ``published``, also a public ``/.well-known/vlei`` route serving that document; with ``pop``
+    (a vlei-pop app), both public routes go to it, as they do in v0.3's config.yaml. No authorizer
+    sees either."""
     decide = httpx.AsyncClient(transport=httpx.ASGITransport(app=authz), base_url="http://vlei-authz")
     forward = httpx.AsyncClient(base_url=upstream, timeout=30)
 
@@ -208,7 +254,19 @@ def stand_in_gateway(authz, upstream: str, published: dict | None = None) -> Sta
     async def well_known(_: Request) -> Response:
         return JSONResponse(published)
 
+    public = httpx.AsyncClient(transport=httpx.ASGITransport(app=pop), base_url="http://vlei-pop") \
+        if pop is not None else None
+
+    async def to_pop(request: Request) -> Response:
+        answer = await public.request(request.method, request.url.path, content=await request.body(),
+                                      headers={"content-type": "application/json"})
+        return Response(answer.content, status_code=answer.status_code,
+                        headers={"content-type": answer.headers.get("content-type", "application/json")})
+
     routes = [Route("/mcp", route, methods=["GET", "POST", "DELETE"])]
-    if published is not None:
+    if pop is not None:
+        routes.append(Route("/.well-known/vlei", to_pop, methods=["GET"]))
+        routes.append(Route("/.well-known/vlei/pop", to_pop, methods=["POST"]))
+    elif published is not None:
         routes.append(Route("/.well-known/vlei", well_known, methods=["GET"]))
     return Starlette(routes=routes)

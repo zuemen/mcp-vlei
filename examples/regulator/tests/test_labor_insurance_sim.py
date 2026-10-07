@@ -93,7 +93,7 @@ async def test_only_fictitious_person_references_are_accepted():
     """Nothing shaped like a national ID number enters this simulation."""
     async with connected(HEADERS) as client:
         for person_ref in ("A123456789", "a123456789", "F223456789", "EMP-1", "EMP-00001",
-                           "Wang Xiao-Ming", "EMP-０００１", "EMP-٠٠٠١"):
+                           "Bob", "EMP-０００１", "EMP-٠٠٠١"):
             result = await client.call_tool("enroll_employee", {**ARGS, "person_ref": person_ref})
             assert result.is_error is True and "EMP-0001" in result.content[0].text, person_ref
     assert labor.INSURED == {}
@@ -214,3 +214,42 @@ async def test_without_a_namespace_no_requirement_is_published(monkeypatch):
     sim = load("regulator_labor_insurance_sim_unnamed",
                REGULATOR / "labor-insurance-sim" / "server.py")
     assert all(not (tool.meta or {}) for tool in await sim.mcp.list_tools())
+
+
+# ------------------------------------------------------------------------------------------- #
+# "Before": the same simulator as an ordinary MCP server is today — no identity at all
+# ------------------------------------------------------------------------------------------- #
+
+def before_sim(monkeypatch):
+    """The simulator with LABOR_SIM_MODE=before, loaded fresh: no gateway, no identity headers."""
+    from conftest import load
+
+    monkeypatch.setenv("LABOR_SIM_MODE", "before")
+    sim = load("regulator_labor_insurance_sim_before", REGULATOR / "labor-insurance-sim" / "server.py")
+    sim.INSURED.clear()
+    return sim
+
+
+async def test_before_it_files_for_anyone_and_knows_only_the_name_the_client_gave(monkeypatch):
+    from mcp.types import Implementation
+
+    sim = before_sim(monkeypatch)
+    async with serve(sim.create_app()) as base:
+        for name in ("Claude Desktop", "Claude Desktop"):   # the real one, then a script using its name
+            info = Implementation(name=name, version="1.0")
+            async with Client(f"{base}/mcp", client_info=info, mode="legacy") as client:
+                result = await client.call_tool("enroll_employee", ARGS)
+            assert result.is_error is False, result.content
+        async with httpx2.AsyncClient() as http:
+            ledger = (await http.get(f"{base}/ledger")).json()
+
+    assert ledger["mode"] == "before" and len(ledger["filings"]) == 2
+    first, second = ledger["filings"]
+    assert first["filedBy"] == second["filedBy"] == {"declaredClient": "Claude Desktop 1.0", "verified": False}
+    assert first["personRef"] == ARGS["person_ref"]
+
+
+async def test_the_ledger_exists_only_before(monkeypatch):
+    async with serve(labor.create_app()) as base:
+        async with httpx2.AsyncClient() as http:
+            assert (await http.get(f"{base}/ledger")).status_code == 404

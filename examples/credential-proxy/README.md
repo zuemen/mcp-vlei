@@ -50,8 +50,43 @@ changes.
 
 | `VLEI_PROFILE` | Presents | Made by | Expected |
 |---|---|---|---|
-| `demo` (default) | Demo Staffing Co., Ltd. (fictional), ECR `labor-insurance-filing`, Wang Xiao-Ming (fictional) | `scripts/bootstrap-credentials.sh` | enrol passes; salary adjustment `role_mismatch`; a start date 15 days out `scope_exceeded` |
+| `demo` (default) | Demo Staffing Co., Ltd. (fictional), ECR `labor-insurance-filing`, Bob (fictional) | `scripts/bootstrap-credentials.sh` | enrol passes; salary adjustment `role_mismatch`; a start date 15 days out `scope_exceeded` |
 | `forged` | Large Semiconductor Corp. (fictional), the same role, Zhang San (fictional) — a chain from a second self-made root | `scripts/bootstrap-forged.sh` | every call `unknown_root` |
+
+## Before and after, with the real Claude (`VLEI_PROFILE=plain`)
+
+The demonstration compares the same request made two ways from the same Claude Desktop:
+
+- **`plain` — MCP as it is today.** The proxy relays to `labor-insurance-before` on
+  `127.0.0.1:8090`: the same simulator with no gateway and no identity. Nothing is attached, signed
+  or verified, and the only thing passed on is the name Claude Desktop gave itself. That name is
+  all the server learns, and any program can give it.
+- **`demo` — with this extension.** Everything above: the gateway verifies the credential, the
+  signature, the delegation, the chain, revocation and the role before the system is reached.
+
+The Trust Console's `/story` page shows both sides live. Every call appears as it happens: on the
+left with the name the client claimed, and on the right with the identity the gateway verified, or
+the reason it refused. Its impostor button files once on each side under the same name. Before, it
+gets in looking identical to the real call; after, it is refused for want of a credential.
+
+Claude Desktop, two connections, one turned on at a time:
+
+```json
+{
+  "mcpServers": {
+    "labor-today": {
+      "command": "python",
+      "args": ["<repo>\examples\credential-proxy\proxy.py"],
+      "env": { "VLEI_PROFILE": "plain" }
+    },
+    "labor-vlei": {
+      "command": "python",
+      "args": ["<repo>\examples\credential-proxy\proxy.py"],
+      "env": { "VLEI_PROFILE": "demo" }
+    }
+  }
+}
+```
 
 ## Configure Claude
 

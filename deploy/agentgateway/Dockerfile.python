@@ -25,4 +25,7 @@ COPY examples/regulator /app/examples/regulator
 RUN ! find /app -path '*/keys/*' -o -name '*.key' -o -path '*/credentials/*' | grep -q .
 
 RUN useradd --system --uid 10001 --no-create-home vlei
+# vlei-authz's replay store (VLEI_REPLAY_DB) lives here, on a named volume. A new named volume
+# takes the ownership of the directory it is mounted over, so it must exist and be vlei's.
+RUN mkdir -p /state && chown vlei /state
 USER vlei

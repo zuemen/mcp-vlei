@@ -14,10 +14,17 @@
       "org.gleif.vlei/credentialSaid": "EDq8WnPrK3xLm5ZvTcYbJi1RoUa9HgNsEf7QdMwXy2Vt",
       "org.gleif.vlei/delegatedAid": "EFn3RtYqXmLdW5oJbP2TvNcUiSpRyEg7ZhKa4QsMxVwB",
       "org.gleif.vlei/signature": {
+        "v": "vlei-sig/0.3",
         "aid": "EFn3RtYqXmLdW5oJbP2TvNcUiSpRyEg7ZhKa4QsMxVwB",
+        "aud": {
+          "aid": "ELaborSimOfficeFictionalAidForTheSpecExample",
+          "url": "http://localhost:3000/mcp"
+        },
         "ts": "2026-09-24T09:00:00.000Z",
+        "exp": "2026-09-24T09:00:30.000Z",
+        "nonce": "AAECAwQFBgcICQoLDA0ODw",
         "digest": "fKiPRRfF8jHn6VrSS3kudy40q5DmJ639TT6gWD4Y04A",
-        "sig": "0BDGTs9G-L9y7QZCj8rqkCZhlFOMaCeoapnhZ0ZtXayjg0dWxb4rrVK0ALV39LaFr4Y2K2iSq70GuMh8jGiLnosI",
+        "sig": "0BAsG5DreoPWyGtfBNfc08Iw-_ony9pcfhPkU0CWb09BGBCghu5ztODfozrP4VuTSF8cy1ML5iClRsIgWuMqV9EO",
         "alg": "Ed25519"
       }
     }

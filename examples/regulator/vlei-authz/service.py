@@ -28,6 +28,12 @@ Configuration is environment only:
 * ``VLEI_LE_CREDENTIAL`` — the regulator's own LE credential (CESR). Default
   ``credentials/le.cesr``.
 * ``VLEI_ACCEPTED_ROOTS`` — comma-separated root AIDs a chain may terminate at. Required.
+* ``VLEI_AUDIENCE_URLS`` — comma-separated endpoint URLs callers sign for (``http://localhost:3000/mcp``
+  and every other spelling a signing client uses). Required: a v0.3 call names the URL it was
+  meant for, and a call meant for any other is refused as ``audience_mismatch``.
+* ``VLEI_REPLAY_DB`` — a SQLite file for the nonces already seen, so a restart forgets nothing.
+  Unset: kept in memory, and for a minute after each start every call is refused as made before
+  the memory began (``stale_signature``) — safe, and visibly unavailable.
 * ``VLEI_WITNESS_URL`` — where key event logs and TELs are read. Default
   ``http://witness-demo:5642``.
 * ``VLEI_WITNESS_TIMEOUT`` — seconds per witness request. Default 3. It must fit, with room to
@@ -44,6 +50,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import re
 import time
@@ -64,11 +71,20 @@ from mcp_vlei import VerificationReport, VleiIdentity
 from mcp_vlei import __version__ as PACKAGE_VERSION
 from mcp_vlei.chain import VLEI_SCHEMAS, parse_stream
 from mcp_vlei.namespace import keys as namespace_keys
-from mcp_vlei.signing import argument_rules_problem, parse_utc_offset, today_at
+from mcp_vlei.replay import SqliteReplayStore
+from mcp_vlei.signing import (
+    SIGNATURE_FORMAT,
+    argument_rules_problem,
+    parse_utc_offset,
+    reject_duplicate_members,
+    today_at,
+)
 from mcp_vlei.errors import VleiError
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_WITNESS_URL = "http://witness-demo:5642"
 
@@ -102,6 +118,10 @@ class Settings:
     #: The UTC offset a policy's dates are read in ("+08:00"), or None for the container's own.
     #: A filing window counts days at the filing office, not wherever the gateway happens to run.
     policy_utc_offset: timezone | None = None
+    #: Every URL callers sign for. Required to build the identity.
+    audience_urls: list[str] = field(default_factory=list)
+    #: Where nonces are remembered across restarts; None keeps them in memory.
+    replay_db: Path | None = None
 
     def today(self) -> date:
         """"Today", as the policy's date rules count it."""
@@ -111,6 +131,8 @@ class Settings:
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "Settings":
         env = os.environ if environ is None else environ
         roots = [r.strip() for r in env.get("VLEI_ACCEPTED_ROOTS", "").split(",") if r.strip()]
+        audience = [u.strip() for u in env.get("VLEI_AUDIENCE_URLS", "").split(",") if u.strip()]
+        replay_db = env.get("VLEI_REPLAY_DB", "").strip()
         audit = env.get("VLEI_AUDIT_LOG", "").strip()
         return cls(
             le_credential=Path(env.get("VLEI_LE_CREDENTIAL", str(ROOT / "credentials" / "le.cesr"))),
@@ -122,6 +144,8 @@ class Settings:
             policy_path=Path(env.get("VLEI_AUTHZ_POLICY", str(HERE / "policy.json"))),
             audit_log=Path(audit) if audit else None,
             policy_utc_offset=_utc_offset(env.get("VLEI_POLICY_UTC_OFFSET", "").strip()),
+            audience_urls=audience,
+            replay_db=Path(replay_db) if replay_db else None,
         )
 
     def identity(self) -> VleiIdentity:
@@ -133,6 +157,11 @@ class Settings:
             )
         if not self.le_credential.is_file():
             raise RuntimeError(f"VLEI_LE_CREDENTIAL {self.le_credential} does not exist")
+        if not self.audience_urls:
+            raise RuntimeError(
+                "VLEI_AUDIENCE_URLS is empty: a v0.3 call names the endpoint it was signed for, so "
+                "the gateway must know every URL its callers use (http://localhost:3000/mcp, ...)"
+            )
         return VleiIdentity(
             le_credential=self.le_credential,
             accepted_roots=self.accepted_roots,
@@ -148,6 +177,8 @@ class Settings:
             witness_client=httpx.AsyncClient(timeout=httpx.Timeout(self.witness_timeout),
                                              event_hooks=WITNESS_HOOKS),
             today=self.today,
+            audience_urls=self.audience_urls,
+            replay_store=SqliteReplayStore(self.replay_db) if self.replay_db else None,
         )
 
 
@@ -228,15 +259,18 @@ def _allow(headers: Mapping[str, str] | None = None) -> Response:
     return Response(status_code=200, headers=out)
 
 
-def _deny(layer: str | None, message: str, report: dict[str, Any] | None = None) -> Response:
-    """403 with the layer named, in the body and in a header.
+def _deny(
+    layer: str | None, message: str, report: dict[str, Any] | None = None, *, status: int = 403
+) -> Response:
+    """403 (or ``status``) with the layer named, in the body and in a header.
 
     The header survives a gateway that replaces the body of a denial; without the layer the agent
-    sees "forbidden" and the skill has nothing to act on.
+    sees "forbidden" and the skill has nothing to act on. ``status`` is 503 for ``verifier_error``
+    — the gateway itself failed, which is not the caller's fault and is worth a retry.
     """
     headers = {FAILURE_HEADER: layer} if layer else {}
     return JSONResponse(
-        status_code=403,
+        status_code=status,
         content={"layer": layer, "message": message, "report": report},
         headers=headers,
     )
@@ -244,6 +278,16 @@ def _deny(layer: str | None, message: str, report: dict[str, Any] | None = None)
 
 class _Refused(Exception):
     """A body this service will not pass on. Not a vLEI layer: nothing was presented to check."""
+
+
+class _Ambiguous(Exception):
+    """A body with a repeated member name: two parsers can read two different calls from it, so
+    no digest covers "the" arguments. Refused as ``digest_mismatch``, answering the call if one
+    can be found in it."""
+
+    def __init__(self, message: str, call: Mapping[str, Any] | None) -> None:
+        super().__init__(message)
+        self.call = call
 
 
 # ------------------------------------------------------------------------------------------- #
@@ -315,7 +359,20 @@ def _what_arrived(params: Mapping[str, Any]) -> dict[str, Any]:
         "metaKeys": sorted(str(k) for k in meta)[:20],
         "argumentNames": sorted(str(k) for k in arguments)[:20],
         "schemas": _schemas(meta.get(namespace_keys().credential)),
+        "declaredClient": _declared_client(meta),
     }
+
+
+def _declared_client(meta: Mapping[str, Any]) -> str | None:
+    """The name the client gave itself, as a 2026-07-28 request carries it on every call.
+
+    Not evidence of anything — any program can give any name — which is exactly why the record keeps
+    it beside what was verified. A legacy call named its client at initialize, not here: None.
+    """
+    info = meta.get("io.modelcontextprotocol/clientInfo")
+    if not isinstance(info, Mapping):
+        return None
+    return f"{str(info.get('name') or '')[:60]} {str(info.get('version') or '')[:20]}".strip() or None
 
 
 def _schemas(credential: Any) -> list[dict[str, Any]]:
@@ -344,6 +401,10 @@ class Decision:
     layer: str | None = None
     message: str = ""
     report: dict[str, Any] | None = None
+    #: The HTTP status a denial is answered with, over the wire that has one of its own (HTTP;
+    #: gRPC only uses this when there is no ``call`` to answer as a tool error instead). 403 for an
+    #: ordinary refusal; 503 for ``layer == "verifier_error"`` — the gateway itself failed.
+    status: int = 403
 
 
 #: In a 2026-07-28 request's ``_meta``: the per-request envelope, whose results describe themselves.
@@ -391,9 +452,21 @@ def _tool_calls(body: bytes) -> list[dict[str, Any]]:
     if not body.strip():
         return []  # GET (SSE stream), DELETE (session end): nothing is asserted, nothing to check
     try:
-        message = json.loads(body)
+        message = json.loads(body, object_pairs_hook=reject_duplicate_members)
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise _Refused(f"the request body is not JSON ({exc.__class__.__name__})") from exc
+    except ValueError as exc:  # a repeated member name, or any other read ambiguity
+        try:
+            lenient = json.loads(body)  # last-wins, only to find the call to answer
+        except ValueError as exc2:
+            # Whatever made the strict parse ambiguous defeats the lenient one too — for instance,
+            # an integer literal with more digits than Python's own int-from-string conversion
+            # allows (sys.get_int_max_str_digits): there is no reading left to recover a call
+            # from, so this is simply unreadable, the same as any other body that is not JSON.
+            raise _Refused(f"the request body is not JSON ({exc2.__class__.__name__})") from exc2
+        found = [m for m in (lenient if isinstance(lenient, list) else [lenient])
+                 if isinstance(m, dict) and m.get("method") == "tools/call"]
+        raise _Ambiguous(str(exc), found[0] if len(found) == 1 else None) from exc
     messages = message if isinstance(message, list) else [message]
     if not all(isinstance(m, dict) for m in messages):
         raise _Refused("the request body is not a JSON-RPC message")
@@ -432,7 +505,8 @@ def create_app(
         reads: list[dict[str, Any]] = []
         token = _READS.set(reads)
         seen: dict[str, Any] = {"via": _via(headers), "wire": wire, "metaKeys": [],
-                                "argumentNames": [], "schemas": [], "witnessReads": reads}
+                                "argumentNames": [], "schemas": [], "witnessReads": reads,
+                                "declaredClient": None}
 
         def record(**fields: Any) -> None:
             # Of the anchors each log carried, only the presented chain's: the ones that decide
@@ -445,12 +519,32 @@ def create_app(
 
         try:
             return await _decide(body, seen, record)
+        except Exception as exc:  # noqa: BLE001 - belt and suspenders: _decide's own exception
+            # points already end in a labelled Decision; this is the backstop for whatever neither
+            # anticipated, so neither wire ever answers with an unlabelled 500 or an unhandled
+            # error. Never the exception's own text, and never the request body.
+            logger.warning("vlei-authz: unexpected error deciding a request (%s)",
+                           type(exc).__name__)
+            message = f"the verifier failed unexpectedly ({type(exc).__name__}); try again"
+            try:
+                record(decision="deny", tool=None, layer="verifier_error", message=message)
+            except Exception:  # noqa: BLE001 - the audit sink itself must never block the answer
+                pass
+            return Decision(False, layer="verifier_error", message=message, status=503)
         finally:
             _READS.reset(token)
 
     async def _decide(body: bytes, seen: dict[str, Any], record: Callable[..., None]) -> Decision:
         try:
             calls = _tool_calls(body)
+        except _Ambiguous as exc:
+            params = (exc.call or {}).get("params")
+            tool = params.get("name") if isinstance(params, Mapping) else None
+            message = (f"the request has no single reading ({exc}); its arguments have no single "
+                       "canonical form, so no signature covers them")
+            record(decision="deny", tool=tool if isinstance(tool, str) else None,
+                   layer="digest_mismatch", message=message)
+            return Decision(False, call=exc.call, layer="digest_mismatch", message=message)
         except _Refused as exc:
             record(decision="deny", tool=None, layer=None, message=str(exc))
             return Decision(False, message=str(exc))
@@ -501,6 +595,17 @@ def create_app(
             )
             return Decision(False, call=calls[0], layer=exc.layer.value, message=exc.message,
                             report=report.as_dict())
+        except Exception as exc:  # noqa: BLE001 - an internal failure (the replay store, a witness
+            # client, anything this service does not itself define a layer for) must still end in
+            # a named refusal, never an unlabelled 500 or an unhandled gRPC error. Only the
+            # exception's class name is logged or recorded — never its message text, and never the
+            # request body.
+            logger.warning("vlei-authz: unexpected error verifying a call (%s)", type(exc).__name__)
+            message = f"the verifier failed unexpectedly ({type(exc).__name__}); try again"
+            record(decision="deny", tool=tool, layer="verifier_error", message=message,
+                   report=report.as_dict(), revocationChecked=report.revocation_established)
+            return Decision(False, call=calls[0], layer="verifier_error", message=message,
+                            report=report.as_dict(), status=503)
 
         facts = report.as_dict()
         record(
@@ -546,22 +651,32 @@ def create_app(
 
     @app.api_route("/auth/mcp", methods=ALL_METHODS)
     async def authorize(request: Request) -> Response:
-        """HTTP ext-authz: 200 allows, with the facts as headers; a refusal is a 403 naming the layer.
+        """HTTP ext-authz: 200 allows, with the facts as headers; a refusal names its layer.
 
-        agentgateway's HTTP ext-authz allows on any 2xx, so over this wire a refusal can only be a
-        4xx — the gRPC wire is the one that can answer a refused call as a tool error.
+        A refusal is a 4xx (403 for a refused credential or call), or ``503`` with the layer
+        ``verifier_error`` when this service's own machinery failed while deciding — its replay
+        store, a client it uses — which is retryable and says nothing about the call.
+        agentgateway's HTTP ext-authz allows on any 2xx, so over this wire no refusal can be a
+        2xx — the gRPC wire is the one that can answer a refused call as a tool error.
         """
         decision = await decide(await request.body(), request.headers, "http")
         if decision.allowed:
             return _allow(decision.headers)
-        return _deny(decision.layer, decision.message, decision.report)
+        return _deny(decision.layer, decision.message, decision.report, status=decision.status)
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
         cfg: Settings | None = state["settings"]
         tools = state["policy"] or {}
+        identity = state["identity"]
+        recipient = getattr(identity, "recipient", None)
+        store = getattr(identity, "_replay", None)
         return {
-            "ok": state["identity"] is not None,
+            "ok": identity is not None,
+            "signatureFormats": [SIGNATURE_FORMAT],
+            "audience": ({"aid": recipient.aid, "urls": list(recipient.urls)} if recipient else None),
+            "replayStore": ({"kind": type(store).__name__,
+                             "memorySince": store.memory_since.isoformat()} if store else None),
             "witnessUrl": getattr(getattr(state["identity"], "key_states", None), "witness_url", None),
             "acceptedRoots": getattr(state["identity"], "accepted_roots", []),
             "revocationSource": getattr(state["identity"], "revocation_source", None),

@@ -28,6 +28,7 @@ import pytest
 from mcp.client.client import Client
 
 from mcp_vlei import VleiCapability, VleiClient
+from mcp_vlei.client import published_audience
 from mcp_vlei.signing import sign_request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "my-agent"))
@@ -45,6 +46,11 @@ if _LOCAL_ENV.exists():
             os.environ.setdefault(_key.strip(), _value.strip())
 WITNESS_URL = os.environ.get("VLEI_WITNESS_URL", "http://localhost:5642")
 MCP_URL = f"{SERVER}/mcp"
+
+
+def _audience():
+    """The server as a call is signed for it: the LE it publishes, at MCP_URL."""
+    return published_audience(httpx.get(f"{SERVER}/.well-known/vlei", timeout=10).json(), MCP_URL)
 
 
 def _server_up() -> bool:
@@ -137,6 +143,7 @@ async def vlei_session(env: dict[str, Any], **overrides: Any):
             # Where the server's credentials are checked for revocation; without it the client
             # refuses to verify servers at all (on_unchecked_revocation defaults to "stop").
             witness_url=WITNESS_URL,
+            endpoint_url=MCP_URL,
             role=env.get("role"),
             # Mode (a): the client checks the server's LE credential itself — chain, SAIDs and
             # root — because a relying party cannot present a counterparty's credential to the
@@ -173,7 +180,7 @@ async def test_1_register_member_with_credential(env):
         assert entitlement, entitlement.reason
 
         result = await session.call_tool(
-            "register_member", {"name": "Wang Xiao-Ming", "email": "xiaoming@example.org"}
+            "register_member", {"name": "Bob", "email": "bob@example.org"}
         )
         show_report(result)
         show("stage 6 — result", isError=result.is_error, text=_text(result)[:120])
@@ -233,7 +240,8 @@ async def test_2c_someone_elses_credential_with_your_own_key_is_refused(env):
         "org.gleif.vlei/credential": (CREDENTIALS / "ecr.cesr").read_text().strip(),
         "org.gleif.vlei/delegatedAid": agent,
         "org.gleif.vlei/signature": sign_request(
-            mallory, "tools/call", {"name": "register_member", "arguments": arguments}
+            mallory, "tools/call", {"name": "register_member", "arguments": arguments},
+            audience=_audience(), credential_said=env["ecrSaid"],
         ),
         "org.gleif.vlei/verkey": mallory.verkey,
         "org.gleif.vlei/credentialSaid": env["ecrSaid"],
@@ -262,7 +270,7 @@ async def test_3_revoked_credential_is_refused(env):
         await session.connect()
         await session.list_tools()
         result = await session.call_tool(
-            "register_member", {"name": "Wang Xiao-Ming", "email": "xiaoming@example.org"}
+            "register_member", {"name": "Bob", "email": "bob@example.org"}
         )
         show_report(result)
         show("refused", layer=_layer(result), text=_text(result)[:120])
@@ -279,9 +287,10 @@ async def test_3_revoked_credential_is_refused(env):
 async def test_4_tampered_arguments_are_refused(env):
     """Sign one set of arguments, send another — the gap the digest exists to close."""
     signer = agent_signer()
-    honest = {"name": "Wang Xiao-Ming", "email": "xiaoming@example.org"}
+    honest = {"name": "Bob", "email": "bob@example.org"}
     signature = sign_request(
-        signer, "tools/call", {"name": "register_member", "arguments": honest}
+        signer, "tools/call", {"name": "register_member", "arguments": honest},
+        audience=_audience(), credential_said=env["ecrSaid"],
     )
     meta = {
         "org.gleif.vlei/credential": (CREDENTIALS / "ecr.cesr").read_text().strip(),

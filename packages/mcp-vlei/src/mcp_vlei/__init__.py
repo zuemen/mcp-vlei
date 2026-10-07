@@ -11,6 +11,7 @@ from .attest import make_attestation, verify_attestation
 from .client import Entitlement, VleiCapability, VleiClient
 from .errors import (
     EXTENSION_REQUIRED_CODE,
+    AudienceMismatch,
     ChainInvalid,
     DigestMismatch,
     ExtensionRequired,
@@ -22,16 +23,19 @@ from .errors import (
     ScopeExceeded,
     StaleSignature,
     UnknownRoot,
+    UnsupportedVersion,
     VleiError,
 )
 from .chain import Acdc, parse_stream, recompute_said, walk_chain
 from .extension import VleiIdentity
-from .signing import CommandSigner, ReplayCache, Signer, canonicalize, digest_params, sign_request, verify_request
+from .audience import Audience, Recipient
+from .replay import MemoryReplayStore, ReplayStore, SqliteReplayStore
+from .signing import CommandSigner, Signer, canonicalize, digest_params, sign_request, verify_request
 from .report import CHECK_ORDER, CheckResult, VerificationReport
 from .revocation import TelRevocationChecker
 from .verifier import OfflineVerifier, VerificationResult, VleiVerifier
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "__version__",
@@ -54,7 +58,11 @@ __all__ = [
     "VerificationResult",
     "Signer",
     "CommandSigner",
-    "ReplayCache",
+    "ReplayStore",
+    "MemoryReplayStore",
+    "SqliteReplayStore",
+    "Audience",
+    "Recipient",
     "canonicalize",
     "digest_params",
     "sign_request",
@@ -73,6 +81,8 @@ __all__ = [
     "ScopeExceeded",
     "UnknownRoot",
     "MissingCredential",
+    "AudienceMismatch",
+    "UnsupportedVersion",
 ]
 
 

@@ -31,6 +31,7 @@ Run::
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import subprocess
@@ -41,20 +42,47 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+import anyio
 import httpx
-from fastapi import FastAPI
+from fastapi import Body, FastAPI
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from mcp_vlei import Signer, VleiIdentity
 from mcp_vlei.namespace import keys as namespace_keys
 from mcp_vlei.errors import VleiError
 from mcp_vlei.report import _LABEL, CHECK_ORDER, VerificationReport
+from mcp_vlei.audience import Audience
+from mcp_vlei.client import published_audience
+from mcp_vlei.extension import _presented
+from mcp_vlei.replay import MemoryReplayStore
 from mcp_vlei.signing import parse_utc_offset, sign_request, today_at
 from mcp_vlei.verifier import OfflineVerifier
 
 ROOT = Path(__file__).resolve().parents[2]
 STATIC = Path(__file__).parent / "static"
-CREDENTIALS = ROOT / "credentials"
+
+#: VLEI_CREDENTIALS_DIR addresses a different credentials directory — e.g. the parallel v0.3
+#: stack's .v03/credentials (scripts/demo-parallel.sh) — so a second console can run from this
+#: worktree without ever touching credentials/. Unset, nothing here changes.
+_CREDENTIALS_DIR = os.environ.get("VLEI_CREDENTIALS_DIR")
+CREDENTIALS = Path(_CREDENTIALS_DIR) if _CREDENTIALS_DIR else ROOT / "credentials"
+
+if _CREDENTIALS_DIR:
+    # A console pointed at another stack's credentials must also be told, explicitly, which
+    # compose command signs for them and which gateway/before/witness they belong to — so it can
+    # never default onto the live stack's keri-cli or ports while holding someone else's
+    # credentials. scripts/demo-parallel.sh sets all four for the parallel v0.3 stack; nothing
+    # here guesses a safe default for any of them.
+    _REQUIRED_WITH_CREDENTIALS_DIR = (
+        "VLEI_COMPOSE_CMD", "VLEI_GATEWAY_URL", "VLEI_BEFORE_URL", "VLEI_WITNESS_URL",
+    )
+    _missing = [name for name in _REQUIRED_WITH_CREDENTIALS_DIR if not os.environ.get(name)]
+    if _missing:
+        raise SystemExit(
+            "console: VLEI_CREDENTIALS_DIR is set, so these must be set too, explicitly, and "
+            "are not: " + ", ".join(_missing) + " — refusing to start rather than sign with "
+            "these credentials against a default (live) port. See scripts/demo-parallel.sh."
+        )
 
 GATEWAY_URL = os.environ.get("VLEI_GATEWAY_URL", "http://localhost:3000/mcp")
 #: Scene 0's second mode reads the observatory's actual records (examples/observatory/). A URL — the
@@ -192,11 +220,15 @@ class Environment:
         )
 
     async def reissue(self) -> None:
-        """Issue a fresh ECR after a revocation, so the next take has one to present."""
-        if self.world is not None:
-            self.world.reissue_ecr(datetime.now(timezone.utc).isoformat())
-            return
-        await _run("bash", str(ROOT / "scripts" / "bootstrap-credentials.sh"), "--reissue")
+        """Issue a fresh ECR after a revocation, so the next take has one to present.
+
+        Takes the signing turn (`_SIGNING`): a signing reads the chain and the SAID on a worker
+        thread, and must not read one credential's chain and the next one's SAID."""
+        async with _SIGNING:
+            if self.world is not None:
+                self.world.reissue_ecr(datetime.now(timezone.utc).isoformat())
+                return
+            await _run("bash", str(ROOT / "scripts" / "bootstrap-credentials.sh"), "--reissue")
 
 
 async def _run(*argv: str) -> str:
@@ -401,10 +433,69 @@ def _observed_outcome(observed: dict[str, Any]) -> dict[str, Any]:
 KEYS = namespace_keys()
 
 
+#: The endpoint the in-process verification answers at. Nothing listens there: a call verified in
+#: this process is signed for it, exactly as a call to the gateway is signed for the gateway.
+IN_PROCESS_URL = "http://console.local/in-process"
+
+#: The in-process verifier's nonces, kept for the console's lifetime. A demonstration inside one
+#: process: a replay across a console restart is not what it defends against, so its memory is said
+#: to begin before anything it could have seen (`mcp_vlei.replay`).
+_IN_PROCESS_REPLAY = MemoryReplayStore(memory_since=datetime(2000, 1, 1, tzinfo=timezone.utc))
+
+_gateway_audience: Audience | None = None
+
+
+class AudienceUnavailable(RuntimeError):
+    """The gateway's identity could not be established.
+
+    Spec §6.1: nothing is presented until the server is established. A signature naming a guessed
+    recipient is not safer than none, so when the gateway cannot be asked, none is made — the
+    caller must not fall through to sending the credential and a signature anyway.
+    """
+
+
+def _audience() -> Audience:
+    """Who the agent's calls are signed for: the gateway's operator at GATEWAY_URL, or this
+    console's in-process verifier.
+
+    Raises `AudienceUnavailable` when the gateway's own document cannot be read — the caller signs
+    and sends nothing rather than guessing a recipient. It blocks (an HTTP read on first use; the
+    agent's signer may be `kli`), so every async handler signs through `_signed_off_loop`.
+    """
+    global _gateway_audience
+    if _target(_as_scene("")) != "gateway":
+        return Audience(_presented(ENV.le_stream, None).issuee, IN_PROCESS_URL)
+    if _gateway_audience is None:
+        try:
+            origin = GATEWAY_URL.split("/mcp")[0]
+            document = httpx.get(f"{origin}/.well-known/vlei", timeout=5).json()
+            _gateway_audience = published_audience(document, GATEWAY_URL)
+        except Exception as exc:  # noqa: BLE001 - reported, not guessed around
+            raise AudienceUnavailable(
+                f"the gateway's /.well-known/vlei could not be read ({type(exc).__name__})"
+            ) from exc
+    return _gateway_audience
+
+
+#: One signing at a time, console-wide — the recorded scenes, the replay scene, the interactive page
+#: (`interactive.Backend.signing`) and a re-issue all take this turn. Live, every signing is a
+#: `kli sign` on the one agent keystore (vlei-pop and the association server serialise theirs the
+#: same way); minted, a signing reads the world a re-issue replaces.
+_SIGNING = anyio.CapacityLimiter(1)
+
+
+async def _signed_off_loop(sign: Any, *args: Any, **kwargs: Any) -> Any:
+    """``sign(*args, **kwargs)`` in a worker thread, in its turn (`_SIGNING`): signing reads the
+    gateway's document (`_audience`) and may ask `kli`, and neither may stall the event loop the
+    page runs on."""
+    return await anyio.to_thread.run_sync(lambda: sign(*args, **kwargs), limiter=_SIGNING)
+
+
 def _signed_meta(scene: dict[str, Any], arguments: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     """Sign the scene's call as the agent. Returns (request _meta, signature)."""
     signer = ENV.signer()
-    signature = sign_request(signer, "tools/call", {"name": scene["tool"], "arguments": arguments})
+    signature = sign_request(signer, "tools/call", {"name": scene["tool"], "arguments": arguments},
+                             audience=_audience(), credential_said=ENV.said)
     meta = {
         KEYS.credential: ENV.chain,
         KEYS.credential_said: ENV.said,
@@ -440,6 +531,8 @@ def _extension() -> VleiIdentity:
         witness_urls=_witness_urls() if ENV.live else None,
         witness_client=ENV.witness_client(),
         today=_today,
+        audience_urls=[IN_PROCESS_URL],
+        replay_store=_IN_PROCESS_REPLAY,
     )
 
 
@@ -643,9 +736,16 @@ async def load_scene(n: int, *, just_revoked: bool = False) -> None:
         await _run_impersonation()
         run: dict[str, Any] = {"reachable": True, "report": None}
     else:
-        meta, _ = _signed_meta(scene, arguments)
-        run = (await _remote(scene, meta, arguments) if target == "gateway"
-               else await _in_process(scene, meta, arguments))
+        try:
+            meta, _ = await _signed_off_loop(_signed_meta, scene, arguments)
+        except AudienceUnavailable as exc:
+            # The gateway's identity could not be established: nothing is signed, and nothing is
+            # sent — the same "unavailable" shape `_remote` uses when the gateway itself does not
+            # answer, which `_outcome` already renders as a labelled refusal.
+            run = {"reachable": False, "url": GATEWAY_URL, "error": str(exc)}
+        else:
+            run = (await _remote(scene, meta, arguments) if target == "gateway"
+                   else await _in_process(scene, meta, arguments))
 
     outcome = _outcome(run, scene)
     if target == "gateway" and outcome["status"] == "allowed":
@@ -861,7 +961,8 @@ def _sign_as_agent(tool: str, arguments: dict[str, Any], *, ts: str | None = Non
                    signer: Any = None) -> dict[str, Any]:
     """The request `_meta` the agent sends: its credential, and its signature over this call."""
     signature = sign_request(signer or ENV.signer(), "tools/call",
-                             {"name": tool, "arguments": arguments}, ts=ts)
+                             {"name": tool, "arguments": arguments}, ts=ts,
+                             audience=_audience(), credential_said=ENV.said)
     meta = {KEYS.credential: ENV.chain, KEYS.credential_said: ENV.said, KEYS.signature: signature}
     if ENV.delegate != ENV.holder:
         meta[KEYS.delegated_aid] = ENV.delegate
@@ -936,8 +1037,8 @@ async def _page_revoke() -> bool:
                                     _today())
     deadline = asyncio.get_running_loop().time() + 30
     while asyncio.get_running_loop().time() < deadline:
-        said = interactive.outcome(await _send("enroll_employee", arguments,
-                                                _sign_as_agent("enroll_employee", arguments)))
+        meta = await _signed_off_loop(_sign_as_agent, "enroll_employee", arguments)
+        said = interactive.outcome(await _send("enroll_employee", arguments, meta))
         if said["layer"] == "revoked":
             return True
         if said["status"] == "unavailable":
@@ -968,15 +1069,18 @@ async def _page_impersonation() -> dict[str, Any]:
             "target": "impersonation", "url": None}
 
 
-app.include_router(interactive.router(interactive.Backend(
+_PAGE_BACKEND = interactive.Backend(
     policy_tools=_policy, today=_today, sign=_sign_as_agent, fresh_signer=_fresh_signer,
     send=_send, checks=_page_checks, identity=_identity, status=_page_status,
     revoke=_page_revoke, reissue=_page_reissue, impersonation=_page_impersonation,
-)))
+    signing=_SIGNING,
+)
+app.include_router(interactive.router(_PAGE_BACKEND))
 
 _PAGE_ASSETS = {"app.css": "text/css", "app.js": "application/javascript",
                 "i18n.json": "application/json", "evidence.css": "text/css",
-                "evidence.js": "application/javascript"}
+                "evidence.js": "application/javascript", "story.css": "text/css",
+                "story.js": "application/javascript"}
 
 
 @app.get("/app")
@@ -1000,6 +1104,160 @@ import evidence  # noqa: E402  (examples/console/evidence.py; sys.path set above
 @app.get("/evidence")
 async def evidence_page() -> FileResponse:
     return FileResponse(STATIC / "evidence.html")
+
+
+# ------------------------------------------------------------------------------------------- #
+# The before half: the same simulator as an ordinary MCP server is today (deploy/agentgateway,
+# labor-insurance-before on 127.0.0.1:8090). Claude Desktop files there through the credential
+# proxy's plain profile; the story page shows what that server knows of who filed.
+# ------------------------------------------------------------------------------------------- #
+BEFORE_URL = os.environ.get("VLEI_BEFORE_URL", "http://localhost:8090").rstrip("/")
+#: The person reference the impersonator files for, so the page can say which filing was its.
+IMPOSTOR_PERSON = "EMP-0666"
+
+
+@app.get("/api/before/ledger")
+async def before_ledger() -> JSONResponse:
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            data = (await client.get(f"{BEFORE_URL}/ledger")).json()
+        return JSONResponse({"reachable": True, "impostor": IMPOSTOR_PERSON, **data})
+    except (httpx.HTTPError, ValueError):
+        return JSONResponse({"reachable": False, "filings": [], "url": BEFORE_URL, "impostor": IMPOSTOR_PERSON})
+
+
+@app.post("/api/before/impersonate")
+async def before_impersonate() -> JSONResponse:
+    """A script that gives itself the same name as the last real client, and files — twice.
+
+    Before: the ordinary server accepts it, and its record is indistinguishable from the real one.
+    After: the same script through the vLEI gateway carries no credential and is refused there.
+    """
+    if PUBLIC:
+        return JSONResponse({"error": "not on the public page"}, status_code=403)
+    from mcp.client.client import Client
+    from mcp.types import Implementation
+
+    async with httpx.AsyncClient(timeout=3.0) as http:
+        try:
+            filings = (await http.get(f"{BEFORE_URL}/ledger")).json().get("filings", [])
+        except (httpx.HTTPError, ValueError):
+            filings = []
+    real = next((f["filedBy"]["declaredClient"] for f in reversed(filings)
+                 if f.get("personRef") != IMPOSTOR_PERSON and isinstance(f.get("filedBy"), dict)), "Claude Desktop 1.0")
+    name, _, version = real.rpartition(" ")
+    claimed = Implementation(name=name or real, version=version or "1.0")
+    args = {"person_ref": IMPOSTOR_PERSON, "start_date": today_at(parse_utc_offset("+08:00")).isoformat(),
+            "salary_grade": 9}
+    try:
+        async with Client(f"{BEFORE_URL}/mcp", client_info=claimed, mode="legacy") as client:
+            before = await client.call_tool("enroll_employee", args)
+        before_out = {"filed": not before.is_error}
+    except Exception as exc:  # noqa: BLE001 - said, not raised
+        before_out = {"filed": False, "error": f"{type(exc).__name__}: {exc}"[:200]}
+    sys.path.insert(0, str(ROOT / "examples" / "regulator"))
+    from gateway_client import call_through_gateway  # noqa: PLC0415
+
+    after = await call_through_gateway(GATEWAY_URL, "enroll_employee", args, {}, client_info=claimed)
+    return JSONResponse({"claimed": real, "before": before_out,
+                         "after": {"allowed": after["allowed"], "layer": after["layer"]}})
+
+
+# ------------------------------------------------------------------------------------------- #
+# The replay scene (/story): one call the agent signed, captured and delivered again unchanged
+# ------------------------------------------------------------------------------------------- #
+#: The person the replay scene enrols — not EMP-0001, which Claude files in the story's second
+#: scene, so the ledger says which filing came from this one.
+REPLAY_PERSON = "EMP-0003"
+
+
+def _params_bytes(tool: str, arguments: dict[str, Any], meta: dict[str, Any]) -> bytes:
+    """The `tools/call` params a delivery hands over, serialized one canonical way so that two
+    deliveries can be compared byte for byte. The signature covers exactly these; the JSON-RPC id
+    and the session around them belong to each connection."""
+    return json.dumps({"name": tool, "arguments": arguments, "_meta": meta}, sort_keys=True,
+                      separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
+async def _deliver(tool: str, arguments: dict[str, Any],
+                   meta: dict[str, Any]) -> tuple[dict[str, Any], bytes]:
+    """Send the call once. Returns what the verifier said — read from its report, never inferred —
+    and the bytes handed over, taken as they went."""
+    sent = _params_bytes(tool, arguments, meta)
+    run = await _send(tool, arguments, meta)
+    said = interactive.outcome(run)
+    answer = interactive.server_answer(run)
+    return {"status": said["status"], "check": said["check"], "layer": said["layer"],
+            "message": said["detail"],
+            # Verified at the gateway, then refused by the system on a business rule: said, too.
+            "systemRefused": (answer["text"] or json.dumps(answer["body"], ensure_ascii=False))
+                             if answer and not answer["ok"] else None,
+            "sha256": hashlib.sha256(sent).hexdigest()}, sent
+
+
+@app.post("/api/story/replay")
+async def story_replay() -> JSONResponse:
+    """A copy of a signed call, sent again: the original is filed, the same bytes are refused.
+
+    The console signs one enrolment as the agent, for the gateway it is configured with, and
+    delivers it; then it delivers the very same request again — the same arguments, the same
+    `_meta`, the same signature, not re-signed. Both outcomes are the verifier's.
+    """
+    if PUBLIC:
+        return JSONResponse({"error": "not on the public page"}, status_code=403)
+    tool = "enroll_employee"
+    arguments = {"person_ref": REPLAY_PERSON, "start_date": _today().isoformat(), "salary_grade": 3}
+    try:
+        meta = await _signed_off_loop(_sign_as_agent, tool, arguments)
+    except Exception as exc:  # noqa: BLE001 - AudienceUnavailable above all: nothing signed or sent
+        return JSONResponse({"error": f"{type(exc).__name__}: {exc}"[:300]}, status_code=502)
+    target = _target(_as_scene(tool))
+    original, first = await _deliver(tool, arguments, meta)
+    copy, second = await _deliver(tool, arguments, meta)
+    return JSONResponse({
+        "runId": os.urandom(6).hex(),
+        "at": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+        "tool": tool, "arguments": arguments, "target": target,
+        "url": GATEWAY_URL if target == "gateway" else None,
+        "original": original, "copy": copy, "identicalBytes": first == second,
+    })
+
+
+# ------------------------------------------------------------------------------------------- #
+# A real Claude agent (examples/console/agent.py): Claude Code, headless, given one connection —
+# labor-today or labor-vlei — and asked in plain words. Local only: it spends the operator's account.
+# ------------------------------------------------------------------------------------------- #
+import agent as agent_runner  # noqa: E402  (beside this file)
+
+AGENT = agent_runner.Agent()
+
+
+@app.post("/api/agent/run")
+async def agent_run(body: dict[str, Any] = Body(default={})) -> JSONResponse:
+    if PUBLIC:
+        return JSONResponse({"error": "not on the public page"}, status_code=403)
+    try:
+        run = AGENT.start(body.get("side"), body.get("ask"), body.get("lang", "zh"))
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except LookupError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=503)
+    except RuntimeError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=409)
+    return JSONResponse({"run": run})
+
+
+@app.get("/api/agent/runs")
+async def agent_runs() -> JSONResponse:
+    if PUBLIC:
+        return JSONResponse({"available": False, "busy": False, "runs": []})
+    return JSONResponse({"available": bool(AGENT.claude), "busy": AGENT.busy, "runs": AGENT.runs[-10:]})
+
+
+@app.get("/story")
+async def story_page() -> FileResponse:
+    """The demonstration told in three views — issuer, gateway, outcome — each driving real calls."""
+    return FileResponse(STATIC / "story.html")
 
 
 @app.get("/api/evidence")

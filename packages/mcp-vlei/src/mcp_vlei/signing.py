@@ -1,29 +1,31 @@
-"""Canonicalization, digests, signing and verification for the vLEI MCP extension.
+"""Canonicalization, digests, signing and verification for the vLEI MCP extension (vlei-sig/0.3).
 
-The signed payload is deliberately small and fixed::
+A v0.3 signature covers a small **statement**, canonicalized with RFC 8785::
 
-    method + "\\n" + ts + "\\n" + digest
+    {"aid", "aud": {"aid", "url"}, "cred", "digest", "exp", "method", "nonce", "ts", "v"}
 
-with ``digest = base64url(sha256(JCS(params without _meta)))``.
+``v`` is ``vlei-sig/0.3``; ``aud`` the recipient (its LE AID and the endpoint URL); ``cred`` the
+presented credential's SAID; ``digest = base64url(sha256(JCS(params without _meta)))`` — the tool
+and every argument; ``ts``/``exp`` the window the signer allows; ``nonce`` 128 random bits that a
+verifier claims once (:mod:`mcp_vlei.replay`).
 
-``_meta`` is excluded because it carries the signature; excluding the whole member rather than one
-key keeps the rule auditable by eye.
+``_meta`` is excluded from the digest because it carries the signature; excluding the whole member
+rather than one key keeps the rule auditable by eye.
 
-This is a **single-pass** design. There is no nonce and no challenge round trip, because a stateless
-gateway must be able to decide from one message — that is the deployment shape that lets an
-institution adopt the extension without modifying its existing systems. Replay is bounded instead by
-a freshness window plus a :class:`ReplayCache`.
+This is still a **single-pass** design: a stateless gateway decides from one message. The nonce is
+the client's, so no challenge round trip is needed; the verifier only has to remember which nonces
+it has seen until they expire.
 """
-
 from __future__ import annotations
 
 import base64
 import hashlib
 import json
 import math
-import time
-from dataclasses import dataclass, field
 import re
+import secrets
+from dataclasses import dataclass
+from decimal import Decimal
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Iterable, Sequence
 
@@ -33,44 +35,105 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PublicKey,
 )
 
-from .errors import DigestMismatch, InvalidSignature, StaleSignature
+from .audience import Audience, Recipient, is_qb64_identifier
+from .errors import (
+    DigestMismatch,
+    InvalidSignature,
+    MissingCredential,
+    StaleSignature,
+    UnsupportedVersion,
+)
+from .replay import ReplayStore
 
 __all__ = [
     "canonicalize",
+    "loads_strict",
+    "reject_duplicate_members",
+    "MAX_SAFE_INTEGER",
     "digest_params",
     "sign_request",
     "verify_request",
     "precheck_request",
-    "ReplayCache",
+    "unsupported_version",
+    "parse_signature",
+    "ParsedSignature",
+    "statement",
+    "statement_bytes",
+    "new_nonce",
     "Signer",
     "CommandSigner",
+    "SIGNATURE_FORMAT",
     "DEFAULT_FRESHNESS_SECONDS",
+    "DEFAULT_LIFETIME_SECONDS",
+    "DEFAULT_MAX_LIFETIME_SECONDS",
     "cesr_encode_signature",
     "cesr_decode_signature",
     "cesr_decode_verkey",
 ]
 
-#: Default freshness window. Short enough to bound replay, long enough to survive ordinary clock
+#: The signature format this package signs and verifies. A verifier refuses any other
+#: (``unsupported_version``); a v0.2 signature carries no ``v`` at all.
+SIGNATURE_FORMAT = "vlei-sig/0.3"
+
+#: How far apart a signer's and a verifier's clocks may be. Long enough to survive ordinary clock
 #: skew between two organizations that have never synchronized anything with each other.
 DEFAULT_FRESHNESS_SECONDS = 60
+
+#: How long a client's signature is valid for (``exp - ts``), unless it says otherwise.
+DEFAULT_LIFETIME_SECONDS = 30
+
+#: The longest ``exp - ts`` a verifier accepts: a signer cannot ask for a signature good for a day.
+DEFAULT_MAX_LIFETIME_SECONDS = 60
+
+_NONCE = re.compile(r"[A-Za-z0-9_-]{22,64}")
 
 
 # -------------------------------------------------------------------------------------------- #
 # RFC 8785 (JCS) canonicalization
 # -------------------------------------------------------------------------------------------- #
 
+#: The largest integer I-JSON (RFC 7493) carries exactly: beyond it, a JSON number has no portable
+#: value, and RFC 8785 serializes numbers as IEEE-754 doubles.
+MAX_SAFE_INTEGER = 2**53 - 1
+
+
 def _jcs_number(value: float | int) -> str:
-    """Serialize a number per RFC 8785, which defers to ECMAScript ``Number::toString``."""
+    """Serialize a number per RFC 8785, which defers to ECMAScript ``Number::toString``.
+
+    ``1e21`` is ``1e+21`` and ``1e-7`` is ``1e-7`` — not Python's ``1e21`` / ``1e-07``. An integer
+    beyond ±(2**53 - 1) is refused rather than rounded: rounding would give two different integers
+    one digest, and a JavaScript signer would have signed the rounded one.
+    """
     if isinstance(value, bool):  # bool is a subclass of int; JCS treats it as a literal
         raise TypeError("bool is not a JSON number")
     if isinstance(value, int):
+        if abs(value) > MAX_SAFE_INTEGER:
+            raise ValueError(
+                f"integer {value} is outside the I-JSON range (|n| <= 2**53 - 1) and has no "
+                "portable canonical form"
+            )
         return str(value)
     if math.isnan(value) or math.isinf(value):
         raise ValueError("NaN and Infinity are not representable in JSON")
-    if value == int(value) and abs(value) < 1e21:
-        return str(int(value))
-    out = repr(value)
-    return out.replace("e+", "e").replace("E", "e")
+    if value == 0:
+        return "0"  # -0 included
+    if value < 0:
+        return "-" + _jcs_number(-value)
+    # repr() gives the shortest digits that round-trip, which is what ECMAScript requires; only the
+    # layout differs. digits * 10**(n - k) == value, k digits, as in ECMA-262 Number::toString.
+    _, raw, exponent = Decimal(repr(value)).as_tuple()
+    digits = "".join(map(str, raw)).rstrip("0")
+    exponent += len(raw) - len(digits)
+    k = len(digits)
+    n = exponent + k
+    if k <= n <= 21:
+        return digits + "0" * (n - k)
+    if 0 < n <= 21:
+        return digits[:n] + "." + digits[n:]
+    if -6 < n <= 0:
+        return "0." + "0" * (-n) + digits
+    mantissa = digits if k == 1 else digits[0] + "." + digits[1:]
+    return f"{mantissa}e{'+' if n - 1 >= 0 else '-'}{abs(n - 1)}"
 
 
 def _jcs_string(value: str) -> str:
@@ -105,6 +168,29 @@ def canonicalize(value: Any) -> bytes:
     return _jcs(value).encode("utf-8")
 
 
+def reject_duplicate_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """A ``json`` ``object_pairs_hook`` that refuses a repeated member name (ValueError)."""
+    seen: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in seen:
+            raise ValueError(f"duplicate member name {key!r}: the object has no single reading")
+        seen[key] = value
+    return seen
+
+
+def _no_constant(name: str) -> Any:
+    raise ValueError(f"{name} is not JSON")
+
+
+def loads_strict(text: str | bytes) -> Any:
+    """Parse JSON as I-JSON (RFC 7493): a repeated member name or NaN/Infinity is a ValueError.
+
+    Python keeps the last of two equal keys and other parsers keep the first, so a duplicate is how
+    a verifier and a backend come to read different arguments under one valid digest.
+    """
+    return json.loads(text, object_pairs_hook=reject_duplicate_members, parse_constant=_no_constant)
+
+
 def digest_params(params: dict[str, Any] | None) -> str:
     """``base64url(sha256(JCS(params without _meta)))``, unpadded.
 
@@ -114,10 +200,6 @@ def digest_params(params: dict[str, Any] | None) -> str:
     payload = {k: v for k, v in (params or {}).items() if k != "_meta"}
     h = hashlib.sha256(canonicalize(payload)).digest()
     return base64.urlsafe_b64encode(h).decode("ascii").rstrip("=")
-
-
-def signed_payload(method: str, ts: str, digest: str) -> bytes:
-    return f"{method}\n{ts}\n{digest}".encode("utf-8")
 
 
 # -------------------------------------------------------------------------------------------- #
@@ -211,7 +293,7 @@ class Signer:
 
 
 # -------------------------------------------------------------------------------------------- #
-# Replay cache
+# Command signer
 # -------------------------------------------------------------------------------------------- #
 
 class CommandSigner:
@@ -243,42 +325,59 @@ class CommandSigner:
         return signature
 
 
-@dataclass
-class ReplayCache:
-    """Remembers ``(aid, digest, ts)`` for at least the freshness window.
-
-    The freshness window alone does not stop replay — it only bounds it to a minute. This is the
-    other half, and a verifier that omits it has a one-minute replay window rather than none.
-    """
-
-    window_seconds: int = DEFAULT_FRESHNESS_SECONDS
-    _seen: dict[tuple[str, str, str], float] = field(default_factory=dict)
-
-    def check_and_record(self, aid: str, digest: str, ts: str) -> None:
-        now = time.monotonic()
-        self._evict(now)
-        key = (aid, digest, ts)
-        if key in self._seen:
-            raise StaleSignature(
-                "request already seen (replay)", aid=aid
-            )
-        self._seen[key] = now
-
-    def _evict(self, now: float) -> None:
-        cutoff = now - (self.window_seconds * 2)
-        for key in [k for k, t in self._seen.items() if t < cutoff]:
-            del self._seen[key]
-
-
 # -------------------------------------------------------------------------------------------- #
-# Sign / verify a request
+# Sign / verify a request (vlei-sig/0.3)
 # -------------------------------------------------------------------------------------------- #
 
 def _now_rfc3339() -> str:
-    # Milliseconds: the replay key is (aid, digest, ts), and at whole seconds a client that
-    # legitimately repeated a call within the same second had the second one refused as a replay.
-    # RFC 3339 allows the fraction, and every verifier here parses it.
-    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return _rfc3339(datetime.now(timezone.utc))
+
+
+def _rfc3339(moment: datetime) -> str:
+    """UTC, milliseconds, ``Z``: the form every signature here carries."""
+    return moment.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def new_nonce() -> str:
+    """128 random bits, base64url, unpadded: 22 characters."""
+    return secrets.token_urlsafe(16)
+
+
+def statement(
+    *,
+    aid: str,
+    aud: dict[str, str],
+    cred: str,
+    digest: str,
+    ts: str,
+    exp: str,
+    nonce: str,
+    method: str = "tools/call",
+) -> dict[str, Any]:
+    """The object a v0.3 request signature covers.
+
+    On the signing side every field is ASCII by construction: CESR identifiers, a normalised URL,
+    base64url and RFC 3339 timestamps (:func:`sign_request`). A verifier rebuilds it from the fields
+    a request carried, which are shape-checked (:func:`parse_signature`) but not all held to ASCII
+    — ``aud.url`` is compared only once normalised. JCS writes whatever it is given as UTF-8, so a
+    field that is not ASCII yields bytes no conforming signer signed: it does not verify.
+    """
+    return {
+        "aid": aid,
+        "aud": {"aid": aud["aid"], "url": aud["url"]},
+        "cred": cred,
+        "digest": digest,
+        "exp": exp,
+        "method": method,
+        "nonce": nonce,
+        "ts": ts,
+        "v": SIGNATURE_FORMAT,
+    }
+
+
+def statement_bytes(**fields: Any) -> bytes:
+    """``JCS(statement(**fields))`` — the exact bytes a v0.3 signature is over."""
+    return canonicalize(statement(**fields))
 
 
 def sign_request(
@@ -286,78 +385,208 @@ def sign_request(
     method: str,
     params: dict[str, Any] | None,
     *,
+    audience: Audience,
+    credential_said: str,
     ts: str | None = None,
+    exp: str | None = None,
+    lifetime_seconds: int = DEFAULT_LIFETIME_SECONDS,
+    nonce: str | None = None,
 ) -> dict[str, Any]:
-    """Produce the ``VleiSignature`` object for ``params._meta``.
+    """Produce the ``VleiSignature`` object (``vlei-sig/0.3``) for ``params._meta``.
 
-    ``params`` must not change between this call and the call being sent: any change produces
-    ``digest_mismatch`` at the counterparty, which is the intended behavior.
+    ``audience`` is the recipient — the AID of the LE the client verified for that server and the
+    URL the call is sent to. ``credential_said`` is the credential presented with the call, which
+    the signature speaks for. ``params`` must not change between this call and the call being
+    sent: any change is ``digest_mismatch`` at the counterparty, as intended.
     """
+    if not credential_said:
+        raise ValueError("credential_said is required: a v0.3 signature speaks for one credential")
+    if not is_qb64_identifier(credential_said):
+        # Every verifier refuses it (invalid_signature); fail here, before a signer is asked.
+        raise ValueError(
+            f"credential_said {credential_said!r:.60} is not a 44-character CESR identifier"
+        )
     ts = ts or _now_rfc3339()
-    digest = digest_params(params)
-    return {
+    if exp is None:
+        try:
+            start = _parse_ts(ts, what="ts")
+        except InvalidSignature as exc:  # the caller's own value: a programming error, not a layer
+            raise ValueError(exc.message) from exc
+        exp = _rfc3339(start + timedelta(seconds=lifetime_seconds))
+    body: dict[str, Any] = {
+        "v": SIGNATURE_FORMAT,
         "aid": signer.aid,
+        "aud": audience.to_wire(),
         "ts": ts,
-        "digest": digest,
-        "sig": signer.sign(signed_payload(method, ts, digest)),
-        "alg": "Ed25519",
+        "exp": exp,
+        "nonce": nonce or new_nonce(),
+        "digest": digest_params(params),
     }
+    body["sig"] = signer.sign(
+        statement_bytes(aid=body["aid"], aud=body["aud"], cred=credential_said,
+                        digest=body["digest"], ts=ts, exp=exp, nonce=body["nonce"], method=method)
+    )
+    body["alg"] = "Ed25519"
+    return body
 
 
-def _parse_ts(ts: str) -> datetime:
+def _parse_ts(ts: str, *, what: str = "timestamp", aid: str | None = None) -> datetime:
+    """An RFC 3339 timestamp with an offset, or ``invalid_signature`` naming ``what`` and ``aid``.
+
+    A timestamp that is not one is a malformed signature object — the spec's ``invalid_signature``
+    — not a stale one: no clock makes it fresh, and ``stale_signature`` would tell a caller that
+    re-signing the same way could succeed.
+    """
+    shown = repr(ts) if len(repr(ts)) <= 64 else repr(ts)[:64] + "…"
     try:
         parsed = datetime.fromisoformat(ts.replace("Z", "+00:00"))
     except (ValueError, AttributeError, TypeError) as exc:
-        raise StaleSignature(f"timestamp is not RFC 3339: {ts!r}") from exc
+        raise InvalidSignature(f"{what} is not RFC 3339: {shown}", aid=aid) from exc
     if parsed.tzinfo is None:
         # RFC 3339 requires an offset. Without one, "how old is this" has no answer — and comparing
         # it would raise instead of naming a layer.
-        raise StaleSignature(f"timestamp carries no time zone: {ts!r}")
+        raise InvalidSignature(f"{what} carries no time zone: {shown}", aid=aid)
     return parsed
 
 
-def _fields(signature: Any) -> tuple[str, str, str, str]:
+def _seconds_beyond(span: timedelta) -> str:
+    """``span`` in seconds, to one decimal, rounded **up**: the amount by which a signature broke a
+    bound must never print as the bound itself — 60.001 s past a 60 s tolerance reads ``60.1s``,
+    where ``int()`` read ``60s``, as if within it."""
+    tenths = -(-span // timedelta(milliseconds=100))
+    return f"{tenths / 10:.1f}s"
+
+
+@dataclass(frozen=True)
+class ParsedSignature:
+    """A v0.3 signature object whose every field has the shape the statement needs."""
+
+    aid: str
+    aud: dict[str, str]
+    ts: str
+    exp: str
+    nonce: str
+    digest: str
+    sig: str
+
+
+def unsupported_version(signature: Any) -> UnsupportedVersion | None:
+    """The refusal for a signature made in another format, or ``None``.
+
+    Another format is a ``v`` other than ``vlei-sig/0.3``, or no ``v`` on an object shaped like a
+    vlei-sig/0.2 signature (``aid``, ``ts``, ``digest``, ``sig``) — which binds no recipient, nonce
+    or expiry, and is refused by name rather than as a signature that "does not verify". Anything
+    else (not an object, junk) is not a signature of any format: ``None`` here, and
+    ``invalid_signature`` from :func:`parse_signature`.
+    """
+    if not isinstance(signature, dict):
+        return None
+    signer = signature.get("aid")
+    signer = signer if is_qb64_identifier(signer) else None
+    version = signature.get("v")
+    if version == SIGNATURE_FORMAT:
+        return None
+    if version is None:
+        if not all(isinstance(signature.get(k), str) and signature.get(k)
+                   for k in ("aid", "ts", "digest", "sig")):
+            return None
+        return UnsupportedVersion(
+            "the signature names no format — a vlei-sig/0.2 signature (method, time and digest; "
+            f"no recipient, nonce or expiry). This verifier requires {SIGNATURE_FORMAT}: upgrade "
+            "the client",
+            aid=signer,
+        )
+    return UnsupportedVersion(
+        f"signature format {version!r} is not supported; this verifier requires {SIGNATURE_FORMAT}",
+        aid=signer,
+    )
+
+
+def parse_signature(signature: Any) -> ParsedSignature:
+    """Shape-check a v0.3 signature object: ``unsupported_version``, then ``invalid_signature``."""
     if not isinstance(signature, dict):
         raise InvalidSignature("the signature is not an object")
-    aid, ts = signature.get("aid", ""), signature.get("ts", "")
-    claimed_digest, sig = signature.get("digest", ""), signature.get("sig", "")
-    if not all(isinstance(v, str) and v for v in (aid, ts, claimed_digest, sig)):
-        raise InvalidSignature(
-            "signature object is missing aid, ts, digest or sig",
-            aid=aid if isinstance(aid, str) and aid else None,
-        )
-    alg = signature.get("alg", "Ed25519")
-    if alg != "Ed25519":
-        raise InvalidSignature(f"unsupported signature algorithm {alg!r}", aid=aid)
-    return aid, ts, claimed_digest, sig
+    foreign = unsupported_version(signature)
+    if foreign is not None:
+        raise foreign
+    aid = signature.get("aid")
+    signer = aid if is_qb64_identifier(aid) else None
+    if signature.get("v") != SIGNATURE_FORMAT:
+        raise InvalidSignature("the signature object names no format and is not a signature",
+                               aid=signer)
+    missing = [k for k in ("aid", "aud", "ts", "exp", "nonce", "digest", "sig") if not signature.get(k)]
+    if missing:
+        raise InvalidSignature(f"signature object is missing {', '.join(missing)}", aid=signer)
+    if signer is None:
+        raise InvalidSignature("signature.aid is not a 44-character CESR identifier")
+    aud = signature["aud"]
+    if not (isinstance(aud, dict) and set(aud) == {"aid", "url"}
+            and all(isinstance(aud[k], str) for k in aud)):
+        raise InvalidSignature("signature.aud must be an object with exactly aid and url", aid=aid)
+    if not is_qb64_identifier(aud["aid"]):
+        # Names no recipient at all — not "another" one: a malformed object, not audience_mismatch.
+        raise InvalidSignature("signature.aud.aid is not a 44-character CESR identifier", aid=aid)
+    texts = {k: signature[k] for k in ("ts", "exp", "nonce", "digest", "sig")}
+    if not all(isinstance(v, str) for v in texts.values()):
+        raise InvalidSignature("signature fields ts, exp, nonce, digest and sig are strings", aid=aid)
+    if not _NONCE.fullmatch(texts["nonce"]):
+        raise InvalidSignature("signature.nonce is not 22-64 characters of base64url", aid=aid)
+    if signature.get("alg", "Ed25519") != "Ed25519":
+        raise InvalidSignature(f"unsupported signature algorithm {signature.get('alg')!r}", aid=aid)
+    for name in ("ts", "exp"):
+        _parse_ts(texts[name], what=f"signature.{name}", aid=aid)
+    return ParsedSignature(aid=aid, aud=dict(aud), **texts)
 
 
-def _check_fresh_and_digest(
-    aid: str, ts: str, claimed_digest: str, params: dict[str, Any] | None,
-    freshness_seconds: int, now: datetime | None,
+def _check_time(
+    sig: ParsedSignature, *, freshness_seconds: int, max_lifetime_seconds: int,
+    memory_since: datetime | None, now: datetime,
 ) -> None:
-    now = now or datetime.now(timezone.utc)
-    skew = abs(now - _parse_ts(ts))
-    if skew > timedelta(seconds=freshness_seconds):
+    ts = _parse_ts(sig.ts, what="signature.ts", aid=sig.aid)
+    exp = _parse_ts(sig.exp, what="signature.exp", aid=sig.aid)
+    skew = timedelta(seconds=freshness_seconds)
+    if exp <= ts:
+        raise StaleSignature("the signature expires before it was made", aid=sig.aid)
+    if exp - ts > timedelta(seconds=max_lifetime_seconds):
         raise StaleSignature(
-            f"signature timestamp is {int(skew.total_seconds())}s from now, "
-            f"outside the {freshness_seconds}s freshness window",
-            aid=aid,
+            f"the signature asks to be valid for {_seconds_beyond(exp - ts)}; this "
+            f"verifier accepts at most {max_lifetime_seconds}s",
+            aid=sig.aid,
         )
+    if ts > now + skew:
+        raise StaleSignature(
+            f"the signature is dated {_seconds_beyond(ts - now)} ahead of this verifier's "
+            f"clock, beyond the {freshness_seconds}s tolerance",
+            aid=sig.aid,
+        )
+    if now > exp + skew:
+        raise StaleSignature(
+            f"the signature expired {_seconds_beyond(now - exp)} ago "
+            f"(tolerance {freshness_seconds}s)",
+            aid=sig.aid,
+        )
+    if memory_since is not None and ts < memory_since + skew:
+        raise StaleSignature(
+            "the signature was made before this verifier's replay memory began (it restarted); "
+            "re-sign and send again",
+            aid=sig.aid,
+        )
+
+
+def _check_digest(sig: ParsedSignature, params: dict[str, Any] | None) -> None:
     try:
         digest = digest_params(params)
     except (ValueError, TypeError) as exc:
-        # NaN and Infinity parse from JSON text in most libraries but have no canonical form, and
+        # NaN, Infinity, a lone surrogate or an integer beyond I-JSON have no canonical form, and
         # an in-process caller can pass values JSON has no type for at all; no signature can cover
-        # either. Refused here with a layer, rather than escaping as a crash.
+        # them. Refused here with a layer, rather than escaping as a crash.
         raise DigestMismatch(
-            f"request arguments contain a value no signature can cover ({exc})", aid=aid
+            f"request arguments contain a value no signature can cover ({exc})", aid=sig.aid
         ) from exc
-    if digest != claimed_digest:
+    if digest != sig.digest:
         raise DigestMismatch(
-            "request arguments do not match the signed digest; "
-            "they were altered after signing",
-            aid=aid,
+            "request arguments do not match the signed digest; they were altered after signing",
+            aid=sig.aid,
         )
 
 
@@ -365,16 +594,24 @@ def precheck_request(
     signature: Any,
     params: dict[str, Any] | None,
     *,
+    recipient: Recipient,
     freshness_seconds: int = DEFAULT_FRESHNESS_SECONDS,
+    max_lifetime_seconds: int = DEFAULT_MAX_LIFETIME_SECONDS,
+    memory_since: datetime | None = None,
     now: datetime | None = None,
-) -> None:
-    """The checks that need nothing but the request: shape, freshness and digest.
+) -> ParsedSignature:
+    """Everything decidable from the request and the verifier's own configuration, in order:
 
-    A verifier runs these before it fetches the signer's key state, so a stale or altered call is
-    refused without a round trip to a witness. :func:`verify_request` repeats them; they are cheap.
+    format and shape -> time -> recipient -> digest. A verifier runs these before it fetches the
+    signer's key state, so a replay to the wrong server or an altered call costs no witness round
+    trip. :func:`verify_request` repeats them; they are cheap.
     """
-    aid, ts, claimed_digest, _ = _fields(signature)
-    _check_fresh_and_digest(aid, ts, claimed_digest, params, freshness_seconds, now)
+    sig = parse_signature(signature)
+    _check_time(sig, freshness_seconds=freshness_seconds, max_lifetime_seconds=max_lifetime_seconds,
+                memory_since=memory_since, now=now or datetime.now(timezone.utc))
+    recipient.check(sig.aud, signer=sig.aid)
+    _check_digest(sig, params)
+    return sig
 
 
 def verify_request(
@@ -383,41 +620,49 @@ def verify_request(
     params: dict[str, Any] | None,
     verkey: str | Sequence[str],
     *,
+    recipient: Recipient,
+    credential_said: str | None,
     freshness_seconds: int = DEFAULT_FRESHNESS_SECONDS,
-    replay_cache: ReplayCache | None = None,
+    max_lifetime_seconds: int = DEFAULT_MAX_LIFETIME_SECONDS,
+    replay_store: ReplayStore | None = None,
     now: datetime | None = None,
-) -> None:
-    """Verify a request signature, raising the exception for the layer that failed.
+) -> ParsedSignature:
+    """Verify a v0.3 request signature, raising the exception for the layer that failed.
 
     ``verkey`` is the signer's **current key state** — one key or the list a key event log
     establishes. It must never come from the request being verified: whoever sends a call would
-    then choose the key it is checked against. :class:`mcp_vlei.kel.WitnessKeyStates` is where a
-    relying party gets it.
+    then choose the key it is checked against (:class:`mcp_vlei.kel.WitnessKeyStates`).
 
-    Checked in this order, because each check makes the next one meaningful:
+    In order: format (``unsupported_version``), shape (``invalid_signature``), time
+    (``stale_signature``), recipient (``audience_mismatch``), digest (``digest_mismatch``), the
+    signature over the rebuilt statement (``invalid_signature``), and last the nonce claim
+    (``stale_signature``). The claim is made only once the signature has verified: claiming earlier
+    would let anyone who saw a nonce burn it with a signature that does not verify.
 
-    1. freshness  -> ``stale_signature``
-    2. digest     -> ``digest_mismatch``
-    3. signature  -> ``invalid_signature``
-    4. replay     -> ``stale_signature``
-
-    The digest is compared before the signature so that an altered-argument attack is reported as
-    ``digest_mismatch`` rather than as a generic signature failure. The two are operationally
-    different: one is tampering in transit, the other is a key-state problem.
-
-    Replay is recorded **last**, once the signature has verified. Recording it earlier would let
-    anyone who can guess the (AID, digest, timestamp) of a call about to be made burn it first with
-    a signature that does not verify — and let unauthenticated traffic grow the cache.
+    ``replay_store=None`` claims nothing: the signature is then **not single-use**, and a copy
+    verifies again for as long as its window lasts. Only a caller that de-duplicates nonces itself
+    may pass it; :class:`mcp_vlei.extension.VleiIdentity` always verifies with a store.
     """
-    aid, ts, claimed_digest, sig = _fields(signature)
-    _check_fresh_and_digest(aid, ts, claimed_digest, params, freshness_seconds, now)
-
+    if not credential_said:
+        raise MissingCredential(
+            "credentialSaid is required: a vlei-sig/0.3 signature speaks for one named credential"
+        )
+    if not is_qb64_identifier(credential_said):
+        raise InvalidSignature(
+            f"credentialSaid is not a 44-character CESR identifier: {credential_said!r}"
+        )
+    sig = precheck_request(
+        signature, params, recipient=recipient, freshness_seconds=freshness_seconds,
+        max_lifetime_seconds=max_lifetime_seconds,
+        memory_since=replay_store.memory_since if replay_store is not None else None, now=now,
+    )
     keys = [verkey] if isinstance(verkey, str) else list(verkey)
     try:
-        raw_signature = cesr_decode_signature(sig)
+        raw_signature = cesr_decode_signature(sig.sig)
     except (ValueError, TypeError) as exc:  # binascii.Error is a ValueError
-        raise InvalidSignature(f"signature is not valid CESR: {exc}", aid=aid) from exc
-    payload = signed_payload(method, ts, claimed_digest)
+        raise InvalidSignature(f"signature is not valid CESR: {exc}", aid=sig.aid) from exc
+    payload = statement_bytes(aid=sig.aid, aud=sig.aud, cred=credential_said, digest=sig.digest,
+                              ts=sig.ts, exp=sig.exp, nonce=sig.nonce, method=method)
     for key in keys:
         try:
             Ed25519PublicKey.from_public_bytes(cesr_decode_verkey(key)).verify(raw_signature, payload)
@@ -426,11 +671,18 @@ def verify_request(
             continue
     else:
         raise InvalidSignature(
-            "signature does not verify under the signer's current key state", aid=aid
+            "signature does not verify under the signer's current key state", aid=sig.aid
         )
 
-    if replay_cache is not None:
-        replay_cache.check_and_record(aid, claimed_digest, ts)
+    if replay_store is not None:
+        # The time check accepts until exp + skew; the claim is made a moment later, on the store's
+        # clock. Kept one skew beyond that, a copy checked just before the boundary still finds it.
+        expires = _parse_ts(sig.exp, aid=sig.aid) + 2 * timedelta(seconds=freshness_seconds)
+        if not replay_store.claim(sig.aid, sig.nonce, expires):
+            raise StaleSignature(
+                "this signature was already presented (its nonce is spent): a replay", aid=sig.aid
+            )
+    return sig
 
 
 _ISO_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")

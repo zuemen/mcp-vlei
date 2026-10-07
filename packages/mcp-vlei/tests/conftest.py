@@ -9,6 +9,7 @@ live verifier is exercised end to end by ``scripts/bootstrap-credentials.sh`` ch
 from __future__ import annotations
 
 import os
+import re
 import secrets
 import sys
 from pathlib import Path
@@ -33,6 +34,13 @@ HOLDER_AID = "EDq8WnPrK3xLm5ZvTcYbJi1RoUa9HgNsEf7QdMwXy2Vt"
 AGENT_AID = "EFn3RtYqXmLdW5oJbP2TvNcUiSpRyEg7ZhKa4QsMxVwB"
 CRED_SAID = "EBcd7TqLmN4pR2wXyZ1vHsJk8QgUeA3nCfDoI6t0PyWr"
 LEI = "984500DEMOSTAFF00178"
+
+
+def name_leaked(text: str, name: str) -> bool:
+    """True if `name` appears in `text` as a whole word, outside any base64url-ish run of 20+
+    characters (a SAID, AID or signature) where a short name could appear by chance."""
+    cleaned = re.sub(r"[A-Za-z0-9_-]{20,}", "", text)
+    return re.search(rf"\b{re.escape(name)}\b", cleaned) is not None
 
 
 @pytest.fixture
@@ -88,7 +96,7 @@ def build_chain(role: str = "member-registration", root: str = ROOT_AID) -> tupl
     le = mint(LE_SCHEMA, QVI_AID, LE_AID, {"LEI": LEI}, edge=("qvi", json.loads(qvi)["d"]))
     ecr = mint(
         ECR_SCHEMA, LE_AID, HOLDER_AID,
-        {"LEI": LEI, "personLegalName": "Wang Xiao-Ming", "engagementContextRole": role},
+        {"LEI": LEI, "personLegalName": "Bob", "engagementContextRole": role},
         edge=("le", json.loads(le)["d"]),
     )
     return qvi + le + ecr, json.loads(ecr)["d"]

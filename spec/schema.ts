@@ -42,6 +42,12 @@ export const VLEI_META_KEYS = {
   report: "org.gleif.vlei/report",
 } as const;
 
+/** The request-signature format of this revision (SPEC.md "Request signing"). */
+export const VLEI_SIGNATURE_FORMAT = "vlei-sig/0.3" as const;
+
+/** The proof-of-possession format of this revision (SPEC.md "Proof of possession"). */
+export const VLEI_POP_FORMAT = "vlei-pop/0.3" as const;
+
 /** vLEI credential types used by this extension. LE = Legal Entity, ECR = Engagement Context Role. */
 export type VleiCredentialType = "LE" | "ECR";
 
@@ -89,6 +95,18 @@ export interface VleiIdentityCapability {
   signatureAlgs?: VleiSignatureAlg[];
 
   /**
+   * Request-signature formats this party produces or verifies: `["vlei-sig/0.3"]`. A v0.3 client
+   * refuses a server that does not declare it (`unsupported_version`), before presenting anything.
+   */
+  signatureFormats?: (typeof VLEI_SIGNATURE_FORMAT)[];
+
+  /**
+   * Where this party answers a proof-of-possession challenge: an absolute URL, or a path resolved
+   * against its MCP endpoint's origin — conventionally "/.well-known/vlei/pop".
+   */
+  pop?: string;
+
+  /**
    * How long, in milliseconds, a counterparty SHOULD cache a verification result for this party.
    * A deployment that revokes frequently states a short value here rather than hoping clients
    * guessed one; `0` means do not cache, at the cost of a round trip per call.
@@ -103,15 +121,27 @@ export interface VleiIdentityCapability {
 }
 
 /* -------------------------------------------------------------------------------------------- *
- * Signature — single-pass, see SPEC.md "Request signing"
+ * Signature — vlei-sig/0.3, see SPEC.md "Request signing"
  * -------------------------------------------------------------------------------------------- */
 
+/** Who a request is for: the recipient's LE AID and the endpoint URL, normalised. */
+export interface VleiAudience {
+  /** The issuee of the LE credential the client verified for this server. */
+  aid: Aid;
+  /** The endpoint URL the call is sent to: lower-case scheme and host, no default port, no query. */
+  url: string;
+}
+
 /**
- * Signature over `method + "\n" + ts + "\n" + digest`.
- * Single-pass by design: a stateless gateway can decide from one message, with no challenge round
- * trip. Replay is bounded by freshness window plus replay cache, not by a nonce.
+ * Signature over `UTF-8(JCS(statement))`, where statement is
+ * `{aid, aud: {aid, url}, cred, digest, exp, method, nonce, ts, v}` and `cred` is the request's
+ * `org.gleif.vlei/credentialSaid`. A verifier rebuilds the statement; it never takes it from here.
+ * Still single-pass: the nonce is the client's, and a verifier claims it once.
  */
 export interface VleiSignature {
+  /** The format: "vlei-sig/0.3". Without it, a vlei-sig/0.2 signature: refused as unsupported_version. */
+  v: typeof VLEI_SIGNATURE_FORMAT;
+
   /**
    * AID whose current key state signed this. The delegated agent AID when one is in use. A verifier
    * reads that key state from the AID's key event log at a witness — never from the request — and
@@ -119,8 +149,17 @@ export interface VleiSignature {
    */
   aid: Aid;
 
-  /** RFC 3339 timestamp, UTC, at signing time. Verifiers enforce a freshness window (default 60s). */
+  /** The recipient. A signature for any other is refused as audience_mismatch. */
+  aud: VleiAudience;
+
+  /** RFC 3339 timestamp, UTC, at signing time. */
   ts: string;
+
+  /** RFC 3339 timestamp, UTC: valid until. The reference client signs for 30 s; verifiers accept 60 s at most. */
+  exp: string;
+
+  /** 128 random bits, base64url, unpadded (22 characters; 22-64 accepted). Claimed once by the verifier. */
+  nonce: string;
 
   /**
    * `base64url(sha256(canonical))` where `canonical` is the RFC 8785 (JCS) canonicalization of the
@@ -129,7 +168,7 @@ export interface VleiSignature {
    */
   digest: string;
 
-  /** CESR-encoded signature over `method + "\n" + ts + "\n" + digest`. */
+  /** CESR-encoded Ed25519 signature over the statement, indexed (`A…`) or not (`0B…`). */
   sig: string;
 
   /** Suite used. Defaults to "Ed25519" when omitted. */
@@ -186,7 +225,7 @@ export interface VleiIdentityMeta {
   /**
    * Which credential in the presented stream is the one being presented; its issuee is the holder.
    * A `--full` export carries the whole chain, so this selects the credential — never whose it is.
-   * When omitted, the leaf of the chain is presented.
+   * Required with a vlei-sig/0.3 signature, which speaks for it (statement field `cred`).
    */
   "org.gleif.vlei/credentialSaid"?: Said;
 
@@ -215,6 +254,33 @@ export interface VleiIdentityMeta {
    * "Whose key, and who may sign" rules out.
    */
   "org.gleif.vlei/verkey"?: string;
+}
+
+/* -------------------------------------------------------------------------------------------- *
+ * Proof of possession — POST <pop>, see SPEC.md "Proof of possession"
+ * -------------------------------------------------------------------------------------------- */
+
+/** What a client sends before presenting anything to a server. */
+export interface VleiPopChallenge {
+  v: typeof VLEI_POP_FORMAT;
+  /** 128 random bits, base64url, unpadded. */
+  nonce: string;
+  /** The endpoint URL the client is about to call. A server signs only for its own. */
+  url: string;
+}
+
+/**
+ * The server's answer: a statement signed by its LE's issuee, or by an AID the LE delegated to
+ * (anchored in the LE's key event log). `sig` is over `UTF-8(JCS({aid, exp, nonce, ts, url, v}))`.
+ */
+export interface VleiPopResponse {
+  v: typeof VLEI_POP_FORMAT;
+  aid: Aid;
+  nonce: string;
+  url: string;
+  ts: string;
+  exp: string;
+  sig: string;
 }
 
 /* -------------------------------------------------------------------------------------------- *
@@ -277,13 +343,16 @@ export interface VleiExtensionRequiredData {
  * Failure layer, named in the text of a tool result with `isError: true`.
  * Naming the layer is normative: the skill's recovery behavior differs per layer.
  *
- * Eight are verification failures. `missing_credential` is not: the caller presented no credential
- * or no signature, and the fix is to attach one rather than to repair one. Only `stale_signature`
- * is worth retrying, and only once. Listed in the order of the check that raises each.
+ * Nine are verification failures. `missing_credential` is not — the caller presented no credential,
+ * no signature or no `credentialSaid`, and the fix is to attach one — and neither is
+ * `unsupported_version`: one side does not speak vlei-sig/0.3. Only `stale_signature` is worth
+ * retrying, and only once. Listed in the order of the check that raises each.
  */
 export type VleiFailureLayer =
   | "missing_credential"
+  | "unsupported_version"
   | "stale_signature"
+  | "audience_mismatch"
   | "digest_mismatch"
   | "invalid_signature"
   | "chain_invalid"
@@ -293,11 +362,21 @@ export type VleiFailureLayer =
   | "scope_exceeded";
 
 /**
+ * Not a failure layer, and not one of the eleven: a gateway-local condition. The verifier itself
+ * failed while deciding — its replay store, a client it uses, anything it defines no layer for —
+ * and refused rather than answer with an unlabelled error (the reference gateway answers HTTP 503).
+ * It says nothing about the credential, the signature or the call. Retryable: send the call again
+ * after a moment, re-signed. It stands where a layer would: the result text's first word and
+ * `VleiFailureDetail.layer`.
+ */
+export type VleiGatewayCondition = "verifier_error";
+
+/**
  * Structured detail a server MAY include alongside the human-readable failure text, in
  * `result._meta["org.gleif.vlei/failure"]`.
  */
 export interface VleiFailureDetail {
-  layer: VleiFailureLayer;
+  layer: VleiFailureLayer | VleiGatewayCondition;
   message: string;
   /** Which AID the failure concerned, when applicable. */
   aid?: Aid;

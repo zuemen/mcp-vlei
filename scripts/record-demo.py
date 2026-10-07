@@ -12,6 +12,9 @@ between takes. Segments are encoded to H.264 and joined.
 
     python scripts/record-demo.py                                   # the talk's four scenes, 2:05
     python scripts/record-demo.py --scenes 0:45,1:30,2:25,3:25,4:45  # scene 0 as well
+    python scripts/record-demo.py --lang en                         # no Chinese on screen
+
+The page is English but for the employer's 統一編號; --lang en names it in English as well.
 
 Needs everything `scripts/reset-demo.sh` starts, and ffmpeg (on PATH, or imageio-ffmpeg).
 """
@@ -132,6 +135,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--scenes", default=SCRIPT, help="scene:seconds,… (default: the script)")
     parser.add_argument("--out", type=Path, default=ROOT / "recordings" / "demo-draft.mp4")
+    parser.add_argument("--lang", choices=["zh", "en"], default="zh",
+                        help="en: the employer's 統一編號 named in English too (the rest is English)")
     args = parser.parse_args()
     plan = [(int(n), float(s)) for n, s in (item.split(":") for item in args.scenes.split(","))]
 
@@ -141,7 +146,7 @@ def main() -> int:
         browser = p.chromium.launch()
         page = browser.new_page(viewport={"width": 1920, "height": 1080})
         cdp = page.context.new_cdp_session(page)
-        page.goto(f"{CONSOLE}/?chrome=off")
+        page.goto(f"{CONSOLE}/?chrome=off" + ("&lang=en" if args.lang == "en" else ""))
         page.wait_for_selector("#checks li")
         for scene, seconds in plan:
             frames = record_scene(page, cdp, scene, seconds, workdir)
@@ -151,7 +156,14 @@ def main() -> int:
             print(f"  scene {scene}: {seconds:.0f}s, {len(frames)} frames")
         browser.close()
     if any(n == REVOCATION_SCENE for n, _ in plan):
-        post("/reissue")  # as between takes: the revocation scene revoked the ECR for real
+        # As between takes: the revocation scene revoked the ECR for real. A failed re-issue must
+        # not cost the recording, and must not go unnoticed: the next take would show `revoked`.
+        try:
+            reissued = post("/reissue").get("ok")
+        except OSError:  # urllib's HTTPError and URLError
+            reissued = False
+        print("  ECR re-issued" if reissued else
+              "  the ECR was NOT re-issued: run bash scripts/bootstrap-credentials.sh --reissue")
 
     listing = workdir / "segments.txt"
     listing.write_text("".join(f"file '{s.as_posix()}'\n" for s in segments), encoding="utf-8")

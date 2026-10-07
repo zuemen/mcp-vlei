@@ -227,3 +227,48 @@ async def test_a_delegators_failure_names_the_identifier_being_resolved():
     with pytest.raises(ChainInvalid) as caught:
         await WitnessKeyStates(URLS, client=client).resolve(world.agent.pre)
     assert world.agent.pre in caught.value.message
+
+
+# --------------------------------------------------------------------------------------------- #
+# v0.3: the key state says how many witnesses stood behind it
+# --------------------------------------------------------------------------------------------- #
+
+async def test_the_key_state_says_how_many_witnesses_agreed():
+    world = World()
+    state = await WitnessKeyStates(URLS, client=_witnesses(world)).resolve(world.agent.pre)
+    assert (state.agreeing, state.configured) == (3, 3)
+
+
+async def test_two_of_three_is_a_quorum_and_says_so():
+    world = World()
+    client = _witnesses(world, {"wes": {"*": "down"}})
+    state = await WitnessKeyStates(URLS, client=client).resolve(world.agent.pre)
+    assert (state.agreeing, state.configured) == (2, 3)
+
+
+async def test_one_of_three_is_not():
+    world = World()
+    client = _witnesses(world, {"wil": {"*": "down"}, "wes": {"*": "down"}})
+    with pytest.raises(ChainInvalid, match="only 1 of 3 witnesses"):
+        await WitnessKeyStates(URLS, client=client).resolve(world.agent.pre)
+
+
+# --------------------------------------------------------------------------------------------- #
+# One witness, two spellings
+# --------------------------------------------------------------------------------------------- #
+
+def test_a_witness_listed_under_two_spellings_is_one_witness():
+    resolver = WitnessKeyStates(["http://wan", "HTTP://Wan:80/", "http://wan/", "https://wes:443",
+                                 "http://[::1]:5642"])
+    assert resolver.witness_urls == ["http://wan", "https://wes", "http://[::1]:5642"]
+    assert resolver.quorum == 2
+
+
+async def test_one_witness_under_two_spellings_cannot_make_a_quorum_alone():
+    """Listed as http://wan and HTTP://WAN:80, one witness answered twice and met a 2-of-3 quorum
+    with the third witness down: one copy, compared with itself."""
+    world = World()
+    client = _witnesses(world, {"wil": {"*": "down"}})
+    with pytest.raises(ChainInvalid, match="only 1 of 2 witnesses"):
+        await WitnessKeyStates(["http://wan", "HTTP://WAN:80", "http://wil"],
+                               client=client).resolve(world.agent.pre)

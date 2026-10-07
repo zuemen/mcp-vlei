@@ -36,7 +36,7 @@ source "${FORGED_HERE}/bootstrap-credentials.sh" --library
 # Where the main chain's acceptedRoots are read from, before OUT is pointed elsewhere.
 MAIN_ENV="${OUT}/env.json"
 
-OUT="${ROOT_DIR}/credentials/forged"
+OUT="${VLEI_BOOTSTRAP_CREDENTIALS:-${ROOT_DIR}/credentials}/forged"
 WORK="${OUT}/_work"
 CWORK="/credentials/forged/_work"   # the same directory, as the keri-cli container sees it
 

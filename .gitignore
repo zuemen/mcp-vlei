@@ -36,3 +36,7 @@ recordings/
 # Credential proxy: one line per relayed call (tool, result, layer). Local evidence, like the
 # gateway's audit log; never the credential or the arguments, but still not for the repository.
 examples/credential-proxy/relay.log
+# Replay stores: the nonces of calls already accepted (examples/association-server)
+examples/association-server/.state/
+# The parallel v0.3 stack: its credentials, the switch backups and the rehearsal clone
+.v03/
