@@ -48,7 +48,7 @@ revoke_main() {
   [[ "$aid" != "$holder" ]] || fail "${aid} is the ECR holder itself; revoke the ECR instead"
 
   local demo; demo="$(cat "${WORK}/agent.aid" 2>/dev/null | tr -d '\r\n' || true)"
-  if [[ -n "$demo" && "$aid" == "$demo" && "${VLEI_REVOKE_DEMO_AGENT:-}" != "yes" ]]; then
+  if [[ ( "$TARGET" == "agent" || ( -n "$demo" && "$aid" == "$demo" ) ) && "${VLEI_REVOKE_DEMO_AGENT:-}" != "yes" ]]; then
     fail "${aid} is the demo agent (_work/agent.aid). Withdrawal is irreversible; set VLEI_REVOKE_DEMO_AGENT=yes to mean it."
   fi
 

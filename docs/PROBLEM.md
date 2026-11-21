@@ -28,7 +28,7 @@ them answers *"which legal entity is this?"*
 > decisions."* The same text, mirrored for servers, is on
 > `ResultMetaObject["io.modelcontextprotocol/serverInfo"]`. In this revision both are carried in
 > `_meta` on every request and result rather than in `initialize`.
-> [schema.ts L79–L90](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/5f5440bb26a62e2cf3440b92da5a667efa03b267/schema/2026-07-28/schema.ts#L79-L90)
+> [schema.ts L77–L90](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/5f5440bb26a62e2cf3440b92da5a667efa03b267/schema/2026-07-28/schema.ts#L77-L90)
 
 The composite result is a chain of domain-control proofs plus one human-user proof. An
 organizational identity — *this call is made by a legal entity with a known registration, under a

@@ -221,8 +221,12 @@ SAID of that event, its public keys):
 ```
 
 `python scripts/verify-audit.py decisions.jsonl` re-verifies every record offline — no container,
-no witness — and prints who signed what; a record altered afterwards fails (exit 1), and a record
-still verifies after the signer rotates its keys. The same object reaches the simulator as
+no witness — and prints who signed what. A record whose signed fields (statement, signature,
+digests, signer, credential) are altered fails (exit 1), and a record still verifies after the
+signer rotates its keys. `tool`, `lei`, `role` and the decision are the gateway's own statement and
+are not covered by the caller's signature; nor does a line-by-line log show a record deleted. The
+digests are unsalted hashes of the tool name and arguments, so a low-entropy argument (an ID number,
+a salary grade) can be guessed from them: keep the log under the same protection as personal data. The same object reaches the simulator as
 `x-vlei-signed-request` and is copied, decoded and unchecked, into its receipt (`signedRequest`), so
 `verify-audit.py receipt.json` works on the employer's copy too.
 

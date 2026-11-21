@@ -247,6 +247,10 @@ other delegation are untouched" — works as follows.
   signing AID delegated by its LE (the gateway's proof-of-possession signer) is not covered: a client
   does not look for a withdrawal of it, and an LE that needs to stop one rotates or revokes the LE
   credential.
+- **Witnesses that collude can still hide it.** The longest valid copy of the holder's log is used,
+  so one witness serving an old copy is outvoted. Witnesses that all serve a copy from before the
+  withdrawal are not detected: that needs a watcher checking freshness, which is not implemented
+  (`docs/CONFORMANCE.md`, "What is deliberately not claimed").
 
 ### Request signing (vlei-sig/0.3)
 

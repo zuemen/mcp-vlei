@@ -216,7 +216,7 @@ def _describe(number: int, v: dict[str, Any]) -> Iterable[str]:
     what = v["decision"] + (f" ({v['layer']})" if v.get("layer") else "")
     yield f"[{number}] {mark}  {what}  tool={v.get('tool')}  at={v.get('at')}" + ("  (receipt)" if v.get("receipt") else "")
     if v.get("signer"):
-        yield (f"     signed by {v['signer']}  for LEI={v.get('lei')} role={v.get('role')} "
+        yield (f"     signed by {v['signer']}  for LEI={v.get('lei')} role={v.get('role')} (as recorded, not signed) "
                f"holder={v.get('holderAid')} agent={v.get('agentAid')}")
         aud = v.get("audience") or {}
         yield (f"     what: tools/call to {aud.get('url')} ({aud.get('aid')}), credential "
