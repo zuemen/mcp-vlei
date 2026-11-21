@@ -32,6 +32,7 @@ extension mechanism. The MCP core schema is not modified.
 | **The credential proxy** — company side: signs each call with the agent's delegated key, verifies the gateway's operator first (its LE credential and proof of possession) | `examples/credential-proxy/` |
 | **The two skills** | `skills/implementing-vlei/` (build time) · `skills/vlei-identity/` (run time) |
 | **The demo** — a simulated labour-insurance filing, every identity fictional | `examples/README.md` |
+| **Each claim in the panel deck, with its code and test** | [`docs/DECK_CLAIMS.md`](docs/DECK_CLAIMS.md) |
 | **What is not implemented** | `docs/CONFORMANCE.md`, "What is deliberately not claimed" |
 
 **945 tests** across the six suites CI runs (package, regulator, credential proxy, console, skill server, observatory); `python scripts/count-tests.py --check` recounts them.
