@@ -110,6 +110,10 @@ class VerificationReport:
     delegate_aid: str | None = None
     #: What was checked but not established — an unreachable log, an unverified signature.
     caveats: list[str] = field(default_factory=list)
+    #: The signer's key state the signature was checked against (a :class:`mcp_vlei.kel.KeyState`),
+    #: once it was read. Kept off :meth:`as_dict` — the report travels in a header — and read by an
+    #: audit log that stores it beside the signature, so the record verifies again after a rotation.
+    signer_key_state: Any = field(default=None, repr=False)
 
     _started: float = field(default=0.0, repr=False)
 

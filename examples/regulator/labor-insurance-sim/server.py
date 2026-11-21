@@ -55,6 +55,10 @@ ACCEPTED_ROOTS = [r for r in os.environ.get("VLEI_ACCEPTED_ROOTS", "").split(","
 #: The headers the gateway sets. This tuple is the server's entire vLEI surface.
 IDENTITY_HEADERS = ("x-vlei-lei", "x-vlei-role", "x-vlei-holder-aid", "x-vlei-delegate-aid")
 REPORT_HEADER = "x-vlei-report"
+#: The caller's signed request, as the gateway recorded it — copied into the receipt, decoded and
+#: nothing else, so the receipt itself names who signed the call. `scripts/verify-audit.py`
+#: re-verifies it; this server holds no key and checks nothing.
+SIGNED_REQUEST_HEADER = "x-vlei-signed-request"
 #: The extension's namespace, as the gateway states it: the decoded report goes back to the caller
 #: under `<namespace>/report`. Taken from the gateway, not written here — this server holds no
 #: vLEI names of its own.
@@ -148,11 +152,13 @@ def _caller(ctx: Context) -> dict[str, str]:
     In before mode there is no gateway: the caller is only the name it gave itself.
     """
     if BEFORE:
-        return {**{name: "" for name in (*IDENTITY_HEADERS, REPORT_HEADER, NAMESPACE_HEADER)},
+        return {**{name: "" for name in (*IDENTITY_HEADERS, REPORT_HEADER, NAMESPACE_HEADER,
+                                         SIGNED_REQUEST_HEADER)},
                 "before": "1", "declared": _declared_client(ctx)}
     headers = ctx.headers or {}
     received = {name: _header(headers, name)
-                for name in (*IDENTITY_HEADERS, REPORT_HEADER, NAMESPACE_HEADER)}
+                for name in (*IDENTITY_HEADERS, REPORT_HEADER, NAMESPACE_HEADER,
+                             SIGNED_REQUEST_HEADER)}
     if not received["x-vlei-lei"]:
         raise Refused(
             "no x-vlei-lei header: this server must be reached through the authorization gateway"
@@ -228,6 +234,9 @@ def _receipt(caller: dict[str, str], body: dict[str, Any]) -> CallToolResult:
         "receivedHeaders": {name: caller[name] for name in IDENTITY_HEADERS if caller[name]},
         "reportReceived": bool(caller[REPORT_HEADER]),
     }
+    signed = _report(caller.get(SIGNED_REQUEST_HEADER, ""))
+    if signed is not None:
+        receipt["signedRequest"] = signed
     report = _report(caller[REPORT_HEADER])
     namespace = caller.get(NAMESPACE_HEADER)
     if namespace and not _NAMESPACE_SHAPE.fullmatch(namespace):

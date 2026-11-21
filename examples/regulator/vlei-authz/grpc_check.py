@@ -46,7 +46,8 @@ import service  # noqa: E402  (the module that started this one; its decision an
 OK, PERMISSION_DENIED = 0, 7
 #: Removed from every request this service allows, then set again from what was established. A
 #: value the caller sent under one of these names must never reach the backend.
-CLEARED = (*service.IDENTITY_HEADERS, service.REPORT_HEADER, service.NAMESPACE_HEADER)
+CLEARED = (*service.IDENTITY_HEADERS, service.REPORT_HEADER, service.NAMESPACE_HEADER,
+           service.SIGNED_REQUEST_HEADER)
 _OVERWRITE = common.HeaderValueOption.HeaderAppendAction.OVERWRITE_IF_EXISTS_OR_ADD
 
 

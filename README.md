@@ -34,7 +34,7 @@ extension mechanism. The MCP core schema is not modified.
 | **The demo** — a simulated labour-insurance filing, every identity fictional | `examples/README.md` |
 | **What is not implemented** | `docs/CONFORMANCE.md`, "What is deliberately not claimed" |
 
-**921 tests** across the six suites CI runs (package, regulator, credential proxy, console, skill server, observatory); `python scripts/count-tests.py --check` recounts them.
+**928 tests** across the six suites CI runs (package, regulator, credential proxy, console, skill server, observatory); `python scripts/count-tests.py --check` recounts them.
 
 ## Layout
 
