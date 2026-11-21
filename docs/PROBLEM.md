@@ -21,6 +21,15 @@ them answers *"which legal entity is this?"*
 | OAuth `sub` | The identity of the **human user** at that authorization server | Which agent inside the client software is acting, or under what mandate |
 | `clientInfo` / `serverInfo` | Nothing — it is self-reported, not verified by the protocol, and the specification says it SHOULD NOT be relied on for security decisions | Everything |
 
+> **Source (verbatim).** MCP schema `2026-07-28` (tag `2026-07-28`, commit `5f5440b`), JSDoc on
+> `RequestMetaObject["io.modelcontextprotocol/clientInfo"]`: *"The value is self-reported by the
+> client and is not verified by the protocol. It is intended for display, logging, and debugging.
+> Servers SHOULD NOT use it to change their behavior, and SHOULD NOT rely on it for security
+> decisions."* The same text, mirrored for servers, is on
+> `ResultMetaObject["io.modelcontextprotocol/serverInfo"]`. In this revision both are carried in
+> `_meta` on every request and result rather than in `initialize`.
+> [schema.ts L79–L90](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/5f5440bb26a62e2cf3440b92da5a667efa03b267/schema/2026-07-28/schema.ts#L79-L90)
+
 The composite result is a chain of domain-control proofs plus one human-user proof. An
 organizational identity — *this call is made by a legal entity with a known registration, under a
 named role, with a revocable authorization* — is not expressible anywhere in the stack.

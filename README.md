@@ -18,7 +18,7 @@ Verifiable **organizational** identity for the Model Context Protocol, using GLE
 
 MCP authenticates domains (TLS, OAuth `iss`, OAuth `client_id`) and human users (OAuth `sub`). No
 layer expresses a legal entity, and `clientInfo` is self-reported, not verified by the protocol,
-and SHOULD NOT be relied on for security decisions. When an agent acts autonomously across organizational boundaries, the accountable party
+and SHOULD NOT be relied on for security decisions ([MCP schema 2026-07-28](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/5f5440bb26a62e2cf3440b92da5a667efa03b267/schema/2026-07-28/schema.ts#L79-L90); verbatim in `docs/PROBLEM.md`). When an agent acts autonomously across organizational boundaries, the accountable party
 is not verifiable in the call. This project closes that gap **additively**, through MCP's own
 extension mechanism. The MCP core schema is not modified.
 
