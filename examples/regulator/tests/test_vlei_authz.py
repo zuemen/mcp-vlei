@@ -391,6 +391,29 @@ async def test_the_record_names_whose_logs_were_read_and_the_anchors_that_decide
     assert [world.ecr_credential.said, "1"] in kels[world.le.pre]["anchors"]
 
 
+async def test_a_withdrawn_agent_is_refused_and_not_mistaken_for_a_revoked_credential(
+        world, tmp_path):
+    """Delegation withdrawal (proposal): the holder anchors `{i: agent, d, withdrawn: true}`. The
+    gateway refuses at revocation; the evidence record's (i, s) anchors — which the console reads as
+    a credential's issuance and revocation — neither pick up the withdrawal seal nor show any
+    credential as revoked, and Bob signing directly still passes."""
+    from mcp_vlei.revocation import withdrawal_seal
+
+    app = authz_app(world, tmp_path, client=recorded_witness(world))
+    world.holder.interact([withdrawal_seal(world.agent.pre)])
+
+    body = refused(await ask(app, rpc("enroll_employee", ARGS, signed_meta(world))), "revoked")
+    assert "withdrawn" in body["message"]
+    record = last_record(tmp_path)
+    anchors = [a for r in record["witnessReads"] for a in r.get("anchors", [])]
+    assert not any(sn != "0" for _, sn in anchors)
+    assert not any(i == world.agent.pre for i, _ in anchors)
+    assert authz._SEAL.search(json.dumps(withdrawal_seal(world.agent.pre), separators=(",", ":"))) is None
+
+    direct = signed_meta(world, signer=signer_for(world.holder), delegated=None)
+    assert (await ask(app, rpc("enroll_employee", ARGS, direct))).status_code == 200
+
+
 async def test_the_record_lists_the_presented_chain_by_schema(world, tmp_path):
     from mcp_vlei.chain import VLEI_SCHEMAS
 

@@ -35,7 +35,14 @@ import httpx
 
 from .errors import ChainInvalid, Revoked
 
-__all__ = ["RevocationSource", "TelRevocationChecker"]
+__all__ = [
+    "RevocationSource",
+    "TelRevocationChecker",
+    "WITHDRAWN",
+    "withdrawal_seal",
+    "is_withdrawal",
+    "check_delegation",
+]
 
 RevocationSource = str  # "tel" | "verifier" | "none"
 
@@ -156,6 +163,69 @@ class TelRevocationChecker:
                 aid=aid,
                 credential_said=said,
             )
+
+    async def check_delegation(self, holder: str, agent: str) -> Any:
+        """Raise :class:`Revoked` if ``holder`` has withdrawn its delegation to ``agent``.
+
+        See :func:`check_delegation`. Without a key-state resolver there is no authenticated copy
+        of the holder's log to read, so the withdrawal was not established — a refusal, not a pass.
+        """
+        if self._key_states is None:
+            raise ChainInvalid(
+                f"no witness-backed key state source is configured, so whether {holder} withdrew "
+                f"the delegation of {agent} was not established",
+                aid=agent,
+            )
+        return await check_delegation(self._key_states, holder, agent)
+
+
+# ------------------------------------------------------------------------------------------- #
+# Delegation withdrawal (proposal — spec/SPEC.md "Withdrawing an agent's delegation")
+# ------------------------------------------------------------------------------------------- #
+
+#: The field that makes a seal a withdrawal. A delegation approval is ``{i, s, d}`` — at ``s: "0"``
+#: for the inception and at the rotation's sn for every later ``drt`` — so a withdrawal must not be
+#: spelled that way: an approved rotation would read as a withdrawal, or a withdrawal as approval.
+WITHDRAWN = "withdrawn"
+
+
+def withdrawal_seal(agent: str) -> dict[str, Any]:
+    """The seal a holder anchors (``kli interact --data``) to withdraw its delegation to ``agent``.
+
+    ``d`` is the agent's delegated inception SAID — for a self-addressing identifier, the AID
+    itself. No ``s``: it is not an approval of any event of the agent's log.
+    """
+    return {"i": agent, "d": agent, WITHDRAWN: True}
+
+
+def is_withdrawal(seal: Any, agent: str) -> bool:
+    """Does ``seal`` withdraw the delegation to ``agent``?
+
+    Fail closed on the details: a seal naming the agent with ``withdrawn: true`` is a withdrawal
+    whatever its ``d`` says, because a holder who meant to withdraw must not be overruled by a
+    typo. A seal without ``withdrawn: true`` — every delegation approval — never is.
+    """
+    return isinstance(seal, dict) and seal.get("i") == agent and seal.get(WITHDRAWN) is True
+
+
+async def check_delegation(key_states: Any, holder: str, agent: str) -> Any:
+    """Raise :class:`Revoked` if ``holder``'s key event log anchors a withdrawal of ``agent``.
+
+    ``key_states`` must read from witnesses (`mcp_vlei.kel.WitnessKeyStates`), never from what the
+    caller presented: an agent whose delegation was withdrawn would simply present the holder's log
+    as it was before. The holder's log is resolved afresh here — compared across witnesses and
+    verified — and a :class:`ChainInvalid` from that means the withdrawal was *not established*.
+    Returns the holder's key state, for the report.
+    """
+    state = await key_states.resolve(holder)
+    if any(is_withdrawal(seal, agent) for seal in state.seals):
+        raise Revoked(
+            f"the delegation of {agent} has been withdrawn: its delegator {holder} anchors a "
+            "withdrawal in its own key event log",
+            aid=agent,
+        )
+    return state
+
 
 async def _anchored_events(key_states: Any, issuer: str, said: str) -> set[str]:
     state = await key_states.resolve(issuer)

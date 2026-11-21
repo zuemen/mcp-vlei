@@ -174,8 +174,9 @@ make_parties() {
 }
 
 # The agent's delegated AID, created under the ECR holder's KEL. It gives the agent a key of its own
-# instead of the person's; revoking the ECR stops the agent. Withdrawing the delegation alone is not
-# implemented — see docs/CONFORMANCE.md, '"Revoke the delegation" is not implemented'.
+# instead of the person's; revoking the ECR stops every agent under it. Withdrawing one agent's
+# delegation alone, leaving the ECR, is scripts/revoke-agent.sh (a proposal — spec/SPEC.md
+# "Withdrawing an agent's delegation"); scripts/issue-agent.sh adds another agent beside this one.
 # Optional by design — see spec/SPEC.md "Why a delegated AID for the agent"; if this stage is
 # dropped, the ECR holder's AID signs directly.
 # Delegated inception: the delegate proposes and blocks, the delegator confirms.

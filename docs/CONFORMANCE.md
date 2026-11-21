@@ -39,6 +39,7 @@ Reviewed against the repository at v0.3. Where a row says **gap**, it says so.
 | 30 | Proof of possession | A server **MUST** sign only for its own endpoint URLs | `pop.py::PopResponder.respond` | `test_pop.py::test_the_responder_signs_only_for_its_own_endpoints`; `test_vlei_pop.py::test_it_proves_nothing_for_someone_elses_url` |
 | 31 | Proof of possession | A client **MUST** verify the server again once its verification is older than `ttlMs` or its own limit, and after `audience_mismatch` | `client.py::recheck_due`, `call_tool` | `test_client_v03.py::test_the_server_is_verified_again_when_it_is_due`, `::test_the_servers_ttl_shortens_the_recheck`, `::test_after_audience_mismatch_the_server_is_verified_again` |
 | 32 | Whose key | A client reads key states from several witnesses, a majority agreeing, as a verifier does | `client.py` (`witness_url=[…]`, `witness_quorum`); `kel.py::KeyState.agreeing` | `test_client_v03.py::test_key_states_come_from_a_quorum_of_witnesses`, `::test_one_witness_of_three_is_not_enough`; `test_witness_copies.py::test_two_of_three_is_a_quorum_and_says_so` |
+| 33 | Withdrawing an agent's delegation (proposal) | For a delegated signer, the holder's key event log **MUST** be resolved again from witnesses at the revocation check, and a seal `{i: signer, withdrawn: true}` in it **MUST** refuse the call as `revoked`; a delegation approval `{i, s, d}` (including a `drt` approval) **MUST NOT** count as a withdrawal, nor a withdrawal as an approval; a log not established is *not established*, never "not withdrawn"; a withdrawal is irreversible | `revocation.py::withdrawal_seal`, `::is_withdrawal`, `::check_delegation`; `extension.py::_delegation_not_withdrawn`, called inside check 7; `scripts/issue-agent.sh`, `scripts/revoke-agent.sh` | `test_delegation_withdrawal.py::test_a_withdrawn_agent_is_refused_at_revocation`, `::test_an_agent_rotation_approved_by_the_holder_is_not_read_as_a_withdrawal`, `::test_a_delegation_approval_is_not_a_withdrawal`, `::test_a_withdrawal_seal_does_not_approve_a_delegation`, `::test_withdrawing_one_agent_leaves_another_agent_of_the_same_holder`, `::test_the_holder_and_its_ecr_still_pass_after_the_agent_is_withdrawn`, `::test_one_witness_hiding_the_withdrawal_is_outvoted`, `::test_the_holders_log_is_read_again_not_taken_from_the_call`, `::test_an_unreadable_holder_log_at_revocation_is_not_a_pass`, `::test_a_withdrawal_cannot_be_undone` (16 in all); `examples/regulator/tests/test_vlei_authz.py::test_a_withdrawn_agent_is_refused_and_not_mistaken_for_a_revoked_credential` |
 | 16 | Security | A verifier **SHOULD** record which attesting party a decision rested on | `VerificationResult.attested_by`, set by `verify_attestation` | `test_attest.py::test_roundtrip` asserts `source == "attestation"`; `attested_by` carries the AID |
 
 ## The defect that every green test missed (2026-09-24)
@@ -106,10 +107,15 @@ The table would be dishonest without these.
 - **The subset of KERI is `kli`'s.** Single-sig and numeric thresholds, Ed25519, Blake3-256. Weighted
   thresholds, other key or digest codes, and multi-sig signers of a single-pass request are refused,
   not guessed at.
-- **"Revoke the delegation" is not implemented.** The specification describes two revocation
-  switches; the ECR one works. Withdrawing one agent's delegation without touching the holder's
-  credential needs a KERI mechanism — a delegator-side superseding rotation — that nothing here
-  performs or checks.
+- **"Revoke the delegation" is implemented as a proposal.** The specification describes two
+  revocation switches. The ECR one is standard; withdrawing one agent's delegation without touching
+  the holder's credential has no KERI standard, so it is this extension's convention (row 33,
+  [SPEC "Withdrawing an agent's delegation"](../spec/SPEC.md)): the holder anchors
+  `{i: agent, d: dip SAID, withdrawn: true}` with `kli interact` (`scripts/revoke-agent.sh`), and
+  check 7 refuses `revoked`. It is irreversible (a new agent is a new AID,
+  `scripts/issue-agent.sh`) and caller side only: a server's signing AID delegated by its LE is not
+  covered. Standardising it as an ACDC agent-authorisation credential with TEL revocation is the
+  direction, not implemented.
 - **`-32021` is emitted for protected tools only.** `VleiIdentity` answers a call to a tool that
   declares a requirement with the SDK's own `-32021` when the client did not declare the extension
   under the server's namespace (`test_namespace.py`); public tools are served to anyone, which is the
@@ -134,6 +140,6 @@ The table would be dishonest without these.
 ## Running the checks behind this table
 
 ```bash
-pytest packages/mcp-vlei/tests          # 572 tests, no containers required
+pytest packages/mcp-vlei/tests          # 588 tests, no containers required
 pytest examples/association-server/tests -s   # end to end; needs the credential environment
 ```
