@@ -17,10 +17,13 @@ agent's ECR and its signed request, and passes the simulator only the verified e
 
 Where it is tested:
 
-- `regulator/tests/` — 107 tests, no containers: the authoriser (`test_vlei_authz.py`), the
+- `regulator/tests/` — 114 tests, no containers: the authoriser (`test_vlei_authz.py`), the
   simulator (`test_labor_insurance_sim.py`) and the client that calls through the gateway
   (`test_gateway_client.py`).
 - The four scenes as the console runs them: `console/tests/` (below).
+- After the fact: `python scripts/verify-audit.py deploy/agentgateway/audit/decisions.jsonl`
+  re-verifies each decision record's stored signature offline and names who signed it
+  (`deploy/agentgateway/README.md` §Audit log; `regulator/tests/test_signed_audit.py`).
 - Against the live stack: `scripts/record-check.sh` checks every precondition, and
   `scripts/rehearse.py` drives scenes 1–4 in a real browser and checks that each ends as it should.
 - On the wire: the tool's definition is `spec/examples/tool-with-requirement.json`, and a signed call

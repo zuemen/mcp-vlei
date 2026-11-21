@@ -522,6 +522,7 @@ class VleiIdentity(Extension):
             )
             precheck_passed = True
             state = await self._key_state(signer)
+            report.signer_key_state = state
             sig = verify_request(
                 signature, "tools/call", serialized, state.keys,
                 recipient=self.recipient, credential_said=said,

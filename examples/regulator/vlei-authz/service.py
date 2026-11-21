@@ -44,6 +44,11 @@ Configuration is environment only:
 * ``VLEI_VERIFIER_URL`` — only with ``VLEI_REVOCATION_SOURCE=verifier``.
 * ``VLEI_AUTHZ_POLICY`` — the per-tool policy. Default ``policy.json`` next to this file.
 * ``VLEI_AUDIT_LOG`` — JSON-lines decision log. Unset: decisions are printed to stdout.
+
+Each decision on a signed ``tools/call`` stores ``signedRequest``: the exact statement the caller
+signed, the signature, the digest of the arguments that arrived, and the signer's key state the
+signature was checked against. ``scripts/verify-audit.py`` re-verifies a record from that alone —
+offline, and after the signer has rotated its keys.
 """
 
 from __future__ import annotations
@@ -75,8 +80,11 @@ from mcp_vlei.replay import SqliteReplayStore
 from mcp_vlei.signing import (
     SIGNATURE_FORMAT,
     argument_rules_problem,
+    digest_params,
+    parse_signature,
     parse_utc_offset,
     reject_duplicate_members,
+    statement,
     today_at,
 )
 from mcp_vlei.errors import VleiError
@@ -88,7 +96,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_WITNESS_URL = "http://witness-demo:5642"
 
-#: The whole interface between this service and the backend (labor-insurance-sim). Every 200 carries all six —
+#: The whole interface between this service and the backend (labor-insurance-sim). Every 200 carries all of them —
 #: empty when nothing was established — so the authorizer is the only writer of these names on a
 #: request that reaches the backend, whatever a client put there itself.
 IDENTITY_HEADERS = ("x-vlei-lei", "x-vlei-role", "x-vlei-holder-aid", "x-vlei-delegate-aid")
@@ -97,6 +105,10 @@ REPORT_HEADER = "x-vlei-report"
 #: holding any vLEI code of its own (`MCP_VLEI_NAMESPACE`, or the provisional default).
 NAMESPACE_HEADER = "x-vlei-namespace"
 FAILURE_HEADER = "x-vlei-failure"
+#: The caller's signed request, as the audit record stores it (``signed_request``), base64url JSON:
+#: the backend copies it into its receipt, so the receipt names who signed the call and can be
+#: re-verified by ``scripts/verify-audit.py`` without the gateway. Cleared and set like the others.
+SIGNED_REQUEST_HEADER = "x-vlei-signed-request"
 
 ALL_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
 
@@ -253,7 +265,7 @@ def encode_report(report: dict[str, Any]) -> str:
 
 
 def _allow(headers: Mapping[str, str] | None = None) -> Response:
-    out = {name: "" for name in (*IDENTITY_HEADERS, REPORT_HEADER)}
+    out = {name: "" for name in (*IDENTITY_HEADERS, REPORT_HEADER, SIGNED_REQUEST_HEADER)}
     out[NAMESPACE_HEADER] = namespace_keys().namespace
     out.update({k: v for k, v in (headers or {}).items() if v is not None})
     return Response(status_code=200, headers=out)
@@ -296,8 +308,12 @@ class _Ambiguous(Exception):
 #
 # Written into each audit record for the console's evidence panel. Names and identifiers only: the
 # keys a call carried but not their values, the argument names but not the arguments, whose key
-# event log was read but not the key, whether the call came through the public tunnel but not
-# from where.
+# event log was read, whether the call came through the public tunnel but not from where.
+#
+# A signed call also stores ``signedRequest`` (signed_request below): what was signed — identifiers,
+# the endpoint, the window, the nonce and the arguments' digest, never the arguments — the
+# signature, and the signer's *public* key state as it was read. That is what makes the record
+# verifiable later, by someone who trusts neither this gateway nor its witness.
 
 #: The witness reads made while deciding the current request. Set per decision; the hooks on the
 #: witness client append to it, so the record lists exactly the reads this decision caused.
@@ -385,6 +401,44 @@ def _schemas(credential: Any) -> list[dict[str, Any]]:
         return []
     return [{"said": a.said, "schema": a.schema, "type": _VLEI_TYPE.get(a.schema)}
             for a in list(acdcs.values())[:8]]
+
+
+def signed_request(
+    params: Mapping[str, Any], report: VerificationReport, credential_said: Any
+) -> dict[str, Any] | None:
+    """The signed request of one ``tools/call``, as the audit record and the receipt keep it.
+
+    ``statement`` is exactly the object a vlei-sig/0.3 signature covers (``mcp_vlei.signing.
+    statement``), so ``JCS(statement)`` is the signed bytes; ``receivedDigest`` is the digest of the
+    arguments that actually arrived; ``keyState`` is the signer's key state the signature was
+    checked against — sequence number, the SAID of that event and its public keys — or ``None``
+    when verification stopped before a key state was read. ``None`` when the call carried no
+    signature this format can read: there is then nothing to re-verify.
+    """
+    meta = params.get("_meta") if isinstance(params.get("_meta"), Mapping) else {}
+    try:
+        sig = parse_signature(meta.get(namespace_keys().signature))
+    except VleiError:
+        return None
+    if not isinstance(credential_said, str) or not credential_said:
+        return None
+    try:
+        received: str | None = digest_params(dict(params))
+    except (ValueError, TypeError):
+        received = None  # no canonical form: the record says so rather than inventing one
+    state = report.signer_key_state
+    key_state = None
+    if state is not None and getattr(state, "pre", None) == sig.aid:
+        key_state = {"aid": state.pre, "sn": state.sn, "eventSaid": state.digest,
+                     "keys": list(state.keys), "threshold": state.threshold}
+    return {
+        "format": SIGNATURE_FORMAT,
+        "statement": statement(aid=sig.aid, aud=sig.aud, cred=credential_said, digest=sig.digest,
+                               ts=sig.ts, exp=sig.exp, nonce=sig.nonce, method="tools/call"),
+        "sig": sig.sig,  # the format fixes the algorithm
+        "receivedDigest": received,
+        "keyState": key_state,
+    }
 
 
 @dataclass
@@ -585,6 +639,14 @@ def create_app(
             return Decision(False, call=calls[0], message=message)
 
         report = VerificationReport(tool=tool)
+        named = (raw.get("_meta") or {}).get(namespace_keys().credential_said) \
+            if isinstance(raw.get("_meta"), Mapping) else None
+
+        def signed(said: Any) -> dict[str, Any]:
+            evidence = signed_request(params.model_dump(by_alias=True, exclude_none=True),
+                                      report, said)
+            return {"signedRequest": evidence} if evidence else {}
+
         try:
             result = await state["identity"].verify_call(params, requirement, report=report)
         except VleiError as exc:
@@ -592,6 +654,7 @@ def create_app(
                 decision="deny", tool=tool, layer=exc.layer.value, message=exc.message,
                 aid=exc.aid, report=report.as_dict(),
                 revocationChecked=report.revocation_established,
+                **signed(report.credential_said or named),
             )
             return Decision(False, call=calls[0], layer=exc.layer.value, message=exc.message,
                             report=report.as_dict())
@@ -603,11 +666,13 @@ def create_app(
             logger.warning("vlei-authz: unexpected error verifying a call (%s)", type(exc).__name__)
             message = f"the verifier failed unexpectedly ({type(exc).__name__}); try again"
             record(decision="deny", tool=tool, layer="verifier_error", message=message,
-                   report=report.as_dict(), revocationChecked=report.revocation_established)
+                   report=report.as_dict(), revocationChecked=report.revocation_established,
+                   **signed(report.credential_said or named))
             return Decision(False, call=calls[0], layer="verifier_error", message=message,
                             report=report.as_dict(), status=503)
 
         facts = report.as_dict()
+        evidence = signed(result.credential_said)
         record(
             decision="allow",
             tool=tool,
@@ -618,10 +683,14 @@ def create_app(
             credentialSaid=result.credential_said,
             revocationChecked=bool(result.revocation_checked),
             report=facts,
+            **evidence,
         )
         # Hand the backend the established facts and nothing else. The simulator reads these
         # headers and contains no identity code.
-        return Decision(True, headers={**result.to_headers(), REPORT_HEADER: encode_report(facts)})
+        headers = {**result.to_headers(), REPORT_HEADER: encode_report(facts)}
+        if evidence:
+            headers[SIGNED_REQUEST_HEADER] = encode_report(evidence["signedRequest"])
+        return Decision(True, headers=headers)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:

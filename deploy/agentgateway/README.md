@@ -125,7 +125,7 @@ The reason is what each wire can say when a `tools/call` is refused.
   A body with no call in it to answer — unreadable, a batch, a call without a name — is still a
   403.
 
-When a call is allowed, the `CheckResponse` first removes all six `x-vlei-*` headers and then sets
+When a call is allowed, the `CheckResponse` first removes all seven `x-vlei-*` headers and then sets
 the ones established. A value a client sends under one of those names never reaches the simulator;
 this was checked live on 2026-10-01 with forged `x-vlei-lei`, `x-vlei-role` and
 `x-vlei-delegate-aid`.
@@ -209,6 +209,22 @@ until the published LE verifies.
 
 A log of refusals alone cannot answer *who filed this?* — which is the question stage 5 of
 `docs/GOVERNMENT.md` exists to make answerable — so allowed requests are recorded too.
+
+A record of a signed call also carries `signedRequest`, so the answer does not rest on trusting the
+gateway: the exact vlei-sig/0.3 statement the caller signed (signer AID, recipient, credential SAID,
+window, nonce, the digest of the tool and its arguments — never the arguments), the signature, the
+digest of what actually arrived, and the signer's key state it was checked against (KEL `sn`, the
+SAID of that event, its public keys):
+
+```json
+"signedRequest":{"format":"vlei-sig/0.3","statement":{"aid":"EFn3…","aud":{"aid":"ELe1…","url":"http://localhost:3000/mcp"},"cred":"EBcd…","digest":"gBkr…","exp":"…","method":"tools/call","nonce":"…","ts":"…","v":"vlei-sig/0.3"},"sig":"0BAH…","receivedDigest":"gBkr…","keyState":{"aid":"EFn3…","sn":0,"eventSaid":"EFn3…","keys":["DCZr…"],"threshold":1}}
+```
+
+`python scripts/verify-audit.py decisions.jsonl` re-verifies every record offline — no container,
+no witness — and prints who signed what; a record altered afterwards fails (exit 1), and a record
+still verifies after the signer rotates its keys. The same object reaches the simulator as
+`x-vlei-signed-request` and is copied, decoded and unchecked, into its receipt (`signedRequest`), so
+`verify-audit.py receipt.json` works on the employer's copy too.
 
 ## Why this shape matters for adoption
 

@@ -206,7 +206,7 @@ from starlette.routing import Route  # noqa: E402
 
 INCLUDE_RESPONSE_HEADERS = (
     "x-vlei-lei", "x-vlei-role", "x-vlei-holder-aid", "x-vlei-delegate-aid", "x-vlei-report",
-    "x-vlei-namespace",
+    "x-vlei-namespace", "x-vlei-signed-request",
 )
 
 

@@ -366,9 +366,12 @@ async def test_the_record_says_what_arrived_but_never_a_value(world, tmp_path):
     assert record["via"] == "local" and record["wire"] == "http"
     assert [c["name"] for c in record["report"]["checks"] if c["passed"]][-1] == "authority"
     line = (tmp_path / "audit" / "decisions.jsonl").read_text(encoding="utf-8").splitlines()[-1]
-    for value in (args["person_ref"], args["start_date"], world.ecr_stream[:60],
-                  meta["org.gleif.vlei/signature"]["sig"] if isinstance(meta["org.gleif.vlei/signature"], dict) else ""):
+    for value in (args["person_ref"], args["start_date"], world.ecr_stream[:60]):
         assert not value or value not in line, value[:40]
+    # The signature is kept, once, in the signed request it belongs to — so the record can be
+    # re-verified later (scripts/verify-audit.py). The arguments it covers are still only a digest.
+    assert line.count(meta["org.gleif.vlei/signature"]["sig"]) == 1
+    assert record["signedRequest"]["sig"] == meta["org.gleif.vlei/signature"]["sig"]
 
 
 async def test_the_record_names_whose_logs_were_read_and_the_anchors_that_decide_revocation(

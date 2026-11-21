@@ -124,7 +124,7 @@ binds:
                 # layer (`missing_credential: ...`). A body with no call in it is still a 403. See
                 # examples/regulator/vlei-authz/grpc_check.py.
                 #
-                # On allow, the CheckResponse removes all six x-vlei-* headers and sets the
+                # On allow, the CheckResponse removes all seven x-vlei-* headers and sets the
                 # established ones, so a value a client sent under one of those names never
                 # reaches the labor-insurance simulator. (The HTTP service on :9000 keeps the old
                 # contract for gateways that speak only HTTP ext-authz.)
