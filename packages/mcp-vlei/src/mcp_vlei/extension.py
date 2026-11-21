@@ -593,9 +593,11 @@ class VleiIdentity(Extension):
                 links, issuers = _links_and_issuers(result, said)
                 for link, issuer in zip(links, issuers):
                     await self.tel.check(link, aid=holder, issuer=issuer)
+                withdrawal = await self._delegation_not_withdrawn(signer, holder)
                 result.revocation_checked = True
                 report.passed(
-                    "revocation", f"issuers' transaction event logs, all {len(links)} credentials"
+                    "revocation",
+                    f"issuers' transaction event logs, all {len(links)} credentials{withdrawal}",
                 )
             elif self.revocation_source == "verifier" and self.verifier is not None:
                 live = await self.verifier.verify(
@@ -617,13 +619,20 @@ class VleiIdentity(Extension):
                 links, issuers = _links_and_issuers(result, said)
                 for link, issuer in zip(links, issuers):
                     await self.tel.check(link, aid=holder, issuer=issuer)
+                withdrawal = await self._delegation_not_withdrawn(signer, holder)
                 result.revocation_checked = True
                 report.passed(
                     "revocation",
-                    f"vlei-verifier, and issuers' transaction event logs, all {len(links)} credentials",
+                    "vlei-verifier, and issuers' transaction event logs, all "
+                    f"{len(links)} credentials{withdrawal}",
                 )
             else:
-                report.skipped("revocation", "no revocation source configured")
+                # Not "nothing withdrawn": nothing was read, the credentials' logs or the holder's.
+                report.skipped(
+                    "revocation",
+                    "no revocation source configured; neither credential revocation nor the "
+                    "withdrawal of a delegation was established",
+                )
         except VleiError as exc:
             report.failed("revocation", exc.layer.value, exc.message)
             raise
@@ -656,6 +665,22 @@ class VleiIdentity(Extension):
         else:
             report.skipped("authority", "this tool declares no requirement")
         return result
+
+    async def _delegation_not_withdrawn(self, signer: str, holder: str) -> str:
+        """For a delegated signer, refuse if the holder has withdrawn the delegation (proposal —
+        spec/SPEC.md "Withdrawing an agent's delegation"); returns a note for the report.
+
+        The holder's log is resolved again here, from the witnesses, not taken from the delegation
+        check or from anything the caller sent: it is the withdrawal a caller would leave out.
+        An unreadable log raises ChainInvalid — the withdrawal was not established, not absent.
+        """
+        if signer == holder or self.tel is None:
+            return ""
+        state = await self.tel.check_delegation(holder, signer)
+        return (
+            f"; delegation of {signer} not withdrawn in the holder's key event log "
+            f"(sn {state.sn}, from witnesses)"
+        )
 
     async def _key_state(self, aid: str) -> KeyState:
         """The signer's current key state, from a witness — or the reason it could not be had."""

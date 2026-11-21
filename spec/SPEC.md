@@ -200,6 +200,54 @@ being presented — a `--full` export carries the whole chain — never *whose* 
 inception may sign directly with the ECR holder's AID; it keeps every other property and loses only
 the second switch.
 
+### Withdrawing an agent's delegation (proposal)
+
+> **Status: proposal.** KERI has no standard for a delegator withdrawing a delegation on its own:
+> a delegate's key event log is the delegate's, and the delegator's say over it is limited to
+> approving (or declining to approve) its delegated establishment events. What follows is this
+> extension's convention, implemented and tested here, not a KERI or vLEI rule. The direction it
+> points to for standardisation is an **ACDC agent-authorisation credential** issued by the holder
+> to the agent AID, withdrawn by a `rev` in the holder's own transaction event log — revocation by
+> the same TEL machinery every other vLEI credential already uses.
+
+The second switch of the table above — "that one agent stops; the person's credential and every
+other delegation are untouched" — works as follows.
+
+- **The withdrawal seal.** The ECR holder withdraws its delegation to an agent by anchoring, in an
+  interaction event of **its own** key event log (`kli interact --data`, see
+  `scripts/revoke-agent.sh`), the seal
+
+  ```json
+  {"i": "<agent AID>", "d": "<SAID of the agent's dip>", "withdrawn": true}
+  ```
+
+  For a self-addressing AID the `dip` SAID is the AID itself. The seal MUST NOT carry `s`: a
+  delegation approval is `{"i": <agent>, "s": <sn>, "d": <event SAID>}` — `s: "0"` for the agent's
+  inception and the rotation's sn for every later `drt` — so a withdrawal spelled `(i, s, d)` would be
+  indistinguishable from an approved rotation, and an approved rotation from a withdrawal.
+- **Read at the revocation check, from witnesses.** For a request signed by a delegated AID, a
+  verifier MUST resolve the holder's key event log again at the revocation check — from the
+  configured witnesses, compared and verified as every other key state is — and MUST NOT rely on
+  any log the caller presented: an agent whose delegation was withdrawn would present the log from
+  before. If any verified event of that log anchors a seal with `i` equal to the signer and
+  `withdrawn` equal to JSON `true`, the request is refused as **`revoked`**. A seal naming the agent
+  with `withdrawn: true` is a withdrawal whatever its `d` (fail closed); a seal without
+  `withdrawn: true` — every delegation approval — never is, and a withdrawal seal never counts as an
+  approval. No check, layer or order changes: this is part of check 7 (revocation).
+- **Not established is not "not withdrawn".** If the holder's log cannot be established at that
+  point (an unreachable witness, too few agreeing copies, duplicity), the withdrawal was not
+  established and the request is refused (`chain_invalid`), exactly as for a credential's
+  revocation. With revocation turned off (`revocation_source="none"`) the revocation check is
+  reported *skipped*, naming that neither credential revocation nor withdrawal was established, and
+  the decision record says `revocationChecked: false`.
+- **Irreversible.** A withdrawal cannot be undone: an approval anchored afterwards does not restore
+  the agent. To authorise an agent again, the holder delegates a **new** AID
+  (`scripts/issue-agent.sh`).
+- **Caller side only.** This covers an agent delegated by an ECR holder to call tools. A server's
+  signing AID delegated by its LE (the gateway's proof-of-possession signer) is not covered: a client
+  does not look for a withdrawal of it, and an LE that needs to stop one rotates or revokes the LE
+  credential.
+
 ### Request signing (vlei-sig/0.3)
 
 A request signature is computed over a small **statement**, serialised with RFC 8785 (JCS):

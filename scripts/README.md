@@ -107,6 +107,19 @@ runs it and reloads. `--install-root` exists because a recreated verifier starts
 database and trusts no root: `reset-demo.sh --keep-credentials` calls it, and before it did, the
 first presentation after that reset — the re-issue between takes — was rejected.
 
+## One more agent, and withdrawing it (proposal)
+
+```bash
+bash scripts/issue-agent.sh agent2    # a new agent AID, delegated by the ECR holder
+bash scripts/revoke-agent.sh agent2   # withdraw that one delegation; the ECR and other agents stay
+```
+
+`revoke-agent.sh` anchors `{"i": <agent>, "d": <dip SAID>, "withdrawn": true}` in the holder's key
+event log; the agent's next call is refused at check 7 as `revoked`. It is irreversible — a new
+agent is a new AID — and refuses the demo's own `agent` unless `VLEI_REVOKE_DEMO_AGENT=yes`. Both
+append to the holder's log, so run them on the parallel stack (`scripts/v03-stack.sh env`) when the
+recorded demo's state matters. See spec/SPEC.md "Withdrawing an agent's delegation".
+
 ## A forged chain (expected refusal: `unknown_root`)
 
 ```bash

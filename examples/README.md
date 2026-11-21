@@ -17,7 +17,7 @@ agent's ECR and its signed request, and passes the simulator only the verified e
 
 Where it is tested:
 
-- `regulator/tests/` — 107 tests, no containers: the authoriser (`test_vlei_authz.py`), the
+- `regulator/tests/` — 108 tests, no containers: the authoriser (`test_vlei_authz.py`), the
   simulator (`test_labor_insurance_sim.py`) and the client that calls through the gateway
   (`test_gateway_client.py`).
 - The four scenes as the console runs them: `console/tests/` (below).
