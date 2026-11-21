@@ -173,9 +173,11 @@ make_parties() {
   done
 }
 
-# The agent's delegated AID, created under the ECR holder's KEL. Revoking the delegation stops the
-# agent without touching the person's credential. Optional by design — see SPEC.md "Why a
-# delegated AID for the agent"; if this stage is dropped, the ECR holder's AID signs directly.
+# The agent's delegated AID, created under the ECR holder's KEL. It gives the agent a key of its own
+# instead of the person's; revoking the ECR stops the agent. Withdrawing the delegation alone is not
+# implemented — see docs/CONFORMANCE.md, '"Revoke the delegation" is not implemented'.
+# Optional by design — see spec/SPEC.md "Why a delegated AID for the agent"; if this stage is
+# dropped, the ECR holder's AID signs directly.
 # Delegated inception: the delegate proposes and blocks, the delegator confirms.
 #
 # Used twice, for different reasons:

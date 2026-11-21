@@ -31,6 +31,7 @@ SUITES = {
 #: (file, pattern whose one group is the count, suite)
 TARGETS = [
     ("README.md", r"`packages/mcp-vlei/` — (\d+) tests", "package"),
+    ("README.md", r"^\*\*(\d+) tests\*\* across the six suites CI runs", "all"),
     ("packages/mcp-vlei/README.md", r"^(\d+) tests, no containers required", "package"),
     ("docs/CONFORMANCE.md", r"pytest packages/mcp-vlei/tests +# (\d+) tests", "package"),
     ("examples/README.md", r"`regulator/tests/` — (\d+) tests", "regulator"),
@@ -44,7 +45,9 @@ TARGETS = [
 
 @cache
 def count(suite: str) -> int:
-    """How many tests pytest collects in one suite."""
+    """How many tests pytest collects in one suite ("all": every suite CI runs, summed)."""
+    if suite == "all":
+        return sum(count(name) for name in SUITES)
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider", SUITES[suite]],
         cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace",

@@ -24,6 +24,18 @@ extension mechanism. The MCP core schema is not modified.
 
 **Extension identifier:** `org.gleif.vlei/identity`
 
+## Start here
+
+| You want | Where |
+|---|---|
+| **The gateway** — government side: 8 checks in order, 11 named refusals, in front of a back end that has no verification code of its own | `examples/regulator/vlei-authz/` (verification service) · `deploy/agentgateway/` (gateway configuration) |
+| **The credential proxy** — company side: signs each call with the agent's delegated key, verifies the gateway's operator first (its LE credential and proof of possession) | `examples/credential-proxy/` |
+| **The two skills** | `skills/implementing-vlei/` (build time) · `skills/vlei-identity/` (run time) |
+| **The demo** — a simulated labour-insurance filing, every identity fictional | `examples/README.md` |
+| **What is not implemented** | `docs/CONFORMANCE.md`, "What is deliberately not claimed" |
+
+**921 tests** across the six suites CI runs (package, regulator, credential proxy, console, skill server, observatory); `python scripts/count-tests.py --check` recounts them.
+
 ## Layout
 
 | Path | Contents |
